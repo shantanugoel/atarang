@@ -3,9 +3,12 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var model = SeparationModel()
     @StateObject private var player = StemPlayer()
+    @StateObject private var history = HistoryStore()
+    @StateObject private var historyAudioPlayer = HistoryAudioPlayer()
     @State private var youtubeURL: String
     @State private var didRunDebugURL = false
     @State private var showingShareSheet = false
+    @State private var selectedTab = AppTab.mixer
     private let debugURL: String?
 
     init() {
@@ -15,39 +18,100 @@ struct ContentView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: 22) {
-                    hero
-                    if player.isLoaded { mixer } else { importCard }
-                    if model.isWorking { progressCard }
+        TabView(selection: $selectedTab) {
+            NavigationStack {
+                ScrollView {
+                    VStack(spacing: 22) {
+                        hero
+                        if player.isLoaded { mixer } else { importCard }
+                        if model.isWorking { progressCard }
+                    }
+                    .padding()
                 }
-                .padding()
-            }
-            .background(Color(.systemGroupedBackground))
-            .navigationTitle("Atarang")
-            .alert("Couldn’t separate this song", isPresented: errorIsPresented) {
-                Button("OK") { model.errorMessage = nil }
-            } message: {
-                Text(model.errorMessage ?? "Unknown error")
-            }
-            .alert("Audio problem", isPresented: playerErrorIsPresented) {
-                Button("OK") { player.alertMessage = nil }
-            } message: {
-                Text(player.alertMessage ?? "Unknown audio error")
-            }
-            .sheet(isPresented: $showingShareSheet) {
-                if let url = player.shareURL {
-                    ActivityView(items: [url])
-                        .presentationDetents([.medium, .large])
+                .background(Color(.systemGroupedBackground))
+                .navigationTitle("Atarang")
+                .alert("Couldn’t separate this song", isPresented: errorIsPresented) {
+                    Button("OK") { model.errorMessage = nil }
+                } message: {
+                    Text(model.errorMessage ?? "Unknown error")
+                }
+                .alert("Audio problem", isPresented: playerErrorIsPresented) {
+                    Button("OK") { player.alertMessage = nil }
+                } message: {
+                    Text(player.alertMessage ?? "Unknown audio error")
+                }
+                .sheet(isPresented: $showingShareSheet) {
+                    if let url = player.shareURL {
+                        ActivityView(items: [url])
+                            .presentationDetents([.medium, .large])
+                    }
                 }
             }
+            .tabItem { Label("Play", systemImage: "waveform.badge.mic") }
+            .tag(AppTab.mixer)
+
+            HistoryView(
+                store: history,
+                audioPlayer: historyAudioPlayer,
+                audioPlaybackDisabled: player.isRecording,
+                openTrack: openHistoryTrack,
+                recordTrack: startRecording,
+                recordAgain: recordAgain
+            )
+            .tabItem { Label("History", systemImage: "clock.arrow.circlepath") }
+            .tag(AppTab.history)
         }
         .tint(.indigo)
+        .onReceive(NotificationCenter.default.publisher(for: .atarangLibraryDidChange)) { _ in
+            history.refresh()
+        }
+        .onChange(of: selectedTab) { _, tab in
+            if tab == .history, player.isPlaying, !player.isRecording {
+                player.pause()
+            } else if tab == .mixer {
+                historyAudioPlayer.stop()
+            }
+        }
         .task {
             guard !didRunDebugURL, let debugURL, !debugURL.isEmpty else { return }
             didRunDebugURL = true
             await separate(debugURL)
+        }
+    }
+
+    @MainActor
+    private func openHistoryTrack(_ track: HistoryTrack, autoplay: Bool) {
+        historyAudioPlayer.stop()
+        do {
+            try player.load(track: track.localTrack)
+            selectedTab = .mixer
+            if autoplay { try player.play() }
+        } catch {
+            player.alertMessage = error.localizedDescription
+            selectedTab = .mixer
+        }
+    }
+
+    @MainActor
+    private func recordAgain(_ recording: HistoryRecording) {
+        guard let sourceTrackID = recording.sourceTrackID,
+              let track = history.track(withID: sourceTrackID) else {
+            history.errorMessage = "The separated song used for this performance is no longer available."
+            return
+        }
+        startRecording(track)
+    }
+
+    @MainActor
+    private func startRecording(_ track: HistoryTrack) {
+        historyAudioPlayer.stop()
+        do {
+            try player.load(track: track.localTrack)
+            selectedTab = .mixer
+            Task { await player.toggleRecording() }
+        } catch {
+            player.alertMessage = error.localizedDescription
+            selectedTab = .mixer
         }
     }
 
@@ -244,6 +308,10 @@ struct ContentView: View {
         let value = max(0, Int(seconds.rounded()))
         return String(format: "%d:%02d", value / 60, value % 60)
     }
+}
+
+private enum AppTab {
+    case mixer, history
 }
 
 private struct StemRow: View {

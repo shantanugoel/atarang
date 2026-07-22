@@ -40,8 +40,8 @@ final class SeparationModel: ObservableObject {
             statusText = "Loading on-device Demucs…"
             progress = 0.18
             let separator = try StemSeparator()
-            let folder = try outputFolder()
-            let files = try await separator.separate(fileURL: downloaded.url, outputFolder: folder) { value in
+            let output = try outputFolder()
+            let files = try await separator.separate(fileURL: downloaded.url, outputFolder: output.folder) { value in
                 Task { @MainActor [weak self] in
                     self?.statusText = "Separating four stems on this iPhone…"
                     self?.progress = 0.2 + value * 0.78
@@ -50,8 +50,30 @@ final class SeparationModel: ObservableObject {
             try? FileManager.default.removeItem(at: downloaded.url.deletingLastPathComponent())
             progress = 1
             statusText = "Ready to play"
+            let createdAt = Date()
+            let metadata = TrackMetadata(
+                id: output.id,
+                title: downloaded.title,
+                createdAt: createdAt,
+                sourceURL: url
+            )
+            do {
+                try LibraryMetadata.write(
+                    metadata,
+                    to: output.folder.appendingPathComponent(LibraryMetadata.trackFilename)
+                )
+            } catch {
+                logger.error("Could not save track metadata: \(error.localizedDescription, privacy: .public)")
+            }
+            NotificationCenter.default.post(name: .atarangLibraryDidChange, object: nil)
             logger.info("Separation completed successfully")
-            return LocalTrack(title: downloaded.title, files: files)
+            return LocalTrack(
+                id: output.id,
+                title: downloaded.title,
+                files: files,
+                createdAt: createdAt,
+                sourceURL: url
+            )
         } catch {
             logger.error("Separation failed: \(error.localizedDescription, privacy: .public)")
             errorMessage = friendlyMessage(for: error)
@@ -114,16 +136,17 @@ final class SeparationModel: ObservableObject {
         return (destination, selection.title)
     }
 
-    private func outputFolder() throws -> URL {
+    private func outputFolder() throws -> (id: UUID, folder: URL) {
         let root = try FileManager.default.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,
             appropriateFor: nil,
             create: true
         ).appendingPathComponent("Tracks", isDirectory: true)
-        let folder = root.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let id = UUID()
+        let folder = root.appendingPathComponent(id.uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        return folder
+        return (id, folder)
     }
 
     private func isYouTubeURL(_ url: URL) -> Bool {

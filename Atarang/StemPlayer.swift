@@ -30,6 +30,8 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
     private var backingFile: AVAudioFile?
     private var microphoneURL: URL?
     private var backingURL: URL?
+    private var recordingID: UUID?
+    private var currentTrackID: UUID?
     private var recordingStartedAt: Date?
     private var interruptionShouldResume = false
     private let logger = Logger(subsystem: "com.shantanugoel.atarang.Atarang", category: "Audio")
@@ -70,6 +72,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         }
         duration = files.values.map { Double($0.length) / $0.processingFormat.sampleRate }.min() ?? 0
         title = track.title
+        currentTrackID = track.id
         isLoaded = duration > 0
         recordedTake = nil
         shareURL = nil
@@ -175,6 +178,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         files.removeAll()
         duration = 0
         title = ""
+        currentTrackID = nil
         isLoaded = false
         recordedTake = nil
         shareURL = nil
@@ -191,7 +195,8 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         do { try configureRecordingSession() }
         catch { throw PlayerError.audioSetup("Could not activate microphone mode", error) }
 
-        let folder = try recordingFolder()
+        let recording = try recordingFolder()
+        let folder = recording.folder
         let micURL = folder.appendingPathComponent("microphone.caf")
         let mixURL = folder.appendingPathComponent("backing.caf")
         let inputNode = engine.inputNode
@@ -233,6 +238,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         backingFile = mixFile
         microphoneURL = micURL
         backingURL = mixURL
+        recordingID = recording.id
         recordingStartedAt = Date()
         recordingDuration = 0
         recordedTake = nil
@@ -254,14 +260,14 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         updatePosition()
         removeRecordingTaps()
 
-        guard let microphoneURL, let backingURL else { return }
+        guard let microphoneURL, let backingURL, let recordingID else { return }
         let measuredDuration = min(
             audioDuration(at: microphoneURL),
             audioDuration(at: backingURL)
         )
         recordingDuration = measuredDuration
         let take = RecordedTake(
-            id: UUID(),
+            id: recordingID,
             title: title,
             microphoneURL: microphoneURL,
             backingURL: backingURL,
@@ -269,8 +275,26 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
             createdAt: Date()
         )
         recordedTake = take
+        let metadata = RecordingMetadata(
+            id: take.id,
+            title: take.title,
+            createdAt: take.createdAt,
+            duration: take.duration,
+            sourceTrackID: currentTrackID,
+            exportedFilename: nil
+        )
+        do {
+            try LibraryMetadata.write(
+                metadata,
+                to: microphoneURL.deletingLastPathComponent()
+                    .appendingPathComponent(LibraryMetadata.recordingFilename)
+            )
+            NotificationCenter.default.post(name: .atarangLibraryDidChange, object: nil)
+        } catch {
+            logger.error("Could not save recording metadata: \(error.localizedDescription, privacy: .public)")
+        }
         logger.info("Performance recording stopped after \(measuredDuration, privacy: .public) seconds")
-        export(take)
+        export(take, sourceTrackID: currentTrackID)
     }
 
     private func removeRecordingTaps() {
@@ -281,12 +305,31 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         recordingStartedAt = nil
     }
 
-    private func export(_ take: RecordedTake) {
+    private func export(_ take: RecordedTake, sourceTrackID: UUID?) {
         isExporting = true
         shareURL = nil
         Task {
             do {
-                shareURL = try await RecordingExporter.export(take: take)
+                let exportedURL = try await RecordingExporter.export(take: take)
+                shareURL = exportedURL
+                let metadata = RecordingMetadata(
+                    id: take.id,
+                    title: take.title,
+                    createdAt: take.createdAt,
+                    duration: take.duration,
+                    sourceTrackID: sourceTrackID,
+                    exportedFilename: exportedURL.lastPathComponent
+                )
+                do {
+                    try LibraryMetadata.write(
+                        metadata,
+                        to: take.microphoneURL.deletingLastPathComponent()
+                            .appendingPathComponent(LibraryMetadata.recordingFilename)
+                    )
+                } catch {
+                    logger.error("Could not update recording metadata: \(error.localizedDescription, privacy: .public)")
+                }
+                NotificationCenter.default.post(name: .atarangLibraryDidChange, object: nil)
                 logger.info("Shareable M4A export finished")
             } catch {
                 alertMessage = error.localizedDescription
@@ -310,16 +353,17 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         }
     }
 
-    private func recordingFolder() throws -> URL {
+    private func recordingFolder() throws -> (id: UUID, folder: URL) {
         let root = try FileManager.default.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,
             appropriateFor: nil,
             create: true
         ).appendingPathComponent("Recordings", isDirectory: true)
-        let folder = root.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let id = UUID()
+        let folder = root.appendingPathComponent(id.uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        return folder
+        return (id, folder)
     }
 
     private func audioDuration(at url: URL) -> TimeInterval {
