@@ -35,6 +35,7 @@ final class SeparationModel: ObservableObject {
             }
             defer { slowNotice.cancel() }
             let downloaded = try await downloadAudio(from: url)
+            slowNotice.cancel()
             logger.info("Audio download complete: \(downloaded.url.lastPathComponent, privacy: .public)")
             statusText = "Loading on-device Demucs…"
             progress = 0.18

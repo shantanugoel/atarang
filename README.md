@@ -2,6 +2,8 @@
 
 Atarang is a personal iPhone practice app. Paste a YouTube URL and the phone downloads its audio, separates it locally into vocals, drums, bass, and other with HTDemucs/Core ML, then plays the four synchronized stems with independent volume and mute controls.
 
+While the stems play, tap the red record button to capture your microphone and the live backing mix together. Playback and recording continue when Atarang is backgrounded or the screen locks. After stopping, Atarang exports an AAC/M4A performance that can be shared to WhatsApp, Files, AirDrop, and other compatible apps. Headphones are recommended to prevent the backing track from bleeding into the microphone.
+
 There is no backend or companion service. Network access is used only to fetch YouTube metadata and audio. A pinned `yt-dlp` Python zipapp is bundled with Atarang; extraction, separation, and playback happen entirely on the iPhone.
 
 ## Install

@@ -5,6 +5,7 @@ struct ContentView: View {
     @StateObject private var player = StemPlayer()
     @State private var youtubeURL: String
     @State private var didRunDebugURL = false
+    @State private var showingShareSheet = false
     private let debugURL: String?
 
     init() {
@@ -29,6 +30,17 @@ struct ContentView: View {
                 Button("OK") { model.errorMessage = nil }
             } message: {
                 Text(model.errorMessage ?? "Unknown error")
+            }
+            .alert("Audio problem", isPresented: playerErrorIsPresented) {
+                Button("OK") { player.alertMessage = nil }
+            } message: {
+                Text(player.alertMessage ?? "Unknown audio error")
+            }
+            .sheet(isPresented: $showingShareSheet) {
+                if let url = player.shareURL {
+                    ActivityView(items: [url])
+                        .presentationDetents([.medium, .large])
+                }
             }
         }
         .tint(.indigo)
@@ -111,16 +123,33 @@ struct ContentView: View {
                 .foregroundStyle(.secondary)
             }
 
-            Button {
-                player.togglePlayback()
-            } label: {
-                Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.title2)
-                    .frame(width: 62, height: 62)
-                    .background(.indigo, in: Circle())
-                    .foregroundStyle(.white)
+            HStack(spacing: 34) {
+                Button {
+                    player.togglePlayback()
+                } label: {
+                    Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                        .font(.title2)
+                        .frame(width: 62, height: 62)
+                        .background(.indigo, in: Circle())
+                        .foregroundStyle(.white)
+                }
+                .disabled(player.isRecording)
+                .opacity(player.isRecording ? 0.45 : 1)
+                .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
+
+                Button {
+                    Task { await player.toggleRecording() }
+                } label: {
+                    Image(systemName: player.isRecording ? "stop.fill" : "record.circle")
+                        .font(.title2)
+                        .frame(width: 62, height: 62)
+                        .background(player.isRecording ? Color.red : Color.red.opacity(0.14), in: Circle())
+                        .foregroundStyle(player.isRecording ? .white : .red)
+                }
+                .accessibilityLabel(player.isRecording ? "Stop recording" : "Record performance")
             }
-            .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
+
+            recordingStatus
 
             VStack(spacing: 14) {
                 ForEach(StemKind.allCases) { stem in
@@ -129,6 +158,23 @@ struct ContentView: View {
                         set: { player.setVolume($0, for: stem) }
                     ))
                 }
+            }
+
+            if player.isExporting {
+                HStack(spacing: 10) {
+                    ProgressView()
+                    Text("Preparing shareable M4A…")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            } else if player.shareURL != nil {
+                Button {
+                    showingShareSheet = true
+                } label: {
+                    Label("Share recorded performance", systemImage: "square.and.arrow.up")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
             }
 
             Button("Choose another song", systemImage: "arrow.triangle.2.circlepath") {
@@ -144,11 +190,53 @@ struct ContentView: View {
         Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })
     }
 
+    private var playerErrorIsPresented: Binding<Bool> {
+        Binding(get: { player.alertMessage != nil }, set: { if !$0 { player.alertMessage = nil } })
+    }
+
+    @ViewBuilder
+    private var recordingStatus: some View {
+        if player.isRecording {
+            HStack(spacing: 7) {
+                Circle().fill(.red).frame(width: 9, height: 9)
+                Text("Recording \(time(player.recordingDuration))")
+                    .font(.subheadline.weight(.semibold))
+                    .monospacedDigit()
+            }
+            .foregroundStyle(.red)
+            Text("Recording and playback continue with the screen locked or Atarang in the background.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        } else {
+            Text("Use headphones for a clean recording without speaker bleed.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+    }
+
     @MainActor
     private func separate(_ url: String) async {
         if let track = await model.separate(youtubeURL: url) {
-            do { try player.load(track: track) }
+            do {
+                try player.load(track: track)
+                await runDebugRecordingIfRequested()
+            }
             catch { model.errorMessage = error.localizedDescription }
+        }
+    }
+
+    @MainActor
+    private func runDebugRecordingIfRequested() async {
+        guard let rawSeconds = ProcessInfo.processInfo.environment["ATARANG_DEBUG_RECORD_SECONDS"],
+              let seconds = Double(rawSeconds), seconds > 0 else { return }
+        await player.toggleRecording()
+        guard player.isRecording else { return }
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(seconds))
+            guard player.isRecording else { return }
+            await player.toggleRecording()
         }
     }
 

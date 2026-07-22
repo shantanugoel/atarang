@@ -27,3 +27,12 @@ struct LocalTrack {
     let title: String
     let files: [StemKind: URL]
 }
+
+struct RecordedTake: Identifiable, Sendable {
+    let id: UUID
+    let title: String
+    let microphoneURL: URL
+    let backingURL: URL
+    let duration: TimeInterval
+    let createdAt: Date
+}
