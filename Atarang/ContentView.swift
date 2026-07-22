@@ -3,7 +3,15 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var model = SeparationModel()
     @StateObject private var player = StemPlayer()
-    @State private var youtubeURL = ""
+    @State private var youtubeURL: String
+    @State private var didRunDebugURL = false
+    private let debugURL: String?
+
+    init() {
+        let value = ProcessInfo.processInfo.environment["ATARANG_DEBUG_URL"]
+        debugURL = value
+        _youtubeURL = State(initialValue: value ?? "")
+    }
 
     var body: some View {
         NavigationStack {
@@ -24,6 +32,11 @@ struct ContentView: View {
             }
         }
         .tint(.indigo)
+        .task {
+            guard !didRunDebugURL, let debugURL, !debugURL.isEmpty else { return }
+            didRunDebugURL = true
+            await separate(debugURL)
+        }
     }
 
     private var hero: some View {
@@ -51,12 +64,7 @@ struct ContentView: View {
                 .keyboardType(.URL)
                 .textFieldStyle(.roundedBorder)
             Button {
-                Task {
-                    if let track = await model.separate(youtubeURL: youtubeURL) {
-                        do { try player.load(track: track) }
-                        catch { model.errorMessage = error.localizedDescription }
-                    }
-                }
+                Task { await separate(youtubeURL) }
             } label: {
                 Label("Create four stems", systemImage: "wand.and.stars")
                     .frame(maxWidth: .infinity)
@@ -134,6 +142,14 @@ struct ContentView: View {
 
     private var errorIsPresented: Binding<Bool> {
         Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })
+    }
+
+    @MainActor
+    private func separate(_ url: String) async {
+        if let track = await model.separate(youtubeURL: url) {
+            do { try player.load(track: track) }
+            catch { model.errorMessage = error.localizedDescription }
+        }
     }
 
     private func time(_ seconds: TimeInterval) -> String {

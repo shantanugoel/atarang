@@ -158,18 +158,36 @@ final class StemSeparator: @unchecked Sendable {
         guard let sources = prediction.featureValue(for: "sources")?.multiArrayValue else {
             throw StemSeparatorError.inferenceFailed("The model returned no sources output.")
         }
-        let output = sources.dataPointer.bindMemory(to: Float.self, capacity: sources.count)
         var stems: [StemKind: [Float]] = [:]
         for (stemIndex, stem) in StemKind.allCases.enumerated() {
             var samples = [Float](repeating: 0, count: segmentSamples * 2)
             let base = stemIndex * 2 * segmentSamples
             for frame in 0..<segmentSamples {
-                samples[frame * 2] = output[base + frame]
-                samples[frame * 2 + 1] = output[base + segmentSamples + frame]
+                samples[frame * 2] = sample(from: sources, at: base + frame)
+                samples[frame * 2 + 1] = sample(
+                    from: sources,
+                    at: base + segmentSamples + frame
+                )
             }
             stems[stem] = samples
         }
         return stems
+    }
+
+    private func sample(from array: MLMultiArray, at index: Int) -> Float {
+        switch array.dataType {
+        case .float16:
+            let values = array.dataPointer.bindMemory(to: Float16.self, capacity: array.count)
+            return Float(values[index])
+        case .float32:
+            let values = array.dataPointer.bindMemory(to: Float.self, capacity: array.count)
+            return values[index]
+        case .double:
+            let values = array.dataPointer.bindMemory(to: Double.self, capacity: array.count)
+            return Float(values[index])
+        default:
+            return array[index].floatValue
+        }
     }
 
     private func sliceChunk(mix: AVAudioPCMBuffer, start: Int) -> [Float] {

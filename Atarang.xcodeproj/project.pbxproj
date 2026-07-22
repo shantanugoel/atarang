@@ -100,11 +100,11 @@
 			);
 			mainGroup = F420220F30114B6900D02A9B;
 			minimizedProjectReferenceProxies = 1;
-			preferredProjectObjectVersion = 77;
-			productRefGroup = F420221930114B6900D02A9B /* Products */;
 			packageReferences = (
 				A700000230114B6900D02A9B /* XCRemoteSwiftPackageReference "YoutubeDL-iOS" */,
 			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = F420221930114B6900D02A9B /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
