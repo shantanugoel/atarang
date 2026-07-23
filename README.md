@@ -91,9 +91,46 @@ release.
 ### Requirements
 
 - A Mac with Xcode and an iOS 17 SDK
+- [Git LFS](https://git-lfs.com/) for the bundled HTDemucs model weights
 - An iPhone or iPad running iOS 17 or later
 - An Apple Developer account for device signing
 - A recent iPhone recommended for faster separation and the 6-stem model
+
+### Clone with the model weights
+
+The bundled HTDemucs model stores its 190 MB weight blob in Git LFS. Install
+and enable Git LFS **before cloning**:
+
+```sh
+brew install git-lfs
+git lfs install
+git clone <repository-url>
+cd Atarang
+```
+
+`git lfs install` is a one-time setup for your user account. After that, normal
+Git clones automatically download LFS files. Git itself cannot install Git LFS,
+so each developer must complete this setup once.
+
+If you cloned Atarang before installing Git LFS, fetch the model weights
+manually from the repository root:
+
+```sh
+git lfs install
+git lfs pull
+```
+
+Verify that the model blob was downloaded before building:
+
+```sh
+wc -c < Atarang/HTDemucs_CoreML_FP16.mlpackage/Data/com.apple.CoreML/weights/weight.bin
+```
+
+The command should print `190099328`. A 134-byte file beginning with
+`version https://git-lfs.github.com/spec/v1` is only an unresolved LFS pointer.
+Building with that pointer causes Core ML to fail with “Failed to build the
+model execution plan … error code: -5.” After fetching the real weights, clean
+the Xcode build folder and rebuild the app.
 
 ### Build and run
 
