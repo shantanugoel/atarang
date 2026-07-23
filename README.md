@@ -19,12 +19,17 @@
 
 | Start a session | Mix and record |
 | :---: | :---: |
-| <img src="docs/images/studio.png" alt="Atarang Studio ready for a YouTube URL" width="320"> | <img src="docs/images/mixer.png" alt="Atarang stem mixer and recording controls" width="320"> |
+| <img src="docs/images/studio.jpg" alt="Atarang Studio ready for a YouTube URL" width="320"> | <img src="docs/images/mixer.jpg" alt="Atarang stem mixer and recording controls" width="320"> |
 | Paste a link and choose a separation style. | Shape every stem and balance the microphone and backing track. |
+
+| Loop, transpose, and save | Practise with structure |
+| :---: | :---: |
+| <img src="docs/images/practice-loop-and-pitch.jpg" alt="Atarang Practice workspace with rewind, speed, pitch, A–B loop, and saved-section controls" width="320"> | <img src="docs/images/practice-metronome-and-target.jpg" alt="Atarang Practice workspace with manual metronome, practice-target presets, and count-in controls" width="320"> |
+| Isolate a phrase, change its key, and keep useful sections. | Align a click, choose your part, and move from learning to playing along. |
 
 | Originals | Separated tracks | Performances |
 | :---: | :---: | :---: |
-| <img src="docs/images/library-originals.png" alt="Original songs in the Atarang Library" width="240"> | <img src="docs/images/library-separated.png" alt="Separated tracks in the Atarang Library" width="240"> | <img src="docs/images/library-performances.png" alt="Recorded performances in the Atarang Library" width="240"> |
+| <img src="docs/images/library-originals.jpg" alt="Original songs in the Atarang Library" width="240"> | <img src="docs/images/library-separated.jpg" alt="Separated tracks in the Atarang Library" width="240"> | <img src="docs/images/library-performances.jpg" alt="Recorded performances in the Atarang Library" width="240"> |
 | Reuse downloaded audio. | Reopen, play, record, or separate again. | Play, edit, share, or record another take. |
 
 ## Make any song yours
@@ -34,15 +39,38 @@ YouTube URL, choose how you want the track separated, and let the phone create
 synchronized stems locally. Turn down the part you want to perform, press play,
 and practise against the rest of the band.
 
+## Practise with purpose
+
+Switch from **Mix** to **Practice** without interrupting playback. Atarang
+remembers the practice workspace, playhead, selected target, mix, loop, speed,
+pitch, count-in, and saved sections for each song, so the next session can pick
+up where the last one ended.
+
+- **Master one phrase** — jump back five seconds, mark and fine-tune an A–B
+  loop, then save multiple named sections for quick recall.
+- **Slow down or change key** — adjust speed without changing pitch, or
+  transpose the backing by semitones without changing tempo.
+- **Build up repetitions** — choose a repetition target, add a pause between
+  passes, and automatically ramp from a comfortable starting speed to the
+  target tempo.
+- **Practise your part three ways** — select any available vocal or instrument
+  stem, then use **Learn** to hear it alone, **Guide** to keep it quietly in the
+  mix, or **Play Along** to mute it and take its place.
+- **Add a manual click and count-in** — enter a BPM or use tap tempo, choose a
+  subdivision, accent the downbeat, set the click level, and align it with the
+  song. The metronome is manually aligned rather than tempo-detected.
+- **Record a predictable loop take** — hear the count-in, record exactly one
+  pass from A to B, and quickly compare the latest take with the reference.
+
 ## Features
 
 - **Up to six synchronized stems** — isolate vocals, drums, bass, guitar,
   piano, instrumental, or other parts depending on the selected model.
 - **A hands-on stem mixer** — set a level for every stem, mute or solo parts,
-  and jump between Full Mix, Without Vocals, and Vocals Only presets.
-- **Structured song practice** — save A–B sections, transpose by semitones,
-  add a manually aligned metronome, count repetitions, and ramp from a slower
-  starting speed to performance tempo.
+  and apply target-aware Learn, Guide, and Play Along presets.
+- **Structured song practice** — loop and save difficult sections, control
+  speed and key independently, add a count-in and manually aligned metronome,
+  count repetitions, and ramp up to performance tempo.
 - **Performance recording** — capture the microphone and live backing mix
   together, with independent microphone and backing levels; an active loop
   records one predictable pass from A to B.
