@@ -23,25 +23,22 @@ struct ContentView: View {
                 ScrollView {
                     VStack(spacing: 22) {
                         if !player.isLoaded { hero }
-                        if player.isLoaded { mixer } else { importCard }
+                        if player.isLoaded {
+                            mixerHeader
+                            mixer
+                        } else {
+                            importCard
+                        }
                         if model.isWorking { progressCard }
                     }
                     .padding()
                 }
+                .scrollIndicators(.hidden)
+                .scrollBounceBehavior(.basedOnSize)
                 .background(Color(.systemGroupedBackground))
                 .navigationTitle("Atarang")
-                .toolbar {
-                    if player.isLoaded {
-                        ToolbarItem(placement: .topBarTrailing) {
-                            Button {
-                                chooseAnotherSong()
-                            } label: {
-                                Label("New Song", systemImage: "plus")
-                            }
-                            .disabled(player.isRecording)
-                        }
-                    }
-                }
+                .navigationBarTitleDisplayMode(.large)
+                .toolbar(player.isLoaded ? .hidden : .visible, for: .navigationBar)
                 .alert("Couldn’t separate this song", isPresented: errorIsPresented) {
                     Button("OK") { model.errorMessage = nil }
                 } message: {
@@ -212,25 +209,15 @@ struct ContentView: View {
     }
 
     private var mixer: some View {
-        VStack(spacing: 18) {
-            VStack(spacing: 5) {
-                Text(player.title).font(.headline).lineLimit(2)
+        VStack(spacing: 12) {
+            VStack(spacing: 3) {
+                Text(player.title).font(.headline).lineLimit(1)
                 Text("\(player.activeStems.count)-stem mix · \(player.separationModel.title)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
-            Button {
-                chooseAnotherSong()
-            } label: {
-                Label("Choose Another Song", systemImage: "arrow.triangle.2.circlepath")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.large)
-            .disabled(player.isRecording)
-
-            VStack(spacing: 5) {
+            VStack(spacing: 3) {
                 Slider(value: Binding(get: { player.position }, set: { player.seek(to: $0) }), in: 0...max(player.duration, 0.01))
                     .accessibilityLabel("Playback position")
                     .accessibilityValue("\(time(player.position)) of \(time(player.duration))")
@@ -249,7 +236,7 @@ struct ContentView: View {
                 } label: {
                     Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                         .font(.title2)
-                        .frame(width: 62, height: 62)
+                        .frame(width: 56, height: 56)
                         .background(.indigo, in: Circle())
                         .foregroundStyle(.white)
                 }
@@ -262,7 +249,7 @@ struct ContentView: View {
                 } label: {
                     Image(systemName: player.isRecording ? "stop.fill" : "record.circle")
                         .font(.title2)
-                        .frame(width: 62, height: 62)
+                        .frame(width: 56, height: 56)
                         .background(player.isRecording ? Color.red : Color.red.opacity(0.14), in: Circle())
                         .foregroundStyle(player.isRecording ? .white : .red)
                 }
@@ -272,7 +259,7 @@ struct ContentView: View {
             recordingStatus
             recordingMixControls
 
-            VStack(spacing: 14) {
+            VStack(spacing: 9) {
                 ForEach(player.activeStems) { stem in
                     StemRow(stem: stem, volume: Binding(
                         get: { player.volume(for: stem) },
@@ -300,7 +287,27 @@ struct ContentView: View {
                 .buttonStyle(.borderedProminent)
             }
         }
-        .cardStyle()
+        .padding(14)
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20))
+    }
+
+    private var mixerHeader: some View {
+        HStack {
+            Text("Atarang")
+                .font(.largeTitle.bold())
+            Spacer()
+            Button {
+                chooseAnotherSong()
+            } label: {
+                Image(systemName: "plus")
+                    .font(.title2.weight(.semibold))
+                    .frame(width: 44, height: 44)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.indigo)
+            .disabled(player.isRecording)
+            .accessibilityLabel("New Song")
+        }
     }
 
     private func chooseAnotherSong() {
@@ -344,7 +351,7 @@ struct ContentView: View {
     }
 
     private var recordingMixControls: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 9) {
             HStack {
                 Label("Recording Mix", systemImage: "slider.horizontal.3")
                     .font(.subheadline.weight(.semibold))
@@ -382,7 +389,7 @@ struct ContentView: View {
             )
             .disabled(player.isRecording)
         }
-        .padding(14)
+        .padding(11)
         .background(
             Color(.tertiarySystemGroupedBackground),
             in: RoundedRectangle(cornerRadius: 14)
