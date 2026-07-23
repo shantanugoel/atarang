@@ -20,11 +20,12 @@ There is no backend or companion service. Network access is used to fetch YouTub
 ## Install
 
 1. Open `Atarang.xcodeproj` in Xcode and let Swift Package Manager resolve its dependencies.
-2. Connect and unlock your iPhone, trust the Mac if prompted, and select it as the run destination.
-3. Press **Run**.
-4. Paste a YouTube URL, choose a model, tap **Create stems**, and keep Atarang open until separation finishes.
+2. Select the **Atarang** target, open **Signing & Capabilities**, and choose your own Apple Developer team. Change the bundle identifier to a unique value associated with your account if Xcode reports that the existing identifier is unavailable.
+3. Connect and unlock your iPhone, trust the Mac if prompted, and select it as the run destination.
+4. Press **Run**.
+5. Paste a YouTube URL, choose a model, tap **Create stems**, and keep Atarang open until separation finishes.
 
-The project uses automatic signing with development team `A8L3M4746U`. The bundled default FP16 model is about 233 MB before Xcode compilation, and processing is compute intensive; recent iPhones will work best. The project pins bundled `yt-dlp` version `2026.07.04` and verifies its SHA-256 checksum before use.
+The checked-in Xcode project contains the original developer's signing team and bundle identifier. Every developer must replace these with their own values before signing or installing the app. Automatic signing can remain enabled. The bundled default FP16 model is about 233 MB before Xcode compilation, and processing is compute intensive; recent iPhones will work best. The project pins bundled `yt-dlp` version `2026.07.04` and verifies its SHA-256 checksum before use.
 
 Only download audio you have permission to use and follow YouTube's terms. This personal sideloaded build is not designed or suitable for App Store distribution.
 
