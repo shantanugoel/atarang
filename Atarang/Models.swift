@@ -82,7 +82,16 @@ struct LocalTrack: Identifiable, Sendable {
     let files: [StemKind: URL]
     let createdAt: Date
     let sourceURL: URL?
+    let sourceOriginalID: UUID?
     let separationModel: SeparationModelKind
+}
+
+struct OriginalMetadata: Codable, Sendable {
+    let id: UUID
+    let title: String
+    let createdAt: Date
+    let sourceURL: URL
+    let audioFilename: String
 }
 
 struct RecordedTake: Identifiable, Sendable {
@@ -101,6 +110,7 @@ struct TrackMetadata: Codable, Sendable {
     let title: String
     let createdAt: Date
     let sourceURL: URL?
+    let sourceOriginalID: UUID?
     let separationModel: SeparationModelKind
     let stems: [StemKind]
 
@@ -109,6 +119,7 @@ struct TrackMetadata: Codable, Sendable {
         title: String,
         createdAt: Date,
         sourceURL: URL?,
+        sourceOriginalID: UUID?,
         separationModel: SeparationModelKind,
         stems: [StemKind]
     ) {
@@ -116,12 +127,13 @@ struct TrackMetadata: Codable, Sendable {
         self.title = title
         self.createdAt = createdAt
         self.sourceURL = sourceURL
+        self.sourceOriginalID = sourceOriginalID
         self.separationModel = separationModel
         self.stems = stems
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, createdAt, sourceURL, separationModel, stems
+        case id, title, createdAt, sourceURL, sourceOriginalID, separationModel, stems
     }
 
     init(from decoder: Decoder) throws {
@@ -130,6 +142,7 @@ struct TrackMetadata: Codable, Sendable {
         title = try values.decode(String.self, forKey: .title)
         createdAt = try values.decode(Date.self, forKey: .createdAt)
         sourceURL = try values.decodeIfPresent(URL.self, forKey: .sourceURL)
+        sourceOriginalID = try values.decodeIfPresent(UUID.self, forKey: .sourceOriginalID)
         separationModel = try values.decodeIfPresent(
             SeparationModelKind.self,
             forKey: .separationModel
@@ -155,6 +168,7 @@ extension Notification.Name {
 }
 
 enum LibraryMetadata {
+    static let originalFilename = "original.json"
     static let trackFilename = "track.json"
     static let recordingFilename = "recording.json"
 

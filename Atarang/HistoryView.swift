@@ -1,5 +1,10 @@
 import SwiftUI
 
+enum LibrarySeparationSource: Sendable {
+    case original(HistoryOriginal)
+    case track(HistoryTrack)
+}
+
 struct HistoryView: View {
     @ObservedObject var store: HistoryStore
     @ObservedObject var audioPlayer: HistoryAudioPlayer
@@ -7,44 +12,49 @@ struct HistoryView: View {
     let openTrack: (HistoryTrack, Bool) -> Void
     let recordTrack: (HistoryTrack) -> Void
     let recordAgain: (HistoryRecording) -> Void
+    let separateSource: (LibrarySeparationSource, SeparationModelKind) -> Void
 
     @State private var query = ""
-    @State private var filter: HistoryFilter = .all
+    @State private var category: LibraryCategory = .separations
+    @State private var expandedItem: LibraryItemID?
     @State private var sharePayload: SharePayload?
-    @State private var deletion: DeletionTarget?
     @State private var editingMix: HistoryRecording?
+    @State private var deletion: DeletionTarget?
+    @State private var separationRequest: SeparationRequest?
 
     var body: some View {
         NavigationStack {
-            Group {
-                if store.tracks.isEmpty && store.recordings.isEmpty {
-                    ContentUnavailableView(
-                        "No history yet",
-                        systemImage: "clock.arrow.circlepath",
-                        description: Text("Separated songs and recorded performances will appear here automatically.")
-                    )
-                } else if filteredTracks.isEmpty && filteredRecordings.isEmpty {
-                    ContentUnavailableView.search(text: query)
-                } else {
-                    historyList
+            VStack(spacing: 0) {
+                Picker("Library category", selection: $category) {
+                    ForEach(LibraryCategory.allCases) { category in
+                        Text(category.title).tag(category)
+                    }
                 }
-            }
-            .navigationTitle("History")
-            .searchable(text: $query, prompt: "Search songs and recordings")
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        Picker("Show", selection: $filter) {
-                            ForEach(HistoryFilter.allCases) { value in
-                                Label(value.title, systemImage: value.icon).tag(value)
-                            }
-                        }
-                    } label: {
-                        Label("Filter", systemImage: filter == .all ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
+                .pickerStyle(.segmented)
+                .padding(.horizontal)
+                .padding(.bottom, 10)
+
+                Group {
+                    if store.originals.isEmpty && store.tracks.isEmpty && store.recordings.isEmpty {
+                        ContentUnavailableView(
+                            "Your library is empty",
+                            systemImage: "music.note.house",
+                            description: Text("Original songs, separations, and performances will appear here.")
+                        )
+                    } else if visibleItemCount == 0 {
+                        emptyCategoryView
+                    } else {
+                        libraryList
                     }
                 }
             }
+            .navigationTitle("Library")
+            .searchable(text: $query, prompt: "Search \(category.searchPrompt)")
             .refreshable { store.refresh() }
+            .onChange(of: category) {
+                expandedItem = nil
+                deletion = nil
+            }
             .sheet(item: $sharePayload) { payload in
                 ActivityView(items: payload.items)
                     .presentationDetents([.medium, .large])
@@ -53,20 +63,13 @@ struct HistoryView: View {
                 RecordingMixEditor(store: store, recording: recording)
                     .presentationDetents([.large])
             }
-            .confirmationDialog(
-                deletion.map { "Delete “\($0.title)” ?" } ?? "Delete item?",
-                isPresented: Binding(
-                    get: { deletion != nil },
-                    set: { if !$0 { deletion = nil } }
-                ),
-                titleVisibility: .visible
-            ) {
-                Button("Delete permanently", role: .destructive) { performDeletion() }
-                Button("Cancel", role: .cancel) { deletion = nil }
-            } message: {
-                Text("This removes the saved audio from this iPhone. This can’t be undone.")
+            .sheet(item: $separationRequest) { request in
+                SeparationChoiceSheet(request: request) { model in
+                    separateSource(request.source, model)
+                }
+                .presentationDetents([.medium])
             }
-            .alert("History problem", isPresented: errorIsPresented) {
+            .alert("Library problem", isPresented: errorIsPresented) {
                 Button("OK") {
                     store.errorMessage = nil
                     audioPlayer.errorMessage = nil
@@ -77,56 +80,30 @@ struct HistoryView: View {
         }
     }
 
-    private var historyList: some View {
+    private var libraryList: some View {
         List {
-            if !filteredTracks.isEmpty {
-                Section("Separated songs") {
+            Section {
+                switch category {
+                case .originals:
+                    ForEach(filteredOriginals) { original in
+                        originalRow(original)
+                    }
+                case .separations:
                     ForEach(filteredTracks) { track in
                         trackRow(track)
-                            .swipeActions(edge: .trailing) {
-                                Button(role: .destructive) { confirmDelete(track) } label: {
-                                    Label("Delete", systemImage: "trash")
-                                }
-                                Button { share(track.files.values.sorted { $0.lastPathComponent < $1.lastPathComponent }) } label: {
-                                    Label("Share", systemImage: "square.and.arrow.up")
-                                }
-                                .tint(.indigo)
-                            }
-                            .contextMenu { trackActions(track) }
                     }
-                }
-            }
-
-            if !filteredRecordings.isEmpty {
-                Section("Performances") {
+                case .performances:
                     ForEach(filteredRecordings) { recording in
                         recordingRow(recording)
-                            .swipeActions(edge: .trailing) {
-                                Button(role: .destructive) { confirmDelete(recording) } label: {
-                                    Label("Delete", systemImage: "trash")
-                                }
-                                if let url = recording.playbackURL {
-                                    Button { share([url]) } label: {
-                                        Label("Share", systemImage: "square.and.arrow.up")
-                                    }
-                                    .tint(.indigo)
-                                }
-                                Button { editMix(recording) } label: {
-                                    Label("Edit Mix", systemImage: "slider.horizontal.3")
-                                }
-                                .tint(.orange)
-                                .disabled(!recording.canEditMix)
-                            }
-                            .contextMenu { recordingActions(recording) }
                     }
                 }
             }
 
             Section {
                 HStack {
-                    Label("Stored on this iPhone", systemImage: "internaldrive")
+                    Label(category.storageLabel, systemImage: "internaldrive")
                     Spacer()
-                    Text(ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file))
+                    Text(ByteCountFormatter.string(fromByteCount: categoryBytes, countStyle: .file))
                 }
                 .font(.footnote)
                 .foregroundStyle(.secondary)
@@ -135,122 +112,409 @@ struct HistoryView: View {
         .listStyle(.insetGrouped)
     }
 
-    private func trackRow(_ track: HistoryTrack) -> some View {
-        HStack(spacing: 13) {
-            historyArtwork(systemImage: "waveform", color: .indigo)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(track.title)
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(2)
-                metadataLine(date: track.createdAt, duration: track.duration, bytes: track.byteCount)
-            }
-            Spacer(minLength: 4)
-            Button { openTrack(track, true) } label: {
-                Image(systemName: "play.fill")
-                    .frame(width: 34, height: 34)
-                    .background(.indigo.opacity(0.12), in: Circle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Play \(track.title)")
+    private var emptyCategoryView: some View {
+        ContentUnavailableView {
+            Label(
+                query.isEmpty ? category.emptyTitle : "No Results",
+                systemImage: query.isEmpty ? category.icon : "magnifyingglass"
+            )
+        } description: {
+            Text(
+                query.isEmpty
+                    ? category.emptyDescription
+                    : "No \(category.searchPrompt) match “\(query)”."
+            )
         }
-        .padding(.vertical, 3)
-        .contentShape(Rectangle())
-        .onTapGesture { openTrack(track, false) }
-        .accessibilityHint("Opens this song in the mixer")
+    }
+
+    private func originalRow(_ original: HistoryOriginal) -> some View {
+        let item = LibraryItemID(kind: .original, id: original.id)
+        return VStack(spacing: 0) {
+            libraryRowHeader(
+                title: original.title,
+                date: original.createdAt,
+                duration: original.duration,
+                bytes: original.byteCount,
+                systemImage: "arrow.down.circle.fill",
+                color: .blue,
+                item: item
+            ) {
+                audioPlayer.toggle(id: original.id, url: original.audioURL)
+            }
+
+            if expandedItem == item {
+                Divider().padding(.top, 5)
+                if deletion?.item == item {
+                    inlineDeletion
+                } else {
+                    HStack(spacing: 3) {
+                        LibraryAction(title: "Play", systemImage: playIcon(for: original.id)) {
+                            audioPlayer.toggle(id: original.id, url: original.audioURL)
+                        }
+                        LibraryAction(title: "Separate", systemImage: "waveform.path.ecg") {
+                            requestSeparation(for: original)
+                        }
+                        LibraryAction(title: "Share", systemImage: "square.and.arrow.up") {
+                            share([original.audioURL])
+                        }
+                        Menu {
+                            Link(destination: original.sourceURL) {
+                                Label("View Source", systemImage: "safari")
+                            }
+                            Button(role: .destructive) {
+                                requestDeletion(
+                                    item: item,
+                                    title: original.title,
+                                    kind: .original
+                                )
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                        } label: {
+                            LibraryActionLabel(title: "More", systemImage: "ellipsis")
+                        }
+                    }
+                    .padding(.top, 5)
+                }
+            }
+        }
+        .animation(.snappy(duration: 0.22), value: expandedItem)
+    }
+
+    private func trackRow(_ track: HistoryTrack) -> some View {
+        let item = LibraryItemID(kind: .track, id: track.id)
+        return VStack(spacing: 0) {
+            libraryRowHeader(
+                title: track.title,
+                subtitle: "\(track.activeStemCount)-stem · \(track.separationModel.title)",
+                date: track.createdAt,
+                duration: track.duration,
+                bytes: track.byteCount,
+                systemImage: "waveform",
+                color: .indigo,
+                item: item
+            ) {
+                openTrack(track, true)
+            }
+
+            if expandedItem == item {
+                Divider().padding(.top, 5)
+                if deletion?.item == item {
+                    inlineDeletion
+                } else {
+                    HStack(spacing: 3) {
+                        LibraryAction(title: "Mixer", systemImage: "slider.horizontal.3") {
+                            openTrack(track, false)
+                        }
+                        LibraryAction(title: "Record", systemImage: "record.circle") {
+                            recordTrack(track)
+                        }
+                        LibraryAction(
+                            title: "Separate",
+                            systemImage: "arrow.triangle.branch",
+                            disabled: !canSeparateAgain(track)
+                        ) {
+                            requestSeparation(for: track)
+                        }
+                        Menu {
+                            Button {
+                                share(track.files.values.sorted {
+                                    $0.lastPathComponent < $1.lastPathComponent
+                                })
+                            } label: {
+                                Label("Share \(track.files.count) Stems", systemImage: "square.and.arrow.up")
+                            }
+                            Button(role: .destructive) {
+                                requestDeletion(
+                                    item: item,
+                                    title: track.title,
+                                    kind: .track
+                                )
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                        } label: {
+                            LibraryActionLabel(title: "More", systemImage: "ellipsis")
+                        }
+                    }
+                    .padding(.top, 5)
+                }
+            }
+        }
+        .animation(.snappy(duration: 0.22), value: expandedItem)
     }
 
     private func recordingRow(_ recording: HistoryRecording) -> some View {
+        let item = LibraryItemID(kind: .recording, id: recording.id)
+        return VStack(spacing: 0) {
+            libraryRowHeader(
+                title: recording.title,
+                date: recording.createdAt,
+                duration: recording.duration,
+                bytes: recording.byteCount,
+                systemImage: "mic.fill",
+                color: .red,
+                item: item,
+                playEnabled: recording.playbackURL != nil
+            ) {
+                if let url = recording.playbackURL {
+                    audioPlayer.toggle(id: recording.id, url: url)
+                }
+            }
+
+            if expandedItem == item {
+                Divider().padding(.top, 5)
+                if deletion?.item == item {
+                    inlineDeletion
+                } else {
+                    HStack(spacing: 3) {
+                        LibraryAction(
+                            title: "Edit Mix",
+                            systemImage: "slider.horizontal.3",
+                            disabled: !recording.canEditMix
+                        ) {
+                            editMix(recording)
+                        }
+                        LibraryAction(
+                            title: "Share",
+                            systemImage: "square.and.arrow.up",
+                            disabled: recording.playbackURL == nil
+                        ) {
+                            if let url = recording.playbackURL { share([url]) }
+                        }
+                        LibraryAction(
+                            title: "Record",
+                            systemImage: "record.circle",
+                            disabled: !canRecordAgain(recording)
+                        ) {
+                            recordAgain(recording)
+                        }
+                        Menu {
+                            Button(role: .destructive) {
+                                requestDeletion(
+                                    item: item,
+                                    title: recording.title,
+                                    kind: .recording
+                                )
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                        } label: {
+                            LibraryActionLabel(title: "More", systemImage: "ellipsis")
+                        }
+                    }
+                    .padding(.top, 5)
+                }
+            }
+        }
+        .animation(.snappy(duration: 0.22), value: expandedItem)
+    }
+
+    private func libraryRowHeader(
+        title: String,
+        subtitle: String? = nil,
+        date: Date,
+        duration: TimeInterval,
+        bytes: Int64,
+        systemImage: String,
+        color: Color,
+        item: LibraryItemID,
+        playEnabled: Bool = true,
+        play: @escaping () -> Void
+    ) -> some View {
         HStack(spacing: 13) {
-            historyArtwork(systemImage: "mic.fill", color: .red)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(recording.title)
+            Image(systemName: systemImage)
+                .font(.title3.weight(.semibold))
+                .frame(width: 46, height: 46)
+                .foregroundStyle(color)
+                .background(color.opacity(0.11), in: RoundedRectangle(cornerRadius: 12))
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
                     .font(.body.weight(.semibold))
                     .lineLimit(2)
-                metadataLine(date: recording.createdAt, duration: recording.duration, bytes: recording.byteCount)
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                metadataLine(date: date, duration: duration, bytes: bytes)
             }
             Spacer(minLength: 4)
-            if let url = recording.playbackURL {
-                Button {
-                    audioPlayer.toggle(id: recording.id, url: url)
-                } label: {
-                    Image(systemName: audioPlayer.playingID == recording.id && audioPlayer.isPlaying ? "pause.fill" : "play.fill")
-                        .frame(width: 34, height: 34)
-                        .background(.red.opacity(0.11), in: Circle())
-                        .foregroundStyle(.red)
-                }
-                .buttonStyle(.plain)
-                .disabled(audioPlaybackDisabled)
-                .accessibilityLabel(audioPlayer.playingID == recording.id && audioPlayer.isPlaying ? "Pause recording" : "Play recording")
-            } else {
-                Image(systemName: "exclamationmark.circle")
-                    .foregroundStyle(.secondary)
-                    .accessibilityLabel("Shareable recording unavailable")
+            Button(action: play) {
+                Image(systemName: playIcon(for: item.id))
+                    .frame(width: 34, height: 34)
+                    .background(color.opacity(0.11), in: Circle())
+                    .foregroundStyle(color)
             }
+            .buttonStyle(.plain)
+            .disabled(audioPlaybackDisabled || !playEnabled)
+            .accessibilityLabel(playIcon(for: item.id) == "pause.fill" ? "Pause" : "Play")
+
+            Image(systemName: expandedItem == item ? "chevron.up" : "chevron.down")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 18)
         }
-        .padding(.vertical, 3)
+        .padding(.vertical, 4)
         .contentShape(Rectangle())
         .onTapGesture {
-            if recording.canEditMix { editMix(recording) }
+            deletion = nil
+            expandedItem = expandedItem == item ? nil : item
         }
-        .accessibilityHint(
-            recording.canEditMix
-                ? "Opens microphone and backing mix controls"
-                : "Original audio is unavailable for editing"
+        .accessibilityHint("Shows actions for this item")
+    }
+
+    private var inlineDeletion: some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Delete “\(deletion?.title ?? "item")”?")
+                    .font(.subheadline.weight(.semibold))
+                Text("This permanently removes its saved audio.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 4)
+            Button("Cancel") { deletion = nil }
+                .buttonStyle(.bordered)
+            Button("Delete", role: .destructive) { performDeletion() }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+        }
+        .padding(.vertical, 10)
+    }
+
+    private var filteredOriginals: [HistoryOriginal] {
+        store.originals.filter { matches($0.title) }
+    }
+
+    private var filteredTracks: [HistoryTrack] {
+        store.tracks.filter { matches($0.title) }
+    }
+
+    private var filteredRecordings: [HistoryRecording] {
+        store.recordings.filter { matches($0.title) }
+    }
+
+    private var visibleItemCount: Int {
+        switch category {
+        case .originals: filteredOriginals.count
+        case .separations: filteredTracks.count
+        case .performances: filteredRecordings.count
+        }
+    }
+
+    private var categoryBytes: Int64 {
+        switch category {
+        case .originals: store.originals.reduce(0) { $0 + $1.byteCount }
+        case .separations: store.tracks.reduce(0) { $0 + $1.byteCount }
+        case .performances: store.recordings.reduce(0) { $0 + $1.byteCount }
+        }
+    }
+
+    private var errorIsPresented: Binding<Bool> {
+        Binding(
+            get: { store.errorMessage != nil || audioPlayer.errorMessage != nil },
+            set: {
+                if !$0 {
+                    store.errorMessage = nil
+                    audioPlayer.errorMessage = nil
+                }
+            }
         )
     }
 
-    @ViewBuilder
-    private func trackActions(_ track: HistoryTrack) -> some View {
-        Button { openTrack(track, true) } label: {
-            Label("Play", systemImage: "play.fill")
+    private func matches(_ title: String) -> Bool {
+        let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return term.isEmpty || title.localizedCaseInsensitiveContains(term)
+    }
+
+    private func share(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        sharePayload = SharePayload(items: urls)
+    }
+
+    private func editMix(_ recording: HistoryRecording) {
+        guard recording.canEditMix else { return }
+        audioPlayer.stop(releaseSession: true)
+        editingMix = recording
+    }
+
+    private func requestSeparation(for original: HistoryOriginal) {
+        audioPlayer.stop(releaseSession: true)
+        separationRequest = SeparationRequest(
+            title: original.title,
+            source: .original(original),
+            initialModel: .htdemucs,
+            requiresDownload: false
+        )
+    }
+
+    private func requestSeparation(for track: HistoryTrack) {
+        let source: LibrarySeparationSource
+        let requiresDownload: Bool
+        if let id = track.sourceOriginalID, let original = store.original(withID: id) {
+            source = .original(original)
+            requiresDownload = false
+        } else {
+            source = .track(track)
+            requiresDownload = true
         }
-        Button { openTrack(track, false) } label: {
-            Label("Open mixer", systemImage: "slider.horizontal.3")
+        separationRequest = SeparationRequest(
+            title: track.title,
+            source: source,
+            initialModel: track.separationModel,
+            requiresDownload: requiresDownload
+        )
+    }
+
+    private func canSeparateAgain(_ track: HistoryTrack) -> Bool {
+        if let id = track.sourceOriginalID, store.original(withID: id) != nil {
+            return true
         }
-        Button { recordTrack(track) } label: {
-            Label("Record again", systemImage: "record.circle")
-        }
-        Button { share(track.files.values.sorted { $0.lastPathComponent < $1.lastPathComponent }) } label: {
-            Label("Share \(track.files.count) stems", systemImage: "square.and.arrow.up")
-        }
-        Divider()
-        Button(role: .destructive) { confirmDelete(track) } label: {
-            Label("Delete", systemImage: "trash")
+        return track.sourceURL != nil
+    }
+
+    private func canRecordAgain(_ recording: HistoryRecording) -> Bool {
+        guard let id = recording.sourceTrackID else { return false }
+        return store.track(withID: id) != nil
+    }
+
+    private func requestDeletion(
+        item: LibraryItemID,
+        title: String,
+        kind: DeletionTarget.Kind
+    ) {
+        expandedItem = item
+        withAnimation(.snappy(duration: 0.2)) {
+            deletion = DeletionTarget(item: item, title: title, kind: kind)
         }
     }
 
-    @ViewBuilder
-    private func recordingActions(_ recording: HistoryRecording) -> some View {
-        Button { editMix(recording) } label: {
-            Label("Edit Mix", systemImage: "slider.horizontal.3")
-        }
-        .disabled(!recording.canEditMix)
-        if let url = recording.playbackURL {
-            Button { audioPlayer.toggle(id: recording.id, url: url) } label: {
-                Label("Play", systemImage: "play.fill")
+    private func performDeletion() {
+        guard let deletion else { return }
+        switch deletion.kind {
+        case .original:
+            if let original = store.originals.first(where: { $0.id == deletion.item.id }) {
+                if audioPlayer.playingID == original.id { audioPlayer.stop() }
+                store.delete(original: original)
             }
-            .disabled(audioPlaybackDisabled)
-            Button { share([url]) } label: {
-                Label("Share", systemImage: "square.and.arrow.up")
+        case .track:
+            if let track = store.track(withID: deletion.item.id) {
+                store.delete(track: track)
+            }
+        case .recording:
+            if let recording = store.recordings.first(where: { $0.id == deletion.item.id }) {
+                if audioPlayer.playingID == recording.id { audioPlayer.stop() }
+                store.delete(recording: recording)
             }
         }
-        Button { recordAgain(recording) } label: {
-            Label("Record again", systemImage: "record.circle")
-        }
-        .disabled(recording.sourceTrackID == nil || store.track(withID: recording.sourceTrackID ?? UUID()) == nil)
-        Divider()
-        Button(role: .destructive) { confirmDelete(recording) } label: {
-            Label("Delete", systemImage: "trash")
-        }
+        self.deletion = nil
+        expandedItem = nil
     }
 
-    private func historyArtwork(systemImage: String, color: Color) -> some View {
-        Image(systemName: systemImage)
-            .font(.title3.weight(.semibold))
-            .frame(width: 46, height: 46)
-            .foregroundStyle(color)
-            .background(color.opacity(0.11), in: RoundedRectangle(cornerRadius: 12))
+    private func playIcon(for id: UUID) -> String {
+        audioPlayer.playingID == id && audioPlayer.isPlaying ? "pause.fill" : "play.fill"
     }
 
     private func metadataLine(date: Date, duration: TimeInterval, bytes: Int64) -> some View {
@@ -266,90 +530,19 @@ struct HistoryView: View {
         .lineLimit(1)
     }
 
-    private var filteredTracks: [HistoryTrack] {
-        guard filter != .recordings else { return [] }
-        return store.tracks.filter { matches($0.title, type: "separated song stems") }
-    }
-
-    private var filteredRecordings: [HistoryRecording] {
-        guard filter != .tracks else { return [] }
-        return store.recordings.filter { matches($0.title, type: "recorded performance") }
-    }
-
-    private func matches(_ title: String, type: String) -> Bool {
-        let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        return term.isEmpty || title.localizedCaseInsensitiveContains(term) || type.localizedCaseInsensitiveContains(term)
-    }
-
-    private var totalBytes: Int64 {
-        store.tracks.reduce(0) { $0 + $1.byteCount } + store.recordings.reduce(0) { $0 + $1.byteCount }
-    }
-
-    private var errorIsPresented: Binding<Bool> {
-        Binding(
-            get: { store.errorMessage != nil || audioPlayer.errorMessage != nil },
-            set: {
-                if !$0 {
-                    store.errorMessage = nil
-                    audioPlayer.errorMessage = nil
-                }
-            }
-        )
-    }
-
-    private func share(_ urls: [URL]) {
-        guard !urls.isEmpty else { return }
-        sharePayload = SharePayload(items: urls)
-    }
-
-    private func editMix(_ recording: HistoryRecording) {
-        guard recording.canEditMix else { return }
-        audioPlayer.stop(releaseSession: true)
-        editingMix = recording
-    }
-
-    /// A deliberately low-frequency age label. Unlike `Text(date, style:
-    /// .relative)`, this doesn't install a timer that updates while the user is
-    /// browsing their library.
     private func roughAge(_ date: Date) -> String {
         let age = max(0, Date().timeIntervalSince(date))
-        switch age {
-        case ..<3_600:
-            return "Now"
+        return switch age {
+        case ..<3_600: "Now"
         case ..<86_400:
-            let hours = max(1, Int(age / 3_600))
-            return "\(hours) \(hours == 1 ? "hour" : "hours") ago"
+            "\(max(1, Int(age / 3_600)))h ago"
         case ..<604_800:
-            let days = max(1, Int(age / 86_400))
-            return "\(days) \(days == 1 ? "day" : "days") ago"
+            "\(max(1, Int(age / 86_400)))d ago"
         case ..<2_592_000:
-            let weeks = max(1, Int(age / 604_800))
-            return "\(weeks) \(weeks == 1 ? "week" : "weeks") ago"
+            "\(max(1, Int(age / 604_800)))w ago"
         default:
-            return date.formatted(.dateTime.month(.abbreviated).day().year())
+            date.formatted(.dateTime.month(.abbreviated).day().year())
         }
-    }
-
-    private func confirmDelete(_ track: HistoryTrack) {
-        deletion = DeletionTarget(id: track.id, title: track.title, kind: .track)
-    }
-
-    private func confirmDelete(_ recording: HistoryRecording) {
-        deletion = DeletionTarget(id: recording.id, title: recording.title, kind: .recording)
-    }
-
-    private func performDeletion() {
-        guard let deletion else { return }
-        switch deletion.kind {
-        case .track:
-            if let track = store.track(withID: deletion.id) { store.delete(track: track) }
-        case .recording:
-            if let recording = store.recordings.first(where: { $0.id == deletion.id }) {
-                if audioPlayer.playingID == recording.id { audioPlayer.stop() }
-                store.delete(recording: recording)
-            }
-        }
-        self.deletion = nil
     }
 
     private func time(_ seconds: TimeInterval) -> String {
@@ -358,28 +551,181 @@ struct HistoryView: View {
     }
 }
 
-private enum HistoryFilter: String, CaseIterable, Identifiable {
-    case all, tracks, recordings
+private enum LibraryCategory: String, CaseIterable, Identifiable {
+    case originals, separations, performances
     var id: String { rawValue }
+
     var title: String {
         switch self {
-        case .all: "Everything"
-        case .tracks: "Separated songs"
-        case .recordings: "Performances"
+        case .originals: "Originals"
+        case .separations: "Separated"
+        case .performances: "Performances"
         }
     }
+
     var icon: String {
         switch self {
-        case .all: "square.grid.2x2"
-        case .tracks: "waveform"
-        case .recordings: "mic.fill"
+        case .originals: "arrow.down.circle"
+        case .separations: "waveform"
+        case .performances: "mic.fill"
+        }
+    }
+
+    var searchPrompt: String {
+        switch self {
+        case .originals: "original songs"
+        case .separations: "separated songs"
+        case .performances: "performances"
+        }
+    }
+
+    var storageLabel: String {
+        switch self {
+        case .originals: "Originals on this iPhone"
+        case .separations: "Separations on this iPhone"
+        case .performances: "Performances on this iPhone"
+        }
+    }
+
+    var emptyTitle: String {
+        switch self {
+        case .originals: "No Originals"
+        case .separations: "No Separations"
+        case .performances: "No Performances"
+        }
+    }
+
+    var emptyDescription: String {
+        switch self {
+        case .originals:
+            "Songs downloaded for separation will stay here for quick reuse."
+        case .separations:
+            "Separate an original song to create playable stems."
+        case .performances:
+            "Your recorded performances will appear here."
         }
     }
 }
 
-private struct DeletionTarget {
-    enum Kind { case track, recording }
+private struct LibraryItemID: Equatable {
+    enum Kind { case original, track, recording }
+    let kind: Kind
     let id: UUID
+}
+
+private struct DeletionTarget {
+    enum Kind { case original, track, recording }
+    let item: LibraryItemID
     let title: String
     let kind: Kind
+}
+
+private struct SeparationRequest: Identifiable {
+    let id = UUID()
+    let title: String
+    let source: LibrarySeparationSource
+    let initialModel: SeparationModelKind
+    let requiresDownload: Bool
+}
+
+private struct SeparationChoiceSheet: View {
+    let request: SeparationRequest
+    let onSeparate: (SeparationModelKind) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var model: SeparationModelKind
+
+    init(
+        request: SeparationRequest,
+        onSeparate: @escaping (SeparationModelKind) -> Void
+    ) {
+        self.request = request
+        self.onSeparate = onSeparate
+        _model = State(initialValue: request.initialModel)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Picker("Algorithm", selection: $model) {
+                        ForEach(SeparationModelKind.allCases) { model in
+                            Text(model.title).tag(model)
+                        }
+                    }
+                    Text(model.detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(model.stemSummary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } footer: {
+                    if request.requiresDownload {
+                        Text("The saved original is unavailable, so Atarang will download it again.")
+                    } else {
+                        Text("Uses the saved original—no download needed.")
+                    }
+                }
+
+                Section {
+                    Button {
+                        dismiss()
+                        onSeparate(model)
+                    } label: {
+                        Label(
+                            "Create \(model.stems.count)-Stem Separation",
+                            systemImage: "waveform.path.ecg"
+                        )
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .listRowBackground(Color.clear)
+                }
+            }
+            .navigationTitle("Separate Again")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+private struct LibraryAction: View {
+    let title: String
+    let systemImage: String
+    var disabled = false
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            LibraryActionLabel(title: title, systemImage: systemImage)
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .opacity(disabled ? 0.35 : 1)
+    }
+}
+
+private struct LibraryActionLabel: View {
+    let title: String
+    let systemImage: String
+
+    var body: some View {
+        VStack(spacing: 4) {
+            Image(systemName: systemImage)
+                .font(.body.weight(.semibold))
+            Text(title)
+                .font(.caption2)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, minHeight: 48)
+        .contentShape(Rectangle())
+    }
+}
+
+private extension HistoryTrack {
+    var activeStemCount: Int { files.count }
 }

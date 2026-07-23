@@ -2,11 +2,23 @@ import AVFoundation
 import Combine
 import Foundation
 
+struct HistoryOriginal: Identifiable, Sendable {
+    let id: UUID
+    let title: String
+    let createdAt: Date
+    let sourceURL: URL
+    let folderURL: URL
+    let audioURL: URL
+    let duration: TimeInterval
+    let byteCount: Int64
+}
+
 struct HistoryTrack: Identifiable, Sendable {
     let id: UUID
     let title: String
     let createdAt: Date
     let sourceURL: URL?
+    let sourceOriginalID: UUID?
     let separationModel: SeparationModelKind
     let folderURL: URL
     let files: [StemKind: URL]
@@ -20,6 +32,7 @@ struct HistoryTrack: Identifiable, Sendable {
             files: files,
             createdAt: createdAt,
             sourceURL: sourceURL,
+            sourceOriginalID: sourceOriginalID,
             separationModel: separationModel
         )
     }
@@ -46,6 +59,7 @@ struct HistoryRecording: Identifiable, Sendable {
 
 @MainActor
 final class HistoryStore: ObservableObject {
+    @Published private(set) var originals: [HistoryOriginal] = []
     @Published private(set) var tracks: [HistoryTrack] = []
     @Published private(set) var recordings: [HistoryRecording] = []
     @Published var errorMessage: String?
@@ -54,6 +68,7 @@ final class HistoryStore: ObservableObject {
 
     func refresh() {
         do {
+            originals = try discoverOriginals().sorted { $0.createdAt > $1.createdAt }
             tracks = try discoverTracks().sorted { $0.createdAt > $1.createdAt }
             recordings = try discoverRecordings().sorted { $0.createdAt > $1.createdAt }
         } catch {
@@ -63,6 +78,14 @@ final class HistoryStore: ObservableObject {
 
     func track(withID id: UUID) -> HistoryTrack? {
         tracks.first { $0.id == id }
+    }
+
+    func original(withID id: UUID) -> HistoryOriginal? {
+        originals.first { $0.id == id }
+    }
+
+    func delete(original: HistoryOriginal) {
+        delete(folder: original.folderURL)
     }
 
     func delete(track: HistoryTrack) {
@@ -183,10 +206,34 @@ final class HistoryStore: ObservableObject {
                 title: metadata?.title ?? "Separated track",
                 createdAt: metadata?.createdAt ?? fallbackDate,
                 sourceURL: metadata?.sourceURL,
+                sourceOriginalID: metadata?.sourceOriginalID,
                 separationModel: separationModel,
                 folderURL: folder,
                 files: files,
                 duration: audioDuration(at: files[.vocals] ?? files.values.first),
+                byteCount: folderSize(folder)
+            )
+        }
+    }
+
+    private func discoverOriginals() throws -> [HistoryOriginal] {
+        let root = try libraryRoot(named: "Originals", create: true)
+        return try folders(in: root).compactMap { folder in
+            let metadataURL = folder.appendingPathComponent(LibraryMetadata.originalFilename)
+            guard let metadata = try? LibraryMetadata.read(
+                OriginalMetadata.self,
+                from: metadataURL
+            ) else { return nil }
+            let audioURL = folder.appendingPathComponent(metadata.audioFilename)
+            guard FileManager.default.fileExists(atPath: audioURL.path) else { return nil }
+            return HistoryOriginal(
+                id: metadata.id,
+                title: metadata.title,
+                createdAt: metadata.createdAt,
+                sourceURL: metadata.sourceURL,
+                folderURL: folder,
+                audioURL: audioURL,
+                duration: audioDuration(at: audioURL),
                 byteCount: folderSize(folder)
             )
         }

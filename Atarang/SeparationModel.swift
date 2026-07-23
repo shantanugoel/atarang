@@ -25,72 +25,133 @@ final class SeparationModel: ObservableObject {
         defer { isWorking = false }
 
         do {
-            statusText = separationModel == .htdemucs
-                ? "Loading \(separationModel.title)…"
-                : "Preparing \(separationModel.title)…"
-            let artifact = try await ModelAssetStore.shared.artifact(for: separationModel) { [weak self] status, value in
-                self?.statusText = status
-                self?.progress = value
-            }
-            statusText = "Preparing bundled yt-dlp…"
-            try BundledYTDLP.install()
-            progress = 0.09
-            logger.info("Starting extraction for \(url.absoluteString, privacy: .public) with bundled yt-dlp \(BundledYTDLP.version, privacy: .public)")
+            let original: SavedOriginal
+            if let existing = try savedOriginal(for: url) {
+                original = existing
+                statusText = "Using saved original…"
+                progress = 0.17
+            } else {
+                statusText = "Preparing bundled yt-dlp…"
+                try BundledYTDLP.install()
+                progress = 0.09
+                logger.info("Starting extraction for \(url.absoluteString, privacy: .public) with bundled yt-dlp \(BundledYTDLP.version, privacy: .public)")
 
-            let slowNotice = Task { @MainActor [weak self] in
-                try? await Task.sleep(for: .seconds(20))
-                guard !Task.isCancelled else { return }
-                self?.statusText = "YouTube is taking longer than expected…"
-            }
-            defer { slowNotice.cancel() }
-            let downloaded = try await downloadAudio(from: url)
-            slowNotice.cancel()
-            logger.info("Audio download complete: \(downloaded.url.lastPathComponent, privacy: .public)")
-            statusText = "Loading on-device \(separationModel.title)…"
-            progress = 0.18
-            let separator = try StemSeparator(modelKind: separationModel, artifact: artifact)
-            let output = try outputFolder()
-            let files = try await separator.separate(fileURL: downloaded.url, outputFolder: output.folder) { value in
-                Task { @MainActor [weak self] in
-                    self?.statusText = "Separating \(separationModel.stems.count) stems on this iPhone…"
-                    self?.progress = 0.2 + value * 0.78
+                let slowNotice = Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .seconds(20))
+                    guard !Task.isCancelled else { return }
+                    self?.statusText = "YouTube is taking longer than expected…"
                 }
-            }
-            try? FileManager.default.removeItem(at: downloaded.url.deletingLastPathComponent())
-            progress = 1
-            statusText = "Ready to play"
-            let createdAt = Date()
-            let metadata = TrackMetadata(
-                id: output.id,
-                title: downloaded.title,
-                createdAt: createdAt,
-                sourceURL: url,
-                separationModel: separationModel,
-                stems: separationModel.stems
-            )
-            do {
-                try LibraryMetadata.write(
-                    metadata,
-                    to: output.folder.appendingPathComponent(LibraryMetadata.trackFilename)
+                defer { slowNotice.cancel() }
+                let downloaded = try await downloadAudio(from: url)
+                slowNotice.cancel()
+                original = try persistOriginal(
+                    downloadedURL: downloaded.url,
+                    title: downloaded.title,
+                    sourceURL: url
                 )
-            } catch {
-                logger.error("Could not save track metadata: \(error.localizedDescription, privacy: .public)")
+                try? FileManager.default.removeItem(
+                    at: downloaded.url.deletingLastPathComponent()
+                )
+                NotificationCenter.default.post(name: .atarangLibraryDidChange, object: nil)
+                logger.info("Audio saved to Originals")
             }
-            NotificationCenter.default.post(name: .atarangLibraryDidChange, object: nil)
-            logger.info("Separation completed successfully")
-            return LocalTrack(
-                id: output.id,
-                title: downloaded.title,
-                files: files,
-                createdAt: createdAt,
-                sourceURL: url,
-                separationModel: separationModel
+            return try await separate(original: original, using: separationModel)
+        } catch {
+            logger.error("Separation failed: \(error.localizedDescription, privacy: .public)")
+            errorMessage = friendlyMessage(for: error)
+            return nil
+        }
+    }
+
+    func separate(
+        original: HistoryOriginal,
+        using separationModel: SeparationModelKind
+    ) async -> LocalTrack? {
+        isWorking = true
+        selectedModel = separationModel
+        progress = 0.17
+        statusText = "Using saved original…"
+        defer { isWorking = false }
+        do {
+            return try await separate(
+                original: SavedOriginal(
+                    id: original.id,
+                    title: original.title,
+                    sourceURL: original.sourceURL,
+                    audioURL: original.audioURL
+                ),
+                using: separationModel
             )
         } catch {
             logger.error("Separation failed: \(error.localizedDescription, privacy: .public)")
             errorMessage = friendlyMessage(for: error)
             return nil
         }
+    }
+
+    private func separate(
+        original: SavedOriginal,
+        using separationModel: SeparationModelKind
+    ) async throws -> LocalTrack {
+        statusText = separationModel == .htdemucs
+            ? "Loading \(separationModel.title)…"
+            : "Preparing \(separationModel.title)…"
+        let artifact = try await ModelAssetStore.shared.artifact(
+            for: separationModel
+        ) { [weak self] status, value in
+            self?.statusText = status
+            self?.progress = value
+        }
+        statusText = "Loading on-device \(separationModel.title)…"
+        progress = 0.18
+        let separator = try StemSeparator(
+            modelKind: separationModel,
+            artifact: artifact
+        )
+        let output = try outputFolder()
+        let files: [StemKind: URL]
+        do {
+            files = try await separator.separate(
+                fileURL: original.audioURL,
+                outputFolder: output.folder
+            ) { value in
+                Task { @MainActor [weak self] in
+                    self?.statusText = "Separating \(separationModel.stems.count) stems on this iPhone…"
+                    self?.progress = 0.2 + value * 0.78
+                }
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: output.folder)
+            throw error
+        }
+
+        progress = 1
+        statusText = "Ready to mix"
+        let createdAt = Date()
+        let metadata = TrackMetadata(
+            id: output.id,
+            title: original.title,
+            createdAt: createdAt,
+            sourceURL: original.sourceURL,
+            sourceOriginalID: original.id,
+            separationModel: separationModel,
+            stems: separationModel.stems
+        )
+        try LibraryMetadata.write(
+            metadata,
+            to: output.folder.appendingPathComponent(LibraryMetadata.trackFilename)
+        )
+        NotificationCenter.default.post(name: .atarangLibraryDidChange, object: nil)
+        logger.info("Separation completed successfully")
+        return LocalTrack(
+            id: output.id,
+            title: original.title,
+            files: files,
+            createdAt: createdAt,
+            sourceURL: original.sourceURL,
+            sourceOriginalID: original.id,
+            separationModel: separationModel
+        )
     }
 
     private func downloadAudio(from url: URL) async throws -> (url: URL, title: String) {
@@ -161,6 +222,82 @@ final class SeparationModel: ObservableObject {
         return (id, folder)
     }
 
+    private func persistOriginal(
+        downloadedURL: URL,
+        title: String,
+        sourceURL: URL
+    ) throws -> SavedOriginal {
+        let root = try libraryRoot(named: "Originals")
+        let id = UUID()
+        let folder = root.appendingPathComponent(id.uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: folder,
+            withIntermediateDirectories: true
+        )
+        let audioURL = folder.appendingPathComponent("source.m4a")
+        do {
+            try FileManager.default.moveItem(at: downloadedURL, to: audioURL)
+            try LibraryMetadata.write(
+                OriginalMetadata(
+                    id: id,
+                    title: title,
+                    createdAt: Date(),
+                    sourceURL: sourceURL,
+                    audioFilename: audioURL.lastPathComponent
+                ),
+                to: folder.appendingPathComponent(LibraryMetadata.originalFilename)
+            )
+        } catch {
+            try? FileManager.default.removeItem(at: folder)
+            throw error
+        }
+        return SavedOriginal(
+            id: id,
+            title: title,
+            sourceURL: sourceURL,
+            audioURL: audioURL
+        )
+    }
+
+    private func savedOriginal(for sourceURL: URL) throws -> SavedOriginal? {
+        let root = try libraryRoot(named: "Originals")
+        let folders = try FileManager.default.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )
+        for folder in folders {
+            let metadataURL = folder.appendingPathComponent(LibraryMetadata.originalFilename)
+            guard let metadata = try? LibraryMetadata.read(
+                OriginalMetadata.self,
+                from: metadataURL
+            ), metadata.sourceURL == sourceURL else { continue }
+            let audioURL = folder.appendingPathComponent(metadata.audioFilename)
+            guard FileManager.default.fileExists(atPath: audioURL.path) else { continue }
+            return SavedOriginal(
+                id: metadata.id,
+                title: metadata.title,
+                sourceURL: metadata.sourceURL,
+                audioURL: audioURL
+            )
+        }
+        return nil
+    }
+
+    private func libraryRoot(named name: String) throws -> URL {
+        let root = try FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        ).appendingPathComponent(name, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: true
+        )
+        return root
+    }
+
     private func isYouTubeURL(_ url: URL) -> Bool {
         guard let host = url.host?.lowercased() else { return false }
         return host == "youtu.be" || host == "youtube.com" || host.hasSuffix(".youtube.com")
@@ -172,6 +309,13 @@ final class SeparationModel: ObservableObject {
         }
         return error.localizedDescription
     }
+}
+
+private struct SavedOriginal: Sendable {
+    let id: UUID
+    let title: String
+    let sourceURL: URL
+    let audioURL: URL
 }
 
 private struct YTDLPSelection: Decodable, @unchecked Sendable {

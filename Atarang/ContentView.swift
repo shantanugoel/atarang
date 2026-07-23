@@ -8,7 +8,7 @@ struct ContentView: View {
     @State private var youtubeURL: String
     @State private var didRunDebugURL = false
     @State private var sharePayload: SharePayload?
-    @State private var selectedTab = AppTab.mixer
+    @State private var selectedTab = AppTab.studio
     private let debugURL: String?
 
     init() {
@@ -54,8 +54,8 @@ struct ContentView: View {
                         .presentationDetents([.medium, .large])
                 }
             }
-            .tabItem { Label("Play", systemImage: "waveform.badge.mic") }
-            .tag(AppTab.mixer)
+            .tabItem { Label("Studio", systemImage: "slider.horizontal.3") }
+            .tag(AppTab.studio)
 
             HistoryView(
                 store: history,
@@ -63,9 +63,10 @@ struct ContentView: View {
                 audioPlaybackDisabled: player.isRecording,
                 openTrack: openHistoryTrack,
                 recordTrack: startRecording,
-                recordAgain: recordAgain
+                recordAgain: recordAgain,
+                separateSource: separateLibrarySource
             )
-            .tabItem { Label("History", systemImage: "clock.arrow.circlepath") }
+            .tabItem { Label("Library", systemImage: "music.note.house") }
             .tag(AppTab.history)
         }
         .tint(.indigo)
@@ -75,7 +76,7 @@ struct ContentView: View {
         .onChange(of: selectedTab) { _, tab in
             if tab == .history, !player.isRecording {
                 player.suspend()
-            } else if tab == .mixer {
+            } else if tab == .studio {
                 historyAudioPlayer.stop()
             }
         }
@@ -91,11 +92,11 @@ struct ContentView: View {
         historyAudioPlayer.stop(releaseSession: true)
         do {
             try player.load(track: track.localTrack)
-            selectedTab = .mixer
+            selectedTab = .studio
             if autoplay { try player.play() }
         } catch {
             player.alertMessage = error.localizedDescription
-            selectedTab = .mixer
+            selectedTab = .studio
         }
     }
 
@@ -114,11 +115,43 @@ struct ContentView: View {
         historyAudioPlayer.stop(releaseSession: true)
         do {
             try player.load(track: track.localTrack)
-            selectedTab = .mixer
+            selectedTab = .studio
             Task { await player.toggleRecording() }
         } catch {
             player.alertMessage = error.localizedDescription
-            selectedTab = .mixer
+            selectedTab = .studio
+        }
+    }
+
+    @MainActor
+    private func separateLibrarySource(
+        _ source: LibrarySeparationSource,
+        using separationModel: SeparationModelKind
+    ) {
+        historyAudioPlayer.stop(releaseSession: true)
+        model.selectedModel = separationModel
+        selectedTab = .studio
+        Task { @MainActor in
+            let track: LocalTrack?
+            switch source {
+            case .original(let original):
+                track = await model.separate(
+                    original: original,
+                    using: separationModel
+                )
+            case .track(let historyTrack):
+                guard let sourceURL = historyTrack.sourceURL else {
+                    model.errorMessage = "The original source is unavailable for this separation."
+                    return
+                }
+                track = await model.separate(youtubeURL: sourceURL.absoluteString)
+            }
+            guard let track else { return }
+            do {
+                try player.load(track: track)
+            } catch {
+                model.errorMessage = error.localizedDescription
+            }
         }
     }
 
@@ -436,7 +469,7 @@ struct ContentView: View {
 }
 
 private enum AppTab {
-    case mixer, history
+    case studio, history
 }
 
 private struct StemRow: View {
