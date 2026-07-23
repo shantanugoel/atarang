@@ -1,7 +1,7 @@
 import Foundation
 
 struct PlaybackLoopRange: Codable, Equatable, Sendable {
-    static let minimumDuration: TimeInterval = 0.1
+    static let minimumDuration: TimeInterval = 0.5
 
     let start: TimeInterval
     let end: TimeInterval

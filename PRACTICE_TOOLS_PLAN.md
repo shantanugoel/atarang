@@ -80,62 +80,62 @@ without requiring automatic music analysis.
 
 ### 1. Studio workspace
 
-- [ ] Add a `Mix | Practice` selector when a track is loaded.
-- [ ] Preserve playback and scroll-independent player state when switching.
-- [ ] Keep the compact transport accessible in both views.
-- [ ] Rename **Recording Mix** to **Recorded Take Levels** or another label that
+- [x] Add a `Mix | Practice` selector when a track is loaded.
+- [x] Preserve playback and scroll-independent player state when switching.
+- [x] Keep the compact transport accessible in both views.
+- [x] Rename **Recording Mix** to **Recorded Take Levels** or another label that
       clearly distinguishes it from the live stem mix.
 
 ### 2. A–B looping
 
-- [ ] Let the user set A and B at the current playhead.
-- [ ] Show A and B clearly on the timeline.
-- [ ] Let the user drag both boundaries.
-- [ ] Provide fine adjustments for each boundary.
-- [ ] Validate that `0 ≤ A < B ≤ duration` and enforce a useful minimum range.
-- [ ] Provide a one-tap way to enable, disable, and clear the loop.
-- [ ] Continue looping until explicitly stopped when not recording.
+- [x] Let the user set A and B at the current playhead.
+- [x] Show A and B clearly on the timeline.
+- [x] Let the user drag both boundaries.
+- [x] Provide fine adjustments for each boundary.
+- [x] Validate that `0 ≤ A < B ≤ duration` and enforce a useful minimum range.
+- [x] Provide a one-tap way to enable, disable, and clear the loop.
+- [x] Continue looping until explicitly stopped when not recording.
 
 ### 3. Essential transport controls
 
-- [ ] Add a prominent **Back 5 seconds** action.
-- [ ] Add pitch-preserving speed control.
-- [ ] Start with a conservative supported range, such as 50–100%.
-- [ ] Provide quick choices for common speeds such as 50%, 75%, 90%, and 100%.
-- [ ] Add a configurable count-in before song or loop playback.
-- [ ] Do not include the count-in in a saved recording.
+- [x] Add a prominent **Back 5 seconds** action.
+- [x] Add pitch-preserving speed control.
+- [x] Start with a conservative supported range, such as 50–100%.
+- [x] Provide quick choices for common speeds such as 50%, 75%, 90%, and 100%.
+- [x] Add a configurable count-in before song or loop playback.
+- [x] Do not include the count-in in a saved recording.
 
 ### 4. Practice target and mix presets
 
-- [ ] Let the user select an available practice target: vocals, guitar, bass,
+- [x] Let the user select an available practice target: vocals, guitar, bass,
       drums, piano, or another available stem.
-- [ ] Add **Learn**: emphasize or solo the target.
-- [ ] Add **Guide**: keep a quieter target with the backing.
-- [ ] Add **Play Along**: mute the target.
-- [ ] Retain manual stem controls after applying a preset.
-- [ ] Replace or subsume the current vocal-only presets without losing their
+- [x] Add **Learn**: emphasize or solo the target.
+- [x] Add **Guide**: keep a quieter target with the backing.
+- [x] Add **Play Along**: mute the target.
+- [x] Retain manual stem controls after applying a preset.
+- [x] Replace or subsume the current vocal-only presets without losing their
       functionality.
-- [ ] Do not offer a dedicated target that the selected separation does not
+- [x] Do not offer a dedicated target that the selected separation does not
       produce.
 
 ### 5. Per-song persistence
 
-- [ ] Save selected workspace, practice target, preset/mix, loop range, speed,
+- [x] Save selected workspace, practice target, preset/mix, loop range, speed,
       count-in preference, and last position per song.
-- [ ] Restore saved state safely when a song is reopened from Library.
-- [ ] Provide a **Reset Practice Settings** action.
-- [ ] Version persisted settings so future schema changes can migrate or reset
+- [x] Restore saved state safely when a song is reopened from Library.
+- [x] Provide a **Reset Practice Settings** action.
+- [x] Version persisted settings so future schema changes can migrate or reset
       cleanly.
 
 ### Phase 1 acceptance criteria
 
-- [ ] A user can isolate a phrase, slow it down, hear a count-in, and repeat it
+- [x] A user can isolate a phrase, slow it down, hear a count-in, and repeat it
       without navigating away from the song.
-- [ ] A user can switch from learning a part to playing in place of it with one
+- [x] A user can switch from learning a part to playing in place of it with one
       action.
-- [ ] Closing and reopening the song restores the useful practice context.
-- [ ] All Phase 1 controls are usable without precise timeline scrubbing.
-- [ ] Existing recordings created outside a loop behave as before.
+- [x] Closing and reopening the song restores the useful practice context.
+- [x] All Phase 1 controls are usable without precise timeline scrubbing.
+- [x] Existing recordings created outside a loop behave as before.
 
 ## Phase 2 — Structured practice and performance
 

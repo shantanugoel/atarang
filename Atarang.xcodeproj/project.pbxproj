@@ -12,25 +12,42 @@
 		A700002130114B6900D02A9B /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = A700002330114B6900D02A9B /* ZIPFoundation */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		A800002030114B6900D02A9B /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = F420221030114B6900D02A9B /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = F420221730114B6900D02A9B;
+			remoteInfo = Atarang;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
-		F420221830114B6900D02A9B /* Atarang.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Atarang.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A800001830114B6900D02A9B /* AtarangTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AtarangTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		F420221830114B6900D02A9B /* Atarang.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Atarang.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		F420221A30114B6900D02A9B /* Atarang */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = Atarang;
-			sourceTree = "<group>";
-		};
 		A800001A30114B6900D02A9B /* AtarangTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = AtarangTests;
 			sourceTree = "<group>";
 		};
+		F420221A30114B6900D02A9B /* Atarang */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Atarang;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		A800001530114B6900D02A9B /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		F420221530114B6900D02A9B /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -41,24 +58,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		A800001530114B6900D02A9B /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 /* End PBXFrameworksBuildPhase section */
-
-/* Begin PBXContainerItemProxy section */
-		A800002030114B6900D02A9B /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = F420221030114B6900D02A9B /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = F420221730114B6900D02A9B;
-			remoteInfo = Atarang;
-		};
-/* End PBXContainerItemProxy section */
 
 /* Begin PBXGroup section */
 		F420220F30114B6900D02A9B = {
@@ -82,6 +82,29 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		A800001730114B6900D02A9B /* AtarangTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A800002330114B6900D02A9B /* Build configuration list for PBXNativeTarget "AtarangTests" */;
+			buildPhases = (
+				A800001430114B6900D02A9B /* Sources */,
+				A800001530114B6900D02A9B /* Frameworks */,
+				A800001630114B6900D02A9B /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A800002130114B6900D02A9B /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				A800001A30114B6900D02A9B /* AtarangTests */,
+			);
+			name = AtarangTests;
+			packageProductDependencies = (
+			);
+			productName = AtarangTests;
+			productReference = A800001830114B6900D02A9B /* AtarangTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 		F420221730114B6900D02A9B /* Atarang */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = F420222330114B6A00D02A9B /* Build configuration list for PBXNativeTarget "Atarang" */;
@@ -107,29 +130,6 @@
 			productReference = F420221830114B6900D02A9B /* Atarang.app */;
 			productType = "com.apple.product-type.application";
 		};
-		A800001730114B6900D02A9B /* AtarangTests */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = A800002330114B6900D02A9B /* Build configuration list for PBXNativeTarget "AtarangTests" */;
-			buildPhases = (
-				A800001430114B6900D02A9B /* Sources */,
-				A800001530114B6900D02A9B /* Frameworks */,
-				A800001630114B6900D02A9B /* Resources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-				A800002130114B6900D02A9B /* PBXTargetDependency */,
-			);
-			fileSystemSynchronizedGroups = (
-				A800001A30114B6900D02A9B /* AtarangTests */,
-			);
-			name = AtarangTests;
-			packageProductDependencies = (
-			);
-			productName = AtarangTests;
-			productReference = A800001830114B6900D02A9B /* AtarangTests.xctest */;
-			productType = "com.apple.product-type.bundle.unit-test";
-		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -140,12 +140,12 @@
 				LastSwiftUpdateCheck = 2650;
 				LastUpgradeCheck = 2650;
 				TargetAttributes = {
-					F420221730114B6900D02A9B = {
-						CreatedOnToolsVersion = 26.5;
-					};
 					A800001730114B6900D02A9B = {
 						CreatedOnToolsVersion = 26.5;
 						TestTargetID = F420221730114B6900D02A9B;
+					};
+					F420221730114B6900D02A9B = {
+						CreatedOnToolsVersion = 26.5;
 					};
 				};
 			};
@@ -175,14 +175,14 @@
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-		F420221630114B6900D02A9B /* Resources */ = {
+		A800001630114B6900D02A9B /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		A800001630114B6900D02A9B /* Resources */ = {
+		F420221630114B6900D02A9B /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -192,14 +192,14 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		F420221430114B6900D02A9B /* Sources */ = {
+		A800001430114B6900D02A9B /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		A800001430114B6900D02A9B /* Sources */ = {
+		F420221430114B6900D02A9B /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -217,6 +217,44 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		A800002430114B6900D02A9B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = A8L3M4746U;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.shantanugoel.atarang.AtarangTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Atarang.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Atarang";
+			};
+			name = Debug;
+		};
+		A800002530114B6900D02A9B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = A8L3M4746U;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.shantanugoel.atarang.AtarangTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Atarang.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Atarang";
+			};
+			name = Release;
+		};
 		F420222130114B6A00D02A9B /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -404,47 +442,18 @@
 			};
 			name = Release;
 		};
-		A800002430114B6900D02A9B /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = A8L3M4746U;
-				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.shantanugoel.atarang.AtarangTests;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = iphoneos;
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Atarang.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Atarang";
-			};
-			name = Debug;
-		};
-		A800002530114B6900D02A9B /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = A8L3M4746U;
-				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.shantanugoel.atarang.AtarangTests;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = iphoneos;
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Atarang.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Atarang";
-			};
-			name = Release;
-		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		A800002330114B6900D02A9B /* Build configuration list for PBXNativeTarget "AtarangTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A800002430114B6900D02A9B /* Debug */,
+				A800002530114B6900D02A9B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		F420221330114B6900D02A9B /* Build configuration list for PBXProject "Atarang" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -459,15 +468,6 @@
 			buildConfigurations = (
 				F420222430114B6A00D02A9B /* Debug */,
 				F420222530114B6A00D02A9B /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
-		A800002330114B6900D02A9B /* Build configuration list for PBXNativeTarget "AtarangTests" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				A800002430114B6900D02A9B /* Debug */,
-				A800002530114B6900D02A9B /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

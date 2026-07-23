@@ -1,4 +1,5 @@
 import AVFoundation
+import AudioToolbox
 import Combine
 import Foundation
 import OSLog
@@ -16,6 +17,8 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
     @Published private(set) var activeStems: [StemKind] = []
     @Published private(set) var recordedTake: RecordedTake?
     @Published private(set) var shareURL: URL?
+    @Published private(set) var practiceSettings = SongPracticeSettings()
+    @Published private(set) var countInRemaining = 0
     @Published var recordingMicrophoneLevel: Float {
         didSet {
             UserDefaults.standard.set(
@@ -43,6 +46,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
     var playbackRate: Float { playbackState.rate }
     var pitchSemitones: Float { playbackState.pitchSemitones }
     var loopRange: PlaybackLoopRange? { playbackState.loopRange }
+    var isCountingIn: Bool { countInRemaining > 0 }
 
     private let engine = AVAudioEngine()
     private var nodes: [StemKind: AVAudioPlayerNode] = [:]
@@ -65,6 +69,10 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
     private var activeRecordingMicrophoneLevel: Float = 1
     private var activeRecordingBackingLevel: Float = 0.7
     private var interruptionShouldResume = false
+    private var countInTask: Task<Void, Never>?
+    private var countInGeneration = 0
+    private var lastPracticePersistenceDate = Date.distantPast
+    private let practiceSettingsStore = PracticeSettingsStore()
     private let logger = Logger(subsystem: "com.shantanugoel.atarang.Atarang", category: "Audio")
     private static let microphoneLevelDefaultsKey = "recordingMicrophoneLevel"
     private static let backingLevelDefaultsKey = "recordingBackingLevel"
@@ -135,6 +143,17 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         separationModel = track.separationModel
         currentTrackID = track.id
         restoreStemLevels(for: track.id)
+        practiceSettings = practiceSettingsStore.load(for: track.id)
+        practiceSettings.validate(
+            duration: playbackState.duration,
+            availableStems: activeStems
+        )
+        playbackState.seek(to: practiceSettings.lastPosition)
+        playbackState.setRate(practiceSettings.playbackRate)
+        if practiceSettings.isLoopEnabled,
+           let loop = practiceSettings.loopRange {
+            _ = playbackState.setLoop(start: loop.start, end: loop.end)
+        }
         soloedStem = nil
         applyStemVolumes()
         isLoaded = playbackState.duration > 0
@@ -144,9 +163,26 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
 
     func togglePlayback() {
         guard !isRecording else { return }
-        if isPlaying { pause() } else {
+        if isPlaying || isCountingIn {
+            pause()
+        } else {
+            startPlaybackWithCountIn()
+        }
+    }
+
+    private func startPlaybackWithCountIn() {
+        cancelCountIn()
+        guard practiceSettings.countInClicks > 0 else {
             do { try play() }
             catch { alertMessage = error.localizedDescription }
+            return
+        }
+        countInTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let completed = await self.performCountIn()
+            guard completed else { return }
+            do { try self.play() }
+            catch { self.alertMessage = error.localizedDescription }
         }
     }
 
@@ -203,6 +239,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
 
     func pause() {
         guard !isRecording else { return }
+        cancelCountIn()
         pausePlayback()
     }
 
@@ -213,16 +250,23 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
     /// session fail when the preview player takes over.
     func suspend() {
         guard !isRecording else { return }
+        cancelCountIn()
         updatePosition()
         stop(resetPosition: false, releaseSession: true)
     }
 
     func seek(to newPosition: TimeInterval) {
         guard !isRecording else { return }
+        cancelCountIn()
         let shouldResume = isPlaying
         pausePlayback()
         playbackState.seek(to: newPosition)
+        persistPracticeSettings()
         if shouldResume { try? play() }
+    }
+
+    func skipBackward(seconds: TimeInterval = 5) {
+        seek(to: max(0, position - max(0, seconds)))
     }
 
     func setPlaybackRate(_ rate: Float) {
@@ -231,6 +275,8 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         let shouldResume = isPlaying
         if shouldResume { pausePlayback() }
         playbackState.setRate(rate)
+        practiceSettings.playbackRate = playbackState.rate
+        persistPracticeSettings()
         applyPlaybackTransform()
         if shouldResume { try? play() }
     }
@@ -260,10 +306,122 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         let shouldResume = isPlaying
         if shouldResume { pausePlayback() }
         playbackState.clearLoop()
+        practiceSettings.loopStart = nil
+        practiceSettings.loopEnd = nil
+        practiceSettings.isLoopEnabled = false
+        persistPracticeSettings()
+        if shouldResume { try? play() }
+    }
+
+    func setLoopBoundaryA(at value: TimeInterval? = nil) {
+        let start = min(
+            max(0, value ?? position),
+            max(0, duration - PlaybackLoopRange.minimumDuration)
+        )
+        let proposedEnd = max(
+            practiceSettings.loopEnd ?? 0,
+            min(duration, start + max(2, PlaybackLoopRange.minimumDuration))
+        )
+        updateSavedLoop(start: start, end: proposedEnd)
+    }
+
+    func setLoopBoundaryB(at value: TimeInterval? = nil) {
+        let end = min(
+            duration,
+            max(PlaybackLoopRange.minimumDuration, value ?? position)
+        )
+        let proposedStart = min(
+            practiceSettings.loopStart ?? end,
+            max(0, end - max(2, PlaybackLoopRange.minimumDuration))
+        )
+        updateSavedLoop(start: proposedStart, end: end)
+    }
+
+    func adjustLoopBoundaryA(by delta: TimeInterval) {
+        guard let loop = practiceSettings.loopRange else { return }
+        updateSavedLoop(start: loop.start + delta, end: loop.end)
+    }
+
+    func adjustLoopBoundaryB(by delta: TimeInterval) {
+        guard let loop = practiceSettings.loopRange else { return }
+        updateSavedLoop(start: loop.start, end: loop.end + delta)
+    }
+
+    func setLoopEnabled(_ enabled: Bool) {
+        guard let loop = practiceSettings.loopRange else { return }
+        if enabled {
+            guard setLoop(start: loop.start, end: loop.end) else { return }
+        } else {
+            let shouldResume = isPlaying
+            if shouldResume { pausePlayback() }
+            playbackState.clearLoop()
+            if shouldResume { try? play() }
+        }
+        practiceSettings.isLoopEnabled = enabled
+        persistPracticeSettings()
+    }
+
+    func setWorkspace(_ workspace: StudioWorkspace) {
+        practiceSettings.workspace = workspace
+        persistPracticeSettings()
+    }
+
+    func setCountInClicks(_ clicks: Int) {
+        guard SongPracticeSettings.supportedCountInClicks.contains(clicks) else { return }
+        practiceSettings.countInClicks = clicks
+        persistPracticeSettings()
+    }
+
+    func setPracticeTarget(_ target: StemKind) {
+        guard activeStems.contains(target) else { return }
+        practiceSettings.target = target
+        persistPracticeSettings()
+    }
+
+    func applyTargetPreset(_ preset: TargetMixPreset) {
+        guard let target = practiceSettings.target,
+              activeStems.contains(target) else { return }
+        soloedStem = nil
+        for stem in activeStems {
+            let value: Float
+            switch preset {
+            case .learn:
+                value = stem == target ? 1 : 0
+            case .guide:
+                value = stem == target ? 0.3 : 1
+            case .playAlong:
+                value = stem == target ? 0 : 1
+            }
+            volumes[stem] = value
+            if value > 0 { lastAudibleVolumes[stem] = value }
+        }
+        practiceSettings.preset = preset
+        applyStemVolumes()
+        persistStemLevels()
+        persistPracticeSettings()
+        objectWillChange.send()
+    }
+
+    func resetPracticeSettings() {
+        guard let currentTrackID else { return }
+        cancelCountIn()
+        let shouldResume = isPlaying
+        if shouldResume { pausePlayback() }
+        practiceSettingsStore.reset(for: currentTrackID)
+        practiceSettings = SongPracticeSettings()
+        practiceSettings.validate(duration: duration, availableStems: activeStems)
+        playbackState.clearLoop()
+        playbackState.setRate(1)
+        playbackState.seek(to: 0)
+        resetMix()
         if shouldResume { try? play() }
     }
 
     func toggleRecording() async {
+        if isCountingIn {
+            cancelCountIn()
+            return
+        }
         if isRecording {
             stopRecording()
             return
@@ -341,12 +499,15 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         if isRecording { stopRecording() }
         stop(resetPosition: true, releaseSession: true)
         files.removeAll()
+        persistPracticeSettings()
+        cancelCountIn()
         playbackState.unload()
         title = ""
         separationModel = .htdemucs
         activeStems = []
         soloedStem = nil
         currentTrackID = nil
+        practiceSettings = SongPracticeSettings()
         isLoaded = false
         recordedTake = nil
         shareURL = nil
@@ -358,6 +519,11 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         guard await microphonePermissionGranted() else {
             microphonePermissionDenied = true
             throw PlayerError.microphoneDenied
+        }
+
+        if practiceSettings.countInClicks > 0 {
+            let completed = await performCountIn()
+            guard completed else { return }
         }
 
         let resumePosition = position
@@ -605,6 +771,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         timer?.invalidate()
         timer = nil
         isPlaying = false
+        persistPracticeSettings()
     }
 
     private func stop(resetPosition: Bool, releaseSession: Bool = false) {
@@ -726,6 +893,9 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
             sampleRate: playerTime.sampleRate,
             anchorPosition: renderAnchorPosition
         )
+        if Date().timeIntervalSince(lastPracticePersistenceDate) >= 2 {
+            persistPracticeSettings()
+        }
         if position >= duration {
             if isRecording {
                 stopRecording()
@@ -766,6 +936,58 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
             values,
             forKey: Self.stemLevelDefaultsPrefix + currentTrackID.uuidString
         )
+    }
+
+    private func updateSavedLoop(start: TimeInterval, end: TimeInterval) {
+        guard let range = PlaybackLoopRange(
+            start: start,
+            end: end,
+            duration: duration
+        ) else { return }
+        practiceSettings.loopStart = range.start
+        practiceSettings.loopEnd = range.end
+        if practiceSettings.isLoopEnabled {
+            _ = setLoop(start: range.start, end: range.end)
+        }
+        persistPracticeSettings()
+    }
+
+    private func persistPracticeSettings() {
+        guard let currentTrackID else { return }
+        practiceSettings.lastPosition = position
+        practiceSettings.playbackRate = playbackState.rate
+        practiceSettingsStore.save(practiceSettings, for: currentTrackID)
+        lastPracticePersistenceDate = Date()
+    }
+
+    private func cancelCountIn() {
+        countInGeneration &+= 1
+        countInTask?.cancel()
+        countInTask = nil
+        countInRemaining = 0
+    }
+
+    private func performCountIn() async -> Bool {
+        let clicks = practiceSettings.countInClicks
+        guard clicks > 0 else { return true }
+        countInGeneration &+= 1
+        let generation = countInGeneration
+        for remaining in stride(from: clicks, through: 1, by: -1) {
+            guard !Task.isCancelled, generation == countInGeneration else {
+                countInRemaining = 0
+                return false
+            }
+            countInRemaining = remaining
+            AudioServicesPlaySystemSound(1104)
+            do {
+                try await Task.sleep(for: .seconds(1))
+            } catch {
+                countInRemaining = 0
+                return false
+            }
+        }
+        countInRemaining = 0
+        return !Task.isCancelled && generation == countInGeneration
     }
 
     private func restoreStemLevels(for trackID: UUID) {

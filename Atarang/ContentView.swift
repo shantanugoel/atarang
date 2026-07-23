@@ -44,7 +44,12 @@ struct ContentView: View {
                         }
                         if player.isLoaded {
                             mixerHeader
-                            mixer
+                            studioWorkspaceSelector
+                            if player.practiceSettings.workspace == .mix {
+                                mixer
+                            } else {
+                                practiceWorkspace
+                            }
                         } else {
                             importCard
                         }
@@ -551,6 +556,309 @@ struct ContentView: View {
         .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20))
     }
 
+    private var studioWorkspaceSelector: some View {
+        Picker(
+            "Studio workspace",
+            selection: Binding(
+                get: { player.practiceSettings.workspace },
+                set: { player.setWorkspace($0) }
+            )
+        ) {
+            ForEach(StudioWorkspace.allCases) { workspace in
+                Text(workspace.title).tag(workspace)
+            }
+        }
+        .pickerStyle(.segmented)
+        .disabled(player.isRecording)
+        .accessibilityHint("Switches the Studio controls without stopping playback")
+    }
+
+    private var practiceWorkspace: some View {
+        VStack(spacing: 16) {
+            VStack(spacing: 3) {
+                Text(player.title)
+                    .font(.headline)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                Text("Practice · \(player.separationModel.title)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            practiceTimeline
+
+            HStack(spacing: 10) {
+                Button {
+                    player.skipBackward()
+                } label: {
+                    Label("Back 5 seconds", systemImage: "gobackward.5")
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(player.isRecording)
+
+                Menu {
+                    ForEach([0.5, 0.75, 0.9, 1.0], id: \.self) { rate in
+                        Button("\(Int(rate * 100))%") {
+                            player.setPlaybackRate(Float(rate))
+                        }
+                    }
+                } label: {
+                    Label(
+                        "\(Int(player.playbackRate * 100))%",
+                        systemImage: "speedometer"
+                    )
+                    .frame(minHeight: 44)
+                }
+                .buttonStyle(.bordered)
+                .disabled(player.isRecording)
+                .accessibilityLabel("Playback speed")
+                .accessibilityValue("\(Int(player.playbackRate * 100)) percent")
+            }
+
+            loopControls
+            practiceMixControls
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Label("Count-in", systemImage: "metronome")
+                        .font(.subheadline.weight(.semibold))
+                    Spacer()
+                    Picker(
+                        "Count-in",
+                        selection: Binding(
+                            get: { player.practiceSettings.countInClicks },
+                            set: { player.setCountInClicks($0) }
+                        )
+                    ) {
+                        Text("Off").tag(0)
+                        Text("2 clicks").tag(2)
+                        Text("4 clicks").tag(4)
+                    }
+                    .pickerStyle(.menu)
+                    .disabled(player.isRecording || player.isCountingIn)
+                }
+                Text("One click per second before playback or recording. The count-in is not recorded.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .practiceSectionStyle()
+
+            Button("Reset Practice Settings", role: .destructive) {
+                player.resetPracticeSettings()
+            }
+            .frame(minHeight: 44)
+            .disabled(player.isRecording)
+        }
+        .padding(14)
+        .background(
+            Color(.secondarySystemGroupedBackground),
+            in: RoundedRectangle(cornerRadius: 20)
+        )
+    }
+
+    private var practiceTimeline: some View {
+        VStack(spacing: 5) {
+            ZStack {
+                Slider(
+                    value: Binding(
+                        get: { player.position },
+                        set: { player.seek(to: $0) }
+                    ),
+                    in: 0...max(player.duration, 0.01)
+                )
+                GeometryReader { proxy in
+                    if let loop = player.practiceSettings.loopRange,
+                       player.duration > 0 {
+                        let width = max(0, proxy.size.width - 28)
+                        let aX = 14 + width * loop.start / player.duration
+                        let bX = 14 + width * loop.end / player.duration
+                        Rectangle()
+                            .fill(Color.green)
+                            .frame(width: 3, height: 20)
+                            .position(x: aX, y: proxy.size.height / 2)
+                        Rectangle()
+                            .fill(Color.orange)
+                            .frame(width: 3, height: 20)
+                            .position(x: bX, y: proxy.size.height / 2)
+                    }
+                }
+                .allowsHitTesting(false)
+            }
+            .frame(height: 28)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Practice timeline")
+            .accessibilityValue("\(time(player.position)) of \(time(player.duration))")
+
+            HStack {
+                Text(time(player.position))
+                Spacer()
+                if let loop = player.practiceSettings.loopRange {
+                    Text("A \(time(loop.start))")
+                        .foregroundStyle(.green)
+                    Text("B \(time(loop.end))")
+                        .foregroundStyle(.orange)
+                }
+                Spacer()
+                Text("−\(time(max(0, player.duration - player.position)))")
+            }
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(.secondary)
+        }
+    }
+
+    private var loopControls: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label("A–B Loop", systemImage: "repeat")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                if player.practiceSettings.loopRange != nil {
+                    Button(
+                        player.practiceSettings.isLoopEnabled ? "Disable" : "Enable"
+                    ) {
+                        player.setLoopEnabled(!player.practiceSettings.isLoopEnabled)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    Button("Clear", role: .destructive) {
+                        player.clearLoop()
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+
+            HStack(spacing: 10) {
+                Button("Set A") { player.setLoopBoundaryA() }
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .buttonStyle(.bordered)
+                    .accessibilityHint("Sets the loop start at the current playhead")
+                Button("Set B") { player.setLoopBoundaryB() }
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .buttonStyle(.bordered)
+                    .accessibilityHint("Sets the loop end at the current playhead")
+            }
+
+            if let loop = player.practiceSettings.loopRange {
+                loopBoundaryEditor(
+                    title: "A",
+                    value: loop.start,
+                    range: 0...max(0.01, loop.end - PlaybackLoopRange.minimumDuration),
+                    color: .green,
+                    setValue: { player.setLoopBoundaryA(at: $0) },
+                    nudge: { player.adjustLoopBoundaryA(by: $0) }
+                )
+                loopBoundaryEditor(
+                    title: "B",
+                    value: loop.end,
+                    range: min(
+                        player.duration,
+                        loop.start + PlaybackLoopRange.minimumDuration
+                    )...max(
+                        player.duration,
+                        loop.start + PlaybackLoopRange.minimumDuration
+                    ),
+                    color: .orange,
+                    setValue: { player.setLoopBoundaryB(at: $0) },
+                    nudge: { player.adjustLoopBoundaryB(by: $0) }
+                )
+            } else {
+                Text("Set A and B at the playhead. The minimum loop is \(PlaybackLoopRange.minimumDuration.formatted()) seconds.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .disabled(player.isRecording)
+        .practiceSectionStyle()
+    }
+
+    private func loopBoundaryEditor(
+        title: String,
+        value: TimeInterval,
+        range: ClosedRange<TimeInterval>,
+        color: Color,
+        setValue: @escaping (TimeInterval) -> Void,
+        nudge: @escaping (TimeInterval) -> Void
+    ) -> some View {
+        VStack(spacing: 5) {
+            HStack {
+                Text("\(title) · \(time(value))")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(color)
+                Spacer()
+                Button { nudge(-0.1) } label: {
+                    Label("Earlier", systemImage: "minus")
+                        .labelStyle(.iconOnly)
+                        .frame(width: 44, height: 44)
+                }
+                Button { nudge(0.1) } label: {
+                    Label("Later", systemImage: "plus")
+                        .labelStyle(.iconOnly)
+                        .frame(width: 44, height: 44)
+                }
+            }
+            Slider(
+                value: Binding(get: { value }, set: setValue),
+                in: range
+            )
+            .tint(color)
+            .accessibilityLabel("Loop boundary \(title)")
+            .accessibilityValue(time(value))
+        }
+    }
+
+    private var practiceMixControls: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label("Practice Target", systemImage: "scope")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Picker(
+                    "Practice target",
+                    selection: Binding(
+                        get: {
+                            player.practiceSettings.target
+                                ?? player.activeStems.first
+                                ?? .vocals
+                        },
+                        set: { player.setPracticeTarget($0) }
+                    )
+                ) {
+                    ForEach(player.activeStems) { stem in
+                        Label(stem.title, systemImage: stem.icon).tag(stem)
+                    }
+                }
+                .pickerStyle(.menu)
+                .disabled(player.isRecording)
+            }
+
+            ForEach(TargetMixPreset.allCases) { preset in
+                Button {
+                    player.applyTargetPreset(preset)
+                } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(preset.title).font(.subheadline.weight(.semibold))
+                            Text(preset.detail)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if player.practiceSettings.preset == preset {
+                            Image(systemName: "checkmark.circle.fill")
+                        }
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                }
+                .buttonStyle(.bordered)
+                .disabled(player.isRecording)
+            }
+
+            Text("After a preset, switch to Mix to fine-tune any stem.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .practiceSectionStyle()
+    }
+
     private var mixerHeader: some View {
         HStack {
             Text("Atarang")
@@ -597,8 +905,12 @@ struct ContentView: View {
                 player.togglePlayback()
             } label: {
                 Label(
-                    player.isPlaying ? "Pause" : "Play",
-                    systemImage: player.isPlaying ? "pause.fill" : "play.fill"
+                    player.isCountingIn
+                        ? "Cancel"
+                        : (player.isPlaying ? "Pause" : "Play"),
+                    systemImage: player.isPlaying || player.isCountingIn
+                        ? "pause.fill"
+                        : "play.fill"
                 )
                 .labelStyle(TransportLabelStyle(color: .indigo))
             }
@@ -621,15 +933,25 @@ struct ContentView: View {
                 )
             }
             .buttonStyle(.plain)
+            .disabled(player.isCountingIn)
+            .opacity(player.isCountingIn ? 0.45 : 1)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(player.isRecording ? "Recording" : player.title)
+                Text(
+                    player.isRecording
+                        ? "Recording"
+                        : (player.isCountingIn ? "Count-in" : player.title)
+                )
                     .font(.caption.weight(.semibold))
                     .lineLimit(1)
                 Text(
                     player.isRecording
                         ? time(player.recordingDuration)
-                        : "\(time(player.position)) / \(time(player.duration))"
+                        : (
+                            player.isCountingIn
+                                ? "\(player.countInRemaining)"
+                                : "\(time(player.position)) / \(time(player.duration))"
+                        )
                 )
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(player.isRecording ? .red : .secondary)
@@ -679,7 +1001,7 @@ struct ContentView: View {
     private var recordingMixControls: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack {
-                Label("Recording Mix", systemImage: "slider.horizontal.3")
+                Label("Recorded Take Levels", systemImage: "slider.horizontal.3")
                     .font(.subheadline.weight(.semibold))
                 Spacer()
                 if player.isRecording {
@@ -1105,6 +1427,14 @@ private extension View {
     func cardStyle() -> some View {
         padding(18)
             .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20))
+    }
+
+    func practiceSectionStyle() -> some View {
+        padding(12)
+            .background(
+                Color(.tertiarySystemGroupedBackground),
+                in: RoundedRectangle(cornerRadius: 14)
+            )
     }
 }
 
