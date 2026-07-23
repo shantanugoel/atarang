@@ -194,7 +194,7 @@ struct HistoryView: View {
             Label("Record again", systemImage: "record.circle")
         }
         Button { share(track.files.values.sorted { $0.lastPathComponent < $1.lastPathComponent }) } label: {
-            Label("Share four stems", systemImage: "square.and.arrow.up")
+            Label("Share \(track.files.count) stems", systemImage: "square.and.arrow.up")
         }
         Divider()
         Button(role: .destructive) { confirmDelete(track) } label: {

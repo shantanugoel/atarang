@@ -15,13 +15,18 @@ final class HistoryAudioPlayer: NSObject, ObservableObject, AVAudioPlayerDelegat
             pause()
             return
         }
+        stop()
+        errorMessage = nil
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playback, mode: .default)
+            if session.category != .playback {
+                try session.setActive(false, options: .notifyOthersOnDeactivation)
+                try session.setCategory(.playback, mode: .default)
+            }
             try session.setActive(true)
             let player = try AVAudioPlayer(contentsOf: url)
             player.delegate = self
-            player.prepareToPlay()
+            guard player.prepareToPlay() else { throw PlaybackError.couldNotPrepare }
             guard player.play() else { throw PlaybackError.couldNotStart }
             self.player = player
             playingID = id
@@ -51,7 +56,13 @@ final class HistoryAudioPlayer: NSObject, ObservableObject, AVAudioPlayerDelegat
 }
 
 private enum PlaybackError: LocalizedError {
+    case couldNotPrepare
     case couldNotStart
 
-    var errorDescription: String? { "Audio playback did not start." }
+    var errorDescription: String? {
+        switch self {
+        case .couldNotPrepare: "The recording could not be prepared for playback."
+        case .couldNotStart: "Audio playback did not start."
+        }
+    }
 }

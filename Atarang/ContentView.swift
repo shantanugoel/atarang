@@ -66,8 +66,8 @@ struct ContentView: View {
             history.refresh()
         }
         .onChange(of: selectedTab) { _, tab in
-            if tab == .history, player.isPlaying, !player.isRecording {
-                player.pause()
+            if tab == .history, !player.isRecording {
+                player.suspend()
             } else if tab == .mixer {
                 historyAudioPlayer.stop()
             }
@@ -139,17 +139,49 @@ struct ContentView: View {
                 .autocorrectionDisabled()
                 .keyboardType(.URL)
                 .textFieldStyle(.roundedBorder)
+            modelPicker
             Button {
                 Task { await separate(youtubeURL) }
             } label: {
-                Label("Create four stems", systemImage: "wand.and.stars")
+                Label("Create \(model.selectedModel.stems.count) stems", systemImage: "wand.and.stars")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            .disabled(youtubeURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.isWorking)
+            .disabled(
+                youtubeURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || model.isWorking
+            )
         }
         .cardStyle()
+    }
+
+    private var modelPicker: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Picker("Separation model", selection: $model.selectedModel) {
+                ForEach(SeparationModelKind.allCases) { separationModel in
+                    Text(ModelAssetStore.isInstalled(separationModel)
+                        ? separationModel.title
+                        : "\(separationModel.title) — downloads once"
+                    )
+                    .tag(separationModel)
+                }
+            }
+            .pickerStyle(.menu)
+            .disabled(model.isWorking)
+            Text(model.selectedModel.detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(model.selectedModel.stemSummary)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("Supported stems: \(model.selectedModel.stemSummary)")
+            if !ModelAssetStore.isInstalled(model.selectedModel) {
+                Text("This model will be securely downloaded the first time you use it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 
     private var progressCard: some View {
@@ -173,7 +205,9 @@ struct ContentView: View {
         VStack(spacing: 18) {
             VStack(spacing: 5) {
                 Text(player.title).font(.headline).lineLimit(2)
-                Text("4-stem mix").font(.caption).foregroundStyle(.secondary)
+                Text("\(player.activeStems.count)-stem mix · \(player.separationModel.title)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             VStack(spacing: 5) {
@@ -216,7 +250,7 @@ struct ContentView: View {
             recordingStatus
 
             VStack(spacing: 14) {
-                ForEach(StemKind.allCases) { stem in
+                ForEach(player.activeStems) { stem in
                     StemRow(stem: stem, volume: Binding(
                         get: { player.volume(for: stem) },
                         set: { player.setVolume($0, for: stem) }

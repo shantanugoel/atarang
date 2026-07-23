@@ -1,5 +1,5 @@
 {
-  "originHash" : "113ce15711eac404dd62825fb955485c7cde7ccf60ce6d4561aad369d822c644",
+  "originHash" : "a8badc23e214d01a8ca746f40e29f5d86dc1e8ff4cbd21bee22f910e6b984d8d",
   "pins" : [
     {
       "identity" : "ffmpeg-ios-lame",
@@ -17,6 +17,15 @@
       "state" : {
         "revision" : "be3bd9149ac53760e8725652eee99c405b2be47a",
         "version" : "0.0.2"
+      }
+    },
+    {
+      "identity" : "onnxruntime-swift-package-manager",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/microsoft/onnxruntime-swift-package-manager.git",
+      "state" : {
+        "revision" : "b7fb7f7dea8a2469e6335d95a61b8f36d0dc83b2",
+        "version" : "1.24.2"
       }
     },
     {
@@ -44,6 +53,15 @@
       "state" : {
         "revision" : "64d9072cc33d2698b555d68cecf3d71f2f49b8dd",
         "version" : "0.0.9"
+      }
+    },
+    {
+      "identity" : "zipfoundation",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/weichsel/ZIPFoundation.git",
+      "state" : {
+        "revision" : "22787ffb59de99e5dc1fbfe80b19c97a904ad48d",
+        "version" : "0.9.20"
       }
     }
   ],

@@ -7,6 +7,7 @@ struct HistoryTrack: Identifiable, Sendable {
     let title: String
     let createdAt: Date
     let sourceURL: URL?
+    let separationModel: SeparationModelKind
     let folderURL: URL
     let files: [StemKind: URL]
     let duration: TimeInterval
@@ -18,7 +19,8 @@ struct HistoryTrack: Identifiable, Sendable {
             title: title,
             files: files,
             createdAt: createdAt,
-            sourceURL: sourceURL
+            sourceURL: sourceURL,
+            separationModel: separationModel
         )
     }
 }
@@ -77,11 +79,13 @@ final class HistoryStore: ObservableObject {
         return try folders(in: root).compactMap { folder in
             let metadataURL = folder.appendingPathComponent(LibraryMetadata.trackFilename)
             let metadata = try? LibraryMetadata.read(TrackMetadata.self, from: metadataURL)
-            let files = Dictionary(uniqueKeysWithValues: StemKind.allCases.compactMap { stem in
+            let separationModel = metadata?.separationModel ?? .htdemucs
+            let expectedStems = metadata?.stems ?? separationModel.stems
+            let files = Dictionary(uniqueKeysWithValues: expectedStems.compactMap { stem in
                 let url = folder.appendingPathComponent(stem.rawValue).appendingPathExtension("wav")
                 return FileManager.default.fileExists(atPath: url.path) ? (stem, url) : nil
             })
-            guard files.count == StemKind.allCases.count else { return nil }
+            guard files.count == expectedStems.count else { return nil }
             let fallbackDate = createdAt(for: folder)
             let id = metadata?.id ?? UUID(uuidString: folder.lastPathComponent) ?? UUID()
             return HistoryTrack(
@@ -89,9 +93,10 @@ final class HistoryStore: ObservableObject {
                 title: metadata?.title ?? "Separated track",
                 createdAt: metadata?.createdAt ?? fallbackDate,
                 sourceURL: metadata?.sourceURL,
+                separationModel: separationModel,
                 folderURL: folder,
                 files: files,
-                duration: audioDuration(at: files[.vocals]),
+                duration: audioDuration(at: files[.vocals] ?? files.values.first),
                 byteCount: folderSize(folder)
             )
         }

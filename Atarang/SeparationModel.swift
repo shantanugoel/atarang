@@ -9,6 +9,7 @@ final class SeparationModel: ObservableObject {
     @Published var progress = 0.0
     @Published var statusText = "Preparing…"
     @Published var errorMessage: String?
+    @Published var selectedModel: SeparationModelKind = .htdemucs
     private let logger = Logger(subsystem: "com.shantanugoel.atarang.Atarang", category: "Separation")
 
     func separate(youtubeURL: String) async -> LocalTrack? {
@@ -18,14 +19,22 @@ final class SeparationModel: ObservableObject {
         }
 
         isWorking = true
+        let separationModel = selectedModel
         progress = 0.01
         statusText = "Reading video information…"
         defer { isWorking = false }
 
         do {
+            statusText = separationModel == .htdemucs
+                ? "Loading \(separationModel.title)…"
+                : "Preparing \(separationModel.title)…"
+            let artifact = try await ModelAssetStore.shared.artifact(for: separationModel) { [weak self] status, value in
+                self?.statusText = status
+                self?.progress = value
+            }
             statusText = "Preparing bundled yt-dlp…"
             try BundledYTDLP.install()
-            progress = 0.03
+            progress = 0.09
             logger.info("Starting extraction for \(url.absoluteString, privacy: .public) with bundled yt-dlp \(BundledYTDLP.version, privacy: .public)")
 
             let slowNotice = Task { @MainActor [weak self] in
@@ -37,13 +46,13 @@ final class SeparationModel: ObservableObject {
             let downloaded = try await downloadAudio(from: url)
             slowNotice.cancel()
             logger.info("Audio download complete: \(downloaded.url.lastPathComponent, privacy: .public)")
-            statusText = "Loading on-device Demucs…"
+            statusText = "Loading on-device \(separationModel.title)…"
             progress = 0.18
-            let separator = try StemSeparator()
+            let separator = try StemSeparator(modelKind: separationModel, artifact: artifact)
             let output = try outputFolder()
             let files = try await separator.separate(fileURL: downloaded.url, outputFolder: output.folder) { value in
                 Task { @MainActor [weak self] in
-                    self?.statusText = "Separating four stems on this iPhone…"
+                    self?.statusText = "Separating \(separationModel.stems.count) stems on this iPhone…"
                     self?.progress = 0.2 + value * 0.78
                 }
             }
@@ -55,7 +64,9 @@ final class SeparationModel: ObservableObject {
                 id: output.id,
                 title: downloaded.title,
                 createdAt: createdAt,
-                sourceURL: url
+                sourceURL: url,
+                separationModel: separationModel,
+                stems: separationModel.stems
             )
             do {
                 try LibraryMetadata.write(
@@ -72,7 +83,8 @@ final class SeparationModel: ObservableObject {
                 title: downloaded.title,
                 files: files,
                 createdAt: createdAt,
-                sourceURL: url
+                sourceURL: url,
+                separationModel: separationModel
             )
         } catch {
             logger.error("Separation failed: \(error.localizedDescription, privacy: .public)")
@@ -83,7 +95,7 @@ final class SeparationModel: ObservableObject {
 
     private func downloadAudio(from url: URL) async throws -> (url: URL, title: String) {
         statusText = "Reading YouTube video information…"
-        progress = 0.06
+        progress = 0.11
         let extractionLogger = Logger(
             subsystem: "com.shantanugoel.atarang.Atarang",
             category: "yt-dlp-download"
@@ -119,7 +131,7 @@ final class SeparationModel: ObservableObject {
             throw SeparationFailure.noCompatibleAudio
         }
         statusText = "Downloading audio to this iPhone…"
-        progress = 0.1
+        progress = 0.14
         var request = URLRequest(url: mediaURL)
         selection.headers.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
         if let size = selection.size, size > 0 {
@@ -132,7 +144,7 @@ final class SeparationModel: ObservableObject {
         }
         let destination = selection.temporaryFolder.appendingPathComponent("source.m4a")
         try FileManager.default.moveItem(at: temporary, to: destination)
-        progress = 0.16
+        progress = 0.17
         return (destination, selection.title)
     }
 

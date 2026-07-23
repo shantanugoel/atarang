@@ -13,6 +13,8 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
     @Published private(set) var duration: TimeInterval = 0
     @Published private(set) var recordingDuration: TimeInterval = 0
     @Published private(set) var title = ""
+    @Published private(set) var separationModel: SeparationModelKind = .htdemucs
+    @Published private(set) var activeStems: [StemKind] = []
     @Published private(set) var recordedTake: RecordedTake?
     @Published private(set) var shareURL: URL?
     @Published var alertMessage: String?
@@ -64,14 +66,17 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         files = try Dictionary(uniqueKeysWithValues: track.files.map { key, url in
             (key, try AVAudioFile(forReading: url))
         })
-        guard files.count == StemKind.allCases.count else { throw PlayerError.incompleteTrack }
-        for stem in StemKind.allCases {
+        let expectedStems = Set(track.separationModel.stems)
+        guard !files.isEmpty, Set(files.keys) == expectedStems else { throw PlayerError.incompleteTrack }
+        activeStems = track.separationModel.stems
+        for stem in activeStems {
             guard let node = nodes[stem], let file = files[stem] else { continue }
             engine.disconnectNodeOutput(node)
             engine.connect(node, to: engine.mainMixerNode, format: file.processingFormat)
         }
         duration = files.values.map { Double($0.length) / $0.processingFormat.sampleRate }.min() ?? 0
         title = track.title
+        separationModel = track.separationModel
         currentTrackID = track.id
         isLoaded = duration > 0
         recordedTake = nil
@@ -94,15 +99,27 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         playbackGeneration += 1
         let generation = playbackGeneration
         for node in nodes.values { node.stop() }
+        try configurePlaybackSession()
         if !engine.isRunning {
             engine.prepare()
-            try engine.start()
+            do {
+                try engine.start()
+            } catch {
+                // A previous recorder/preview can leave AVFAudio render
+                // resources stale even after the session category changes.
+                // Resetting and retrying rebuilds the output unit against the
+                // now-active playback session.
+                engine.stop()
+                engine.reset()
+                engine.prepare()
+                try engine.start()
+            }
         }
 
         let leadTime = 0.08
         let startHostTime = mach_absolute_time() + AVAudioTime.hostTime(forSeconds: leadTime)
         let startTime = AVAudioTime(hostTime: startHostTime)
-        for stem in StemKind.allCases {
+        for stem in activeStems {
             guard let file = files[stem], let node = nodes[stem] else { continue }
             let frame = AVAudioFramePosition(position * file.processingFormat.sampleRate)
             let remaining = max(0, file.length - frame)
@@ -137,6 +154,17 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
     func pause() {
         guard !isRecording else { return }
         pausePlayback()
+    }
+
+    /// Releases the audio engine while preserving the current playhead.
+    ///
+    /// History previews use a separate player. Merely pausing the stem nodes
+    /// leaves this engine's output unit active, which can make the shared audio
+    /// session fail when the preview player takes over.
+    func suspend() {
+        guard !isRecording else { return }
+        updatePosition()
+        stop(resetPosition: false)
     }
 
     func seek(to newPosition: TimeInterval) {
@@ -178,6 +206,8 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         files.removeAll()
         duration = 0
         title = ""
+        separationModel = .htdemucs
+        activeStems = []
         currentTrackID = nil
         isLoaded = false
         recordedTake = nil
@@ -384,6 +414,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         playbackGeneration += 1
         for node in nodes.values { node.stop() }
         engine.stop()
+        engine.reset()
         timer?.invalidate()
         timer = nil
         isPlaying = false
@@ -429,7 +460,10 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
 
     private func configurePlaybackSession() throws {
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playback, mode: .default)
+        if session.category != .playback {
+            try session.setActive(false, options: .notifyOthersOnDeactivation)
+            try session.setCategory(.playback, mode: .default)
+        }
         try session.setActive(true)
     }
 
@@ -481,7 +515,7 @@ private enum PlayerError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .incompleteTrack: "This track does not contain all four stems."
+        case .incompleteTrack: "This track does not contain all of the stems produced by its separation model."
         case .noTrack: "Separate and load a song before recording."
         case .microphoneDenied: "Microphone access is required. Enable Atarang in Settings → Privacy & Security → Microphone."
         case .noMicrophone: "No microphone input is available."

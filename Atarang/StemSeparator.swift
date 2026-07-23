@@ -1,37 +1,87 @@
 import AVFoundation
 import CoreML
 
+final class StemSeparator: @unchecked Sendable {
+    private enum Backend {
+        case waveform(CoreMLWaveformSeparator)
+        case htdemucs6s(HTDemucs6Separator)
+        case mdx(MDXVocalSeparator)
+    }
+
+    private let backend: Backend
+
+    init(modelKind: SeparationModelKind, artifact: SeparationModelArtifact) throws {
+        switch (modelKind, artifact) {
+        case (.htdemucs, .coreML(let url)):
+            backend = .waveform(try CoreMLWaveformSeparator(modelKind: modelKind, modelURL: url))
+        case (.htdemucs6s, .onnx(let url)):
+            backend = .htdemucs6s(try HTDemucs6Separator(modelURL: url))
+        case (.mdx23cInstVocHQ, .coreML(let url)), (.kimVocals, .onnx(let url)):
+            backend = .mdx(try MDXVocalSeparator(modelKind: modelKind, modelURL: url))
+        default:
+            throw StemSeparatorError.incompatibleModel(modelKind, "the installed artifact has the wrong format.")
+        }
+    }
+
+    func separate(
+        fileURL: URL,
+        outputFolder: URL,
+        progress: @Sendable @escaping (Double) -> Void
+    ) async throws -> [StemKind: URL] {
+        switch backend {
+        case .waveform(let separator):
+            try await separator.separate(fileURL: fileURL, outputFolder: outputFolder, progress: progress)
+        case .htdemucs6s(let separator):
+            try await separator.separate(fileURL: fileURL, outputFolder: outputFolder, progress: progress)
+        case .mdx(let separator):
+            try await separator.separate(fileURL: fileURL, outputFolder: outputFolder, progress: progress)
+        }
+    }
+}
+
 enum StemSeparatorError: LocalizedError {
-    case modelNotFound
+    case modelNotFound(SeparationModelKind)
+    case incompatibleModel(SeparationModelKind, String)
     case unsupportedFormat
     case inferenceFailed(String)
 
     var errorDescription: String? {
         switch self {
-        case .modelNotFound: "The bundled HTDemucs model could not be loaded."
+        case .modelNotFound(let model): "The bundled \(model.title) model could not be loaded."
+        case .incompatibleModel(let model, let message): "The \(model.title) model is incompatible: \(message)"
         case .unsupportedFormat: "The downloaded audio format could not be converted."
         case .inferenceFailed(let message): "On-device separation failed: \(message)"
         }
     }
 }
 
-/// Runs the FP16 HTDemucs Core ML model in overlapping 10-second chunks.
-/// Output is streamed to WAV files so a full song's four stems are never held in memory.
-final class StemSeparator: @unchecked Sendable {
-    private let segmentSamples = 441_000
-    private let overlapSamples = 44_100
+/// Runs a waveform-to-waveform Core ML separation model in overlapping chunks.
+/// Output is streamed to WAV files so a full song's stems are never held in memory.
+final class CoreMLWaveformSeparator: @unchecked Sendable {
+    private let segmentSamples: Int
+    private let overlapSamples: Int
     private let sampleRate = 44_100.0
+    private let modelKind: SeparationModelKind
     private let model: MLModel
     private let inferenceLock = NSLock()
 
-    init() throws {
-        guard let url = Bundle.main.url(forResource: "HTDemucs_CoreML_FP16", withExtension: "mlmodelc")
-            ?? Bundle.main.url(forResource: "HTDemucs_CoreML_FP16", withExtension: "mlpackage") else {
-            throw StemSeparatorError.modelNotFound
-        }
+    init(modelKind: SeparationModelKind, modelURL: URL) throws {
         let configuration = MLModelConfiguration()
         configuration.computeUnits = .cpuAndGPU
-        model = try MLModel(contentsOf: url, configuration: configuration)
+        model = try MLModel(contentsOf: modelURL, configuration: configuration)
+        self.modelKind = modelKind
+
+        guard let input = model.modelDescription.inputDescriptionsByName["audio"],
+              let shape = input.multiArrayConstraint?.shape,
+              let samples = shape.last?.intValue,
+              samples > 1 else {
+            throw StemSeparatorError.incompatibleModel(
+                modelKind,
+                "expected an 'audio' multi-array input shaped [1, 2, samples]."
+            )
+        }
+        segmentSamples = samples
+        overlapSamples = min(44_100, max(1, samples / 10))
     }
 
     func separate(
@@ -98,7 +148,7 @@ final class StemSeparator: @unchecked Sendable {
 
         var urls: [StemKind: URL] = [:]
         var writers: [StemKind: AVAudioFile] = [:]
-        for stem in StemKind.allCases {
+        for stem in modelKind.stems {
             let url = outputFolder.appendingPathComponent(stem.rawValue).appendingPathExtension("wav")
             urls[stem] = url
             writers[stem] = try AVAudioFile(forWriting: url, settings: format.settings)
@@ -113,7 +163,7 @@ final class StemSeparator: @unchecked Sendable {
             let isFirst = chunkIndex == 0
             let isLast = chunkIndex == chunkCount - 1
 
-            for stem in StemKind.allCases {
+            for stem in modelKind.stems {
                 guard let samples = predictions[stem], let writer = writers[stem] else { continue }
                 var resolved: [Float]
                 if isFirst && isLast {
@@ -159,7 +209,14 @@ final class StemSeparator: @unchecked Sendable {
             throw StemSeparatorError.inferenceFailed("The model returned no sources output.")
         }
         var stems: [StemKind: [Float]] = [:]
-        for (stemIndex, stem) in StemKind.allCases.enumerated() {
+        let expectedValues = modelKind.stems.count * 2 * segmentSamples
+        guard sources.count >= expectedValues else {
+            throw StemSeparatorError.incompatibleModel(
+                modelKind,
+                "expected \(modelKind.stems.count) output stems but received only \(sources.count) values."
+            )
+        }
+        for (stemIndex, stem) in modelKind.stems.enumerated() {
             var samples = [Float](repeating: 0, count: segmentSamples * 2)
             let base = stemIndex * 2 * segmentSamples
             for frame in 0..<segmentSamples {

@@ -8,6 +8,8 @@
 
 /* Begin PBXBuildFile section */
 		A700000130114B6900D02A9B /* YoutubeDL in Frameworks */ = {isa = PBXBuildFile; productRef = A700000330114B6900D02A9B /* YoutubeDL */; };
+		A700001130114B6900D02A9B /* onnxruntime in Frameworks */ = {isa = PBXBuildFile; productRef = A700001330114B6900D02A9B /* onnxruntime */; };
+		A700002130114B6900D02A9B /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = A700002330114B6900D02A9B /* ZIPFoundation */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -28,6 +30,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				A700000130114B6900D02A9B /* YoutubeDL in Frameworks */,
+				A700001130114B6900D02A9B /* onnxruntime in Frameworks */,
+				A700002130114B6900D02A9B /* ZIPFoundation in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -71,6 +75,8 @@
 			name = Atarang;
 			packageProductDependencies = (
 				A700000330114B6900D02A9B /* YoutubeDL */,
+				A700001330114B6900D02A9B /* onnxruntime */,
+				A700002330114B6900D02A9B /* ZIPFoundation */,
 			);
 			productName = Atarang;
 			productReference = F420221830114B6900D02A9B /* Atarang.app */;
@@ -102,6 +108,8 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				A700000230114B6900D02A9B /* XCRemoteSwiftPackageReference "YoutubeDL-iOS" */,
+				A700001230114B6900D02A9B /* XCRemoteSwiftPackageReference "onnxruntime-swift-package-manager" */,
+				A700002230114B6900D02A9B /* XCRemoteSwiftPackageReference "ZIPFoundation" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = F420221930114B6900D02A9B /* Products */;
@@ -351,6 +359,22 @@
 				minimumVersion = 0.0.2;
 			};
 		};
+		A700001230114B6900D02A9B /* XCRemoteSwiftPackageReference "onnxruntime-swift-package-manager" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/microsoft/onnxruntime-swift-package-manager.git";
+			requirement = {
+				kind = exactVersion;
+				version = 1.24.2;
+			};
+		};
+		A700002230114B6900D02A9B /* XCRemoteSwiftPackageReference "ZIPFoundation" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/weichsel/ZIPFoundation.git";
+			requirement = {
+				kind = exactVersion;
+				version = 0.9.20;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -358,6 +382,16 @@
 			isa = XCSwiftPackageProductDependency;
 			package = A700000230114B6900D02A9B /* XCRemoteSwiftPackageReference "YoutubeDL-iOS" */;
 			productName = YoutubeDL;
+		};
+		A700001330114B6900D02A9B /* onnxruntime */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A700001230114B6900D02A9B /* XCRemoteSwiftPackageReference "onnxruntime-swift-package-manager" */;
+			productName = onnxruntime;
+		};
+		A700002330114B6900D02A9B /* ZIPFoundation */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A700002230114B6900D02A9B /* XCRemoteSwiftPackageReference "ZIPFoundation" */;
+			productName = ZIPFoundation;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
