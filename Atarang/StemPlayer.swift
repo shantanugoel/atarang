@@ -68,7 +68,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
     private var renderAnchorPosition: TimeInterval = 0
 
     private var microphoneFile: AVAudioFile?
-    private var backingFile: AVAudioFile?
+    private var backingWriter: AudioTapFileWriter?
     private var microphoneURL: URL?
     private var backingURL: URL?
     private var recordingID: UUID?
@@ -83,6 +83,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
     private var tapTempoDates: [Date] = []
     private var loopResumeTask: Task<Void, Never>?
     private var playbackRequestID = 0
+    private var recordingRouteTransitionDeadline = Date.distantPast
     private let practiceSettingsStore = PracticeSettingsStore()
     private let logger = Logger(subsystem: "com.shantanugoel.atarang.Atarang", category: "Audio")
     private static let microphoneLevelDefaultsKey = "recordingMicrophoneLevel"
@@ -800,20 +801,28 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         playbackState.seek(to: resumePosition)
         do { try configureRecordingSession() }
         catch { throw PlayerError.audioSetup("Could not activate microphone mode", error) }
+        // Merely materializing the engine's input node can complete the switch
+        // to a duplex hardware route. Do it before waiting for the route to
+        // settle so its configuration notification cannot race recording.
+        let inputNode = engine.inputNode
+        _ = inputNode.outputFormat(forBus: 0)
+        // Activating microphone input changes Bluetooth headphones from A2DP
+        // playback to the HFP duplex route. Let that Core Audio
+        // reconfiguration finish before reading formats or installing taps.
+        // Otherwise the delayed engine-configuration notification can stop a
+        // recording immediately after it starts.
+        try await waitForRecordingRouteToSettle()
 
         let recording = try recordingFolder()
         let folder = recording.folder
         let micURL = folder.appendingPathComponent("microphone.caf")
         let mixURL = folder.appendingPathComponent("backing.caf")
-        let inputNode = engine.inputNode
         let microphoneFormat = inputNode.outputFormat(forBus: 0)
-        let backingFormat = engine.mainMixerNode.outputFormat(forBus: 0)
-        guard microphoneFormat.sampleRate > 0, backingFormat.sampleRate > 0 else {
+        guard microphoneFormat.sampleRate > 0 else {
             throw PlayerError.noMicrophone
         }
 
         let micFile: AVAudioFile
-        let mixFile: AVAudioFile
         do {
             micFile = try AVAudioFile(
                 forWriting: micURL,
@@ -821,15 +830,10 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
                 commonFormat: .pcmFormatFloat32,
                 interleaved: false
             )
-            mixFile = try AVAudioFile(
-                forWriting: mixURL,
-                settings: backingFormat.settings,
-                commonFormat: .pcmFormatFloat32,
-                interleaved: false
-            )
         } catch {
             throw PlayerError.audioSetup("Could not create recording files", error)
         }
+        let mixWriter = AudioTapFileWriter(url: mixURL)
 
         let takeID = recording.id
         inputNode.installTap(onBus: 0, bufferSize: 4_096, format: microphoneFormat) { [weak self] buffer, _ in
@@ -841,13 +845,16 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
                 self.microphoneMeterLevel = level
             }
         }
-        engine.mainMixerNode.installTap(onBus: 0, bufferSize: 4_096, format: backingFormat) { buffer, _ in
-            do { try mixFile.write(from: buffer) }
+        // The mixer format reported before engine.start() can still describe
+        // the old A2DP route. A nil tap format follows the actual render
+        // format, and the writer creates the CAF from the first real buffer.
+        engine.mainMixerNode.installTap(onBus: 0, bufferSize: 4_096, format: nil) { buffer, _ in
+            do { try mixWriter.write(buffer) }
             catch { print("Atarang backing write failed: \(error)") }
         }
 
         microphoneFile = micFile
-        backingFile = mixFile
+        backingWriter = mixWriter
         microphoneURL = micURL
         backingURL = mixURL
         recordingID = recording.id
@@ -859,6 +866,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         recordedTake = nil
         shareURL = nil
         isRecording = true
+        recordingRouteTransitionDeadline = Date().addingTimeInterval(2)
 
         do { try play() }
         catch {
@@ -867,6 +875,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
             rebuildPlaybackEngine()
             isRecording = false
             isLoopTakeRecording = false
+            recordingRouteTransitionDeadline = .distantPast
             deactivateAudioSession()
             throw PlayerError.audioSetup("Could not start the audio engine", error)
         }
@@ -901,6 +910,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         updatePosition()
         isRecording = false
         isLoopTakeRecording = false
+        recordingRouteTransitionDeadline = .distantPast
 
         // Stop every render and input resource before removing the taps. This
         // both stops the backing track at the end of a take and releases the
@@ -924,6 +934,11 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
             audioDuration(at: backingURL)
         )
         recordingDuration = measuredDuration
+        guard measuredDuration > 0 else {
+            alertMessage = "No audio was captured. Check the microphone route and try recording again."
+            logger.warning("Discarding an empty performance recording")
+            return
+        }
         let take = RecordedTake(
             id: recordingID,
             title: title,
@@ -963,7 +978,8 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         engine.inputNode.removeTap(onBus: 0)
         engine.mainMixerNode.removeTap(onBus: 0)
         microphoneFile = nil
-        backingFile = nil
+        backingWriter?.finish()
+        backingWriter = nil
         recordingStartedAt = nil
     }
 
@@ -1077,6 +1093,39 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
             }
         @unknown default: return false
         }
+    }
+
+    /// Waits until the activated input/output route has remained unchanged
+    /// across two checks. AirPods need a short handoff from A2DP to HFP when
+    /// microphone input is enabled.
+    private func waitForRecordingRouteToSettle() async throws {
+        let session = AVAudioSession.sharedInstance()
+        var previousSignature = recordingRouteSignature(session)
+        var stableChecks = 0
+        for _ in 0..<10 {
+            try await Task.sleep(for: .milliseconds(100))
+            let signature = recordingRouteSignature(session)
+            if signature == previousSignature,
+               session.sampleRate > 0,
+               session.inputNumberOfChannels > 0,
+               session.outputNumberOfChannels > 0 {
+                stableChecks += 1
+                if stableChecks >= 2 { return }
+            } else {
+                stableChecks = 0
+            }
+            previousSignature = signature
+        }
+    }
+
+    private func recordingRouteSignature(_ session: AVAudioSession) -> String {
+        let inputs = session.currentRoute.inputs.map {
+            "\($0.portType.rawValue):\($0.uid)"
+        }.joined(separator: ",")
+        let outputs = session.currentRoute.outputs.map {
+            "\($0.portType.rawValue):\($0.uid)"
+        }.joined(separator: ",")
+        return "\(inputs)|\(outputs)|\(session.sampleRate)|\(session.inputNumberOfChannels)|\(session.outputNumberOfChannels)"
     }
 
     private func recordingFolder() throws -> (id: UUID, folder: URL) {
@@ -1532,13 +1581,18 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
             mode: .default,
             options: [.defaultToSpeaker, .allowBluetoothHFP]
         )
+        try session.setActive(true)
         if #available(iOS 18.2, *), session.isEchoCancelledInputAvailable {
             // This input path is tuned for capturing a wider range of audio
             // while removing sound played through the built-in speaker. It is
-            // a better fit for singing and instruments than voice-chat DSP.
-            try session.setPrefersEchoCancelledInput(true)
+            // unnecessary for headphones and can trigger another route change.
+            let usesBuiltInOutput = session.currentRoute.outputs.contains {
+                $0.portType == .builtInSpeaker || $0.portType == .builtInReceiver
+            }
+            if session.isEchoCancelledInputEnabled != usesBuiltInOutput {
+                try session.setPrefersEchoCancelledInput(usesBuiltInOutput)
+            }
         }
-        try session.setActive(true)
         if #available(iOS 18.2, *) {
             isEchoCancellationActive = session.isEchoCancelledInputEnabled
         } else {
@@ -1546,16 +1600,26 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         }
     }
 
-    @objc private func handleInterruption(_ notification: Notification) {
-        guard let rawType = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
-              let type = AVAudioSession.InterruptionType(rawValue: rawType) else { return }
+    @objc nonisolated private func handleInterruption(_ notification: Notification) {
+        guard let rawType =
+                notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt else {
+            return
+        }
+        let rawOptions =
+            notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+        Task { @MainActor [weak self] in
+            self?.processInterruption(type: rawType, options: rawOptions)
+        }
+    }
+
+    private func processInterruption(type rawType: UInt, options rawOptions: UInt) {
+        guard let type = AVAudioSession.InterruptionType(rawValue: rawType) else { return }
         switch type {
         case .began:
             interruptionShouldResume = isPlaying && !isRecording
             if isRecording { stopRecording() }
             pausePlayback()
         case .ended:
-            let rawOptions = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
             let options = AVAudioSession.InterruptionOptions(rawValue: rawOptions)
             if interruptionShouldResume, options.contains(.shouldResume) {
                 requestPlayback()
@@ -1565,15 +1629,42 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         }
     }
 
-    @objc private func handleRouteChange(_ notification: Notification) {
-        guard let rawReason = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
-              AVAudioSession.RouteChangeReason(rawValue: rawReason) == .oldDeviceUnavailable else { return }
+    @objc nonisolated private func handleRouteChange(_ notification: Notification) {
+        guard let rawReason =
+                notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt else {
+            return
+        }
+        Task { @MainActor [weak self] in
+            self?.processRouteChange(reason: rawReason)
+        }
+    }
+
+    private func processRouteChange(reason rawReason: UInt) {
+        guard AVAudioSession.RouteChangeReason(rawValue: rawReason) ==
+                .oldDeviceUnavailable else {
+            return
+        }
         if isRecording { stopRecording() }
         pausePlayback()
     }
 
-    @objc private func handleEngineConfigurationChange() {
+    @objc nonisolated private func handleEngineConfigurationChange() {
+        Task { @MainActor [weak self] in
+            self?.processEngineConfigurationChange()
+        }
+    }
+
+    private func processEngineConfigurationChange() {
         if isRecording {
+            // AVFAudio can deliver the configuration notification produced by
+            // the A2DP-to-HFP handoff after engine.start() has already rebuilt
+            // a healthy graph. Do not turn that stale delivery into a
+            // zero-length take. A real configuration loss stops the engine;
+            // route-removal and interruption notifications are handled above.
+            if Date() < recordingRouteTransitionDeadline, engine.isRunning {
+                logger.debug("Ignoring settled recording-route configuration notification")
+                return
+            }
             stopRecording()
             return
         }
@@ -1581,6 +1672,38 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         updatePosition()
         stop(resetPosition: false)
         requestPlayback()
+    }
+}
+
+/// Opens a tap destination lazily so its file header uses the format delivered
+/// by the running audio graph rather than a possibly stale pre-start format.
+private final class AudioTapFileWriter: @unchecked Sendable {
+    private let url: URL
+    private let lock = NSLock()
+    private var file: AVAudioFile?
+
+    init(url: URL) {
+        self.url = url
+    }
+
+    func write(_ buffer: AVAudioPCMBuffer) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        if file == nil {
+            file = try AVAudioFile(
+                forWriting: url,
+                settings: buffer.format.settings,
+                commonFormat: buffer.format.commonFormat,
+                interleaved: buffer.format.isInterleaved
+            )
+        }
+        try file?.write(from: buffer)
+    }
+
+    func finish() {
+        lock.lock()
+        file = nil
+        lock.unlock()
     }
 }
 

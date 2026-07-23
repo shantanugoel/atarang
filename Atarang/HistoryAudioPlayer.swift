@@ -54,7 +54,16 @@ final class HistoryAudioPlayer: NSObject, ObservableObject, AVAudioPlayerDelegat
         isPlaying = false
     }
 
-    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+    nonisolated func audioPlayerDidFinishPlaying(
+        _ player: AVAudioPlayer,
+        successfully flag: Bool
+    ) {
+        Task { @MainActor [weak self] in
+            self?.finishPlayback()
+        }
+    }
+
+    private func finishPlayback() {
         self.player = nil
         playingID = nil
         isPlaying = false

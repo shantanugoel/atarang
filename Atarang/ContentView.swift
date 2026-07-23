@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import UIKit
 
@@ -141,7 +142,10 @@ struct ContentView: View {
         }
         .background(KeyboardDismissController())
         .tint(.indigo)
-        .onReceive(NotificationCenter.default.publisher(for: .atarangLibraryDidChange)) { _ in
+        .onReceive(
+            NotificationCenter.default.publisher(for: .atarangLibraryDidChange)
+                .receive(on: RunLoop.main)
+        ) { _ in
             history.refresh()
         }
         .onChange(of: selectedTab) { _, tab in
