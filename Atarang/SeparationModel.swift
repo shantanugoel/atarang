@@ -20,6 +20,11 @@ final class SeparationModel: ObservableObject {
 
         isWorking = true
         let separationModel = selectedModel
+        guard separationModel.isAvailableOnCurrentDevice else {
+            isWorking = false
+            errorMessage = separationModel.unavailabilityMessage
+            return nil
+        }
         progress = 0.01
         statusText = "Reading video information…"
         defer { isWorking = false }
@@ -67,6 +72,10 @@ final class SeparationModel: ObservableObject {
         original: HistoryOriginal,
         using separationModel: SeparationModelKind
     ) async -> LocalTrack? {
+        guard separationModel.isAvailableOnCurrentDevice else {
+            errorMessage = separationModel.unavailabilityMessage
+            return nil
+        }
         isWorking = true
         selectedModel = separationModel
         progress = 0.17
@@ -93,6 +102,13 @@ final class SeparationModel: ObservableObject {
         original: SavedOriginal,
         using separationModel: SeparationModelKind
     ) async throws -> LocalTrack {
+        let availableMemory = ModelMemoryBudget.availableBytes
+        logger.info(
+            "Available memory before \(separationModel.title, privacy: .public): \(availableMemory, privacy: .public) bytes"
+        )
+        guard separationModel.isAvailableOnCurrentDevice else {
+            throw StemSeparatorError.modelUnavailable(separationModel)
+        }
         statusText = separationModel == .htdemucs
             ? "Loading \(separationModel.title)…"
             : "Preparing \(separationModel.title)…"

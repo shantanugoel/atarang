@@ -74,6 +74,20 @@ enum SeparationModelKind: String, CaseIterable, Identifiable, Codable, Sendable 
     }
 
     var stemSummary: String { stems.map(\.title).joined(separator: ", ") }
+
+    var isAvailableOnCurrentDevice: Bool {
+        switch self {
+        case .htdemucs6s:
+            ModelMemoryBudget.supportsHTDemucs6Stem
+        default:
+            true
+        }
+    }
+
+    var unavailabilityMessage: String? {
+        guard !isAvailableOnCurrentDevice else { return nil }
+        return "6-stem needs a newer high-memory iPhone or more free memory."
+    }
 }
 
 struct LocalTrack: Identifiable, Sendable {

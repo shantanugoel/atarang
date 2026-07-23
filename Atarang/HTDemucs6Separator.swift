@@ -8,7 +8,14 @@ final class HTDemucs6Separator: @unchecked Sendable {
     private let session: ONNXModelSession
 
     init(modelURL: URL) throws {
-        session = try ONNXModelSession(modelURL: modelURL)
+        // This model requires about 1.1 GB at inference even with FP16-stored
+        // weights. Converting its graph to Core ML adds a second large graph
+        // during session creation and can make iOS terminate the app. Running
+        // it directly in ORT avoids that transient memory spike.
+        session = try ONNXModelSession(
+            modelURL: modelURL,
+            executionBackend: .cpu
+        )
     }
 
     func separate(
@@ -45,37 +52,39 @@ final class HTDemucs6Separator: @unchecked Sendable {
         var previousTails: [StemKind: [Float]] = [:]
         for chunkIndex in 0..<chunkCount {
             try Task.checkCancellation()
-            let start = chunkIndex * stride
-            guard start < total else { break }
-            let validFrames = min(segmentSamples, total - start)
-            let predictions = try predict(chunk: sliceChunk(mix: mix, start: start))
-            let isFirst = chunkIndex == 0
-            let isLast = chunkIndex == chunkCount - 1
+            try autoreleasepool {
+                let start = chunkIndex * stride
+                guard start < total else { return }
+                let validFrames = min(segmentSamples, total - start)
+                let predictions = try predict(chunk: sliceChunk(mix: mix, start: start))
+                let isFirst = chunkIndex == 0
+                let isLast = chunkIndex == chunkCount - 1
 
-            for stem in stems {
-                guard let samples = predictions[stem], let writer = writers[stem] else { continue }
-                var resolved: [Float]
-                if isFirst && isLast {
-                    resolved = Array(samples.prefix(validFrames * 2))
-                } else if isFirst {
-                    resolved = Array(samples.prefix(stride * 2))
-                    previousTails[stem] = interleavedSlice(samples, frames: stride..<segmentSamples)
-                } else {
-                    let overlapCount = min(overlapSamples, validFrames)
-                    resolved = blend(
-                        previous: previousTails[stem] ?? [],
-                        current: samples,
-                        frameCount: overlapCount
-                    )
-                    let resolvedEnd = isLast ? validFrames : min(stride, validFrames)
-                    if resolvedEnd > overlapCount {
-                        resolved.append(contentsOf: interleavedSlice(samples, frames: overlapCount..<resolvedEnd))
-                    }
-                    if !isLast {
+                for stem in stems {
+                    guard let samples = predictions[stem], let writer = writers[stem] else { continue }
+                    var resolved: [Float]
+                    if isFirst && isLast {
+                        resolved = Array(samples.prefix(validFrames * 2))
+                    } else if isFirst {
+                        resolved = Array(samples.prefix(stride * 2))
                         previousTails[stem] = interleavedSlice(samples, frames: stride..<segmentSamples)
+                    } else {
+                        let overlapCount = min(overlapSamples, validFrames)
+                        resolved = blend(
+                            previous: previousTails[stem] ?? [],
+                            current: samples,
+                            frameCount: overlapCount
+                        )
+                        let resolvedEnd = isLast ? validFrames : min(stride, validFrames)
+                        if resolvedEnd > overlapCount {
+                            resolved.append(contentsOf: interleavedSlice(samples, frames: overlapCount..<resolvedEnd))
+                        }
+                        if !isLast {
+                            previousTails[stem] = interleavedSlice(samples, frames: stride..<segmentSamples)
+                        }
                     }
+                    try write(interleaved: resolved, to: writer, format: format)
                 }
-                try write(interleaved: resolved, to: writer, format: format)
             }
             progress(Double(chunkIndex + 1) / Double(chunkCount))
         }

@@ -193,6 +193,7 @@ struct ContentView: View {
             .disabled(
                 youtubeURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     || model.isWorking
+                    || !model.selectedModel.isAvailableOnCurrentDevice
             )
         }
         .cardStyle()
@@ -202,11 +203,15 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 6) {
             Picker("Separation model", selection: $model.selectedModel) {
                 ForEach(SeparationModelKind.allCases) { separationModel in
-                    Text(ModelAssetStore.isInstalled(separationModel)
-                        ? separationModel.title
-                        : "\(separationModel.title) — downloads once"
+                    Text(
+                        separationModel.isAvailableOnCurrentDevice
+                            ? (ModelAssetStore.isInstalled(separationModel)
+                                ? separationModel.title
+                                : "\(separationModel.title) — downloads once")
+                            : "\(separationModel.title) — unavailable"
                     )
                     .tag(separationModel)
+                    .disabled(!separationModel.isAvailableOnCurrentDevice)
                 }
             }
             .pickerStyle(.menu)
@@ -218,7 +223,11 @@ struct ContentView: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .accessibilityLabel("Supported stems: \(model.selectedModel.stemSummary)")
-            if !ModelAssetStore.isInstalled(model.selectedModel) {
+            if let message = model.selectedModel.unavailabilityMessage {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            } else if !ModelAssetStore.isInstalled(model.selectedModel) {
                 Text("Downloads once when first used.")
                     .font(.caption)
                     .foregroundStyle(.secondary)

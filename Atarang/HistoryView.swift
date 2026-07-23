@@ -887,7 +887,11 @@ private struct SeparationChoiceSheet: View {
     ) {
         self.request = request
         self.onSeparate = onSeparate
-        _model = State(initialValue: request.initialModel)
+        _model = State(
+            initialValue: request.initialModel.isAvailableOnCurrentDevice
+                ? request.initialModel
+                : .htdemucs
+        )
     }
 
     var body: some View {
@@ -896,7 +900,13 @@ private struct SeparationChoiceSheet: View {
                 Section {
                     Picker("Algorithm", selection: $model) {
                         ForEach(SeparationModelKind.allCases) { model in
-                            Text(model.title).tag(model)
+                            Text(
+                                model.isAvailableOnCurrentDevice
+                                    ? model.title
+                                    : "\(model.title) — unavailable"
+                            )
+                            .tag(model)
+                            .disabled(!model.isAvailableOnCurrentDevice)
                         }
                     }
                     Text(model.detail)
@@ -925,6 +935,7 @@ private struct SeparationChoiceSheet: View {
                         .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
+                    .disabled(!model.isAvailableOnCurrentDevice)
                     .listRowBackground(Color.clear)
                 }
             }

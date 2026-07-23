@@ -11,6 +11,9 @@ final class StemSeparator: @unchecked Sendable {
     private let backend: Backend
 
     init(modelKind: SeparationModelKind, artifact: SeparationModelArtifact) throws {
+        guard modelKind.isAvailableOnCurrentDevice else {
+            throw StemSeparatorError.modelUnavailable(modelKind)
+        }
         switch (modelKind, artifact) {
         case (.htdemucs, .coreML(let url)):
             backend = .waveform(try CoreMLWaveformSeparator(modelKind: modelKind, modelURL: url))
@@ -41,6 +44,7 @@ final class StemSeparator: @unchecked Sendable {
 
 enum StemSeparatorError: LocalizedError {
     case modelNotFound(SeparationModelKind)
+    case modelUnavailable(SeparationModelKind)
     case incompatibleModel(SeparationModelKind, String)
     case unsupportedFormat
     case inferenceFailed(String)
@@ -48,6 +52,8 @@ enum StemSeparatorError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .modelNotFound(let model): "The bundled \(model.title) model could not be loaded."
+        case .modelUnavailable(let model):
+            model.unavailabilityMessage ?? "\(model.title) is not available on this iPhone."
         case .incompatibleModel(let model, let message): "The \(model.title) model is incompatible: \(message)"
         case .unsupportedFormat: "The downloaded audio format could not be converted."
         case .inferenceFailed(let message): "On-device separation failed: \(message)"

@@ -2,18 +2,28 @@ import Foundation
 import OnnxRuntimeBindings
 
 final class ONNXModelSession: @unchecked Sendable {
+    enum ExecutionBackend: Equatable {
+        case automatic
+        case cpu
+    }
+
     private let session: ORTSession
     private let inputNames: [String]
     private let outputNames: [String]
 
-    init(modelURL: URL) throws {
+    init(modelURL: URL, executionBackend: ExecutionBackend = .automatic) throws {
         let environment = try ORTEnv(loggingLevel: .warning)
         let options = try ORTSessionOptions()
         try options.setGraphOptimizationLevel(.all)
-        if ORTIsCoreMLExecutionProviderAvailable() {
+        if executionBackend == .automatic, ORTIsCoreMLExecutionProviderAvailable() {
             let coreML = ORTCoreMLExecutionProviderOptions()
-            coreML.enableOnSubgraphs = true
+            coreML.enableOnSubgraphs = false
+            coreML.onlyAllowStaticInputShapes = true
             try? options.appendCoreMLExecutionProvider(with: coreML)
+        } else {
+            // Keep large models within iOS's memory budget. More ORT worker
+            // threads increase the peak scratch allocation substantially.
+            try options.setIntraOpNumThreads(2)
         }
         session = try ORTSession(
             env: environment,
