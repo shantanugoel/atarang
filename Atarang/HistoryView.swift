@@ -21,6 +21,9 @@ struct HistoryView: View {
     @State private var editingMix: HistoryRecording?
     @State private var deletion: DeletionTarget?
     @State private var separationRequest: SeparationRequest?
+    @State private var isSelecting = false
+    @State private var selectedItems: Set<LibraryItemID> = []
+    @State private var showsBatchDeleteConfirmation = false
 
     var body: some View {
         NavigationStack {
@@ -31,6 +34,7 @@ struct HistoryView: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                .disabled(isSelecting)
                 .padding(.horizontal)
                 .padding(.bottom, 10)
 
@@ -49,11 +53,32 @@ struct HistoryView: View {
                 }
             }
             .navigationTitle("Library")
+            .toolbar {
+                if isSelecting {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button(allVisibleItemsSelected ? "Deselect All" : "Select All") {
+                            toggleSelectAll()
+                        }
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Done") { endSelection() }
+                    }
+                } else {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Select") { beginSelection() }
+                            .disabled(visibleItemCount == 0)
+                    }
+                }
+            }
             .searchable(text: $query, prompt: "Search \(category.searchPrompt)")
             .refreshable { store.refresh() }
             .onChange(of: category) {
-                expandedItem = nil
-                deletion = nil
+                endSelection()
+            }
+            .safeAreaInset(edge: .bottom) {
+                if isSelecting {
+                    selectionBar
+                }
             }
             .sheet(item: $sharePayload) { payload in
                 ActivityView(items: payload.items)
@@ -68,6 +93,17 @@ struct HistoryView: View {
                     separateSource(request.source, model)
                 }
                 .presentationDetents([.medium])
+            }
+            .sheet(isPresented: $showsBatchDeleteConfirmation) {
+                BatchDeleteConfirmationSheet(
+                    count: selectedItems.count,
+                    byteCount: selectedBytes,
+                    itemName: category.batchItemName
+                ) {
+                    performBatchDeletion()
+                }
+                .presentationDetents([.height(245)])
+                .presentationDragIndicator(.visible)
             }
             .alert("Library problem", isPresented: errorIsPresented) {
                 Button("OK") {
@@ -142,7 +178,7 @@ struct HistoryView: View {
                 audioPlayer.toggle(id: original.id, url: original.audioURL)
             }
 
-            if expandedItem == item {
+            if !isSelecting, expandedItem == item {
                 Divider().padding(.top, 5)
                 if deletion?.item == item {
                     inlineDeletion
@@ -197,7 +233,7 @@ struct HistoryView: View {
                 openTrack(track, true)
             }
 
-            if expandedItem == item {
+            if !isSelecting, expandedItem == item {
                 Divider().padding(.top, 5)
                 if deletion?.item == item {
                     inlineDeletion
@@ -262,7 +298,7 @@ struct HistoryView: View {
                 }
             }
 
-            if expandedItem == item {
+            if !isSelecting, expandedItem == item {
                 Divider().padding(.top, 5)
                 if deletion?.item == item {
                     inlineDeletion
@@ -341,28 +377,48 @@ struct HistoryView: View {
                 metadataLine(date: date, duration: duration, bytes: bytes)
             }
             Spacer(minLength: 4)
-            Button(action: play) {
-                Image(systemName: playIcon(for: item.id))
-                    .frame(width: 34, height: 34)
-                    .background(color.opacity(0.11), in: Circle())
-                    .foregroundStyle(color)
-            }
-            .buttonStyle(.plain)
-            .disabled(audioPlaybackDisabled || !playEnabled)
-            .accessibilityLabel(playIcon(for: item.id) == "pause.fill" ? "Pause" : "Play")
+            if isSelecting {
+                Image(
+                    systemName: selectedItems.contains(item)
+                        ? "checkmark.circle.fill"
+                        : "circle"
+                )
+                .font(.title2)
+                .foregroundStyle(selectedItems.contains(item) ? Color.indigo : .secondary)
+                .frame(width: 42, height: 42)
+                .accessibilityLabel(
+                    selectedItems.contains(item) ? "Selected" : "Not selected"
+                )
+            } else {
+                Button(action: play) {
+                    Image(systemName: playIcon(for: item.id))
+                        .frame(width: 34, height: 34)
+                        .background(color.opacity(0.11), in: Circle())
+                        .foregroundStyle(color)
+                }
+                .buttonStyle(.plain)
+                .disabled(audioPlaybackDisabled || !playEnabled)
+                .accessibilityLabel(playIcon(for: item.id) == "pause.fill" ? "Pause" : "Play")
 
-            Image(systemName: expandedItem == item ? "chevron.up" : "chevron.down")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 18)
+                Image(systemName: expandedItem == item ? "chevron.up" : "chevron.down")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18)
+            }
         }
         .padding(.vertical, 4)
         .contentShape(Rectangle())
         .onTapGesture {
-            deletion = nil
-            expandedItem = expandedItem == item ? nil : item
+            if isSelecting {
+                toggleSelection(of: item)
+            } else {
+                deletion = nil
+                expandedItem = expandedItem == item ? nil : item
+            }
         }
-        .accessibilityHint("Shows actions for this item")
+        .accessibilityHint(
+            isSelecting ? "Toggles selection" : "Shows actions for this item"
+        )
     }
 
     private var inlineDeletion: some View {
@@ -384,6 +440,46 @@ struct HistoryView: View {
         .padding(.vertical, 10)
     }
 
+    private var selectionBar: some View {
+        HStack(spacing: 14) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(
+                    selectedItems.isEmpty
+                        ? "Select items"
+                        : "\(selectedItems.count) selected"
+                )
+                .font(.subheadline.weight(.semibold))
+                Text(
+                    selectedItems.isEmpty
+                        ? "Choose items to manage"
+                        : ByteCountFormatter.string(
+                            fromByteCount: selectedBytes,
+                            countStyle: .file
+                        )
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button(role: .destructive) {
+                showsBatchDeleteConfirmation = true
+            } label: {
+                Label(
+                    selectedItems.isEmpty
+                        ? "Delete"
+                        : "Delete \(selectedItems.count)",
+                    systemImage: "trash"
+                )
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.red)
+            .disabled(selectedItems.isEmpty)
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 10)
+        .background(.bar)
+    }
+
     private var filteredOriginals: [HistoryOriginal] {
         store.originals.filter { matches($0.title) }
     }
@@ -401,6 +497,57 @@ struct HistoryView: View {
         case .originals: filteredOriginals.count
         case .separations: filteredTracks.count
         case .performances: filteredRecordings.count
+        }
+    }
+
+    private var visibleItemIDs: [LibraryItemID] {
+        switch category {
+        case .originals:
+            filteredOriginals.map {
+                LibraryItemID(kind: .original, id: $0.id)
+            }
+        case .separations:
+            filteredTracks.map {
+                LibraryItemID(kind: .track, id: $0.id)
+            }
+        case .performances:
+            filteredRecordings.map {
+                LibraryItemID(kind: .recording, id: $0.id)
+            }
+        }
+    }
+
+    private var allVisibleItemsSelected: Bool {
+        !visibleItemIDs.isEmpty
+            && visibleItemIDs.allSatisfy(selectedItems.contains)
+    }
+
+    private var selectedBytes: Int64 {
+        switch category {
+        case .originals:
+            store.originals
+                .filter {
+                    selectedItems.contains(
+                        LibraryItemID(kind: .original, id: $0.id)
+                    )
+                }
+                .reduce(0) { $0 + $1.byteCount }
+        case .separations:
+            store.tracks
+                .filter {
+                    selectedItems.contains(
+                        LibraryItemID(kind: .track, id: $0.id)
+                    )
+                }
+                .reduce(0) { $0 + $1.byteCount }
+        case .performances:
+            store.recordings
+                .filter {
+                    selectedItems.contains(
+                        LibraryItemID(kind: .recording, id: $0.id)
+                    )
+                }
+                .reduce(0) { $0 + $1.byteCount }
         }
     }
 
@@ -427,6 +574,54 @@ struct HistoryView: View {
     private func matches(_ title: String) -> Bool {
         let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
         return term.isEmpty || title.localizedCaseInsensitiveContains(term)
+    }
+
+    private func beginSelection() {
+        audioPlayer.stop(releaseSession: true)
+        expandedItem = nil
+        deletion = nil
+        selectedItems.removeAll()
+        isSelecting = true
+    }
+
+    private func endSelection() {
+        isSelecting = false
+        selectedItems.removeAll()
+        expandedItem = nil
+        deletion = nil
+        showsBatchDeleteConfirmation = false
+    }
+
+    private func toggleSelection(of item: LibraryItemID) {
+        if selectedItems.contains(item) {
+            selectedItems.remove(item)
+        } else {
+            selectedItems.insert(item)
+        }
+    }
+
+    private func toggleSelectAll() {
+        if allVisibleItemsSelected {
+            selectedItems.subtract(visibleItemIDs)
+        } else {
+            selectedItems.formUnion(visibleItemIDs)
+        }
+    }
+
+    private func performBatchDeletion() {
+        let ids = Set(selectedItems.map(\.id))
+        if let playingID = audioPlayer.playingID, ids.contains(playingID) {
+            audioPlayer.stop()
+        }
+        switch category {
+        case .originals:
+            store.delete(originals: store.originals.filter { ids.contains($0.id) })
+        case .separations:
+            store.delete(tracks: store.tracks.filter { ids.contains($0.id) })
+        case .performances:
+            store.delete(recordings: store.recordings.filter { ids.contains($0.id) })
+        }
+        endSelection()
     }
 
     private func share(_ urls: [URL]) {
@@ -605,12 +800,62 @@ private enum LibraryCategory: String, CaseIterable, Identifiable {
             "Your recorded performances will appear here."
         }
     }
+
+    var batchItemName: String {
+        switch self {
+        case .originals: "originals"
+        case .separations: "separations"
+        case .performances: "performances"
+        }
+    }
 }
 
-private struct LibraryItemID: Equatable {
+private struct LibraryItemID: Hashable {
     enum Kind { case original, track, recording }
     let kind: Kind
     let id: UUID
+}
+
+private struct BatchDeleteConfirmationSheet: View {
+    let count: Int
+    let byteCount: Int64
+    let itemName: String
+    let onDelete: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "trash")
+                .font(.title2)
+                .foregroundStyle(.red)
+                .frame(width: 48, height: 48)
+                .background(.red.opacity(0.1), in: Circle())
+            VStack(spacing: 5) {
+                Text("Delete \(count) \(itemName)?")
+                    .font(.headline)
+                Text(
+                    "This permanently removes \(ByteCountFormatter.string(fromByteCount: byteCount, countStyle: .file)) of saved audio."
+                )
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            }
+            HStack {
+                Button("Cancel") { dismiss() }
+                    .buttonStyle(.bordered)
+                    .frame(maxWidth: .infinity)
+                Button("Delete", role: .destructive) {
+                    dismiss()
+                    onDelete()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+                .frame(maxWidth: .infinity)
+            }
+        }
+        .padding()
+    }
 }
 
 private struct DeletionTarget {

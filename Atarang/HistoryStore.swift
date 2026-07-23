@@ -88,12 +88,24 @@ final class HistoryStore: ObservableObject {
         delete(folder: original.folderURL)
     }
 
+    func delete(originals: [HistoryOriginal]) {
+        delete(folders: originals.map(\.folderURL))
+    }
+
     func delete(track: HistoryTrack) {
         delete(folder: track.folderURL)
     }
 
+    func delete(tracks: [HistoryTrack]) {
+        delete(folders: tracks.map(\.folderURL))
+    }
+
     func delete(recording: HistoryRecording) {
         delete(folder: recording.folderURL)
+    }
+
+    func delete(recordings: [HistoryRecording]) {
+        delete(folders: recordings.map(\.folderURL))
     }
 
     func saveMix(
@@ -179,11 +191,22 @@ final class HistoryStore: ObservableObject {
     }
 
     private func delete(folder: URL) {
-        do {
-            try FileManager.default.removeItem(at: folder)
-            refresh()
-        } catch {
-            errorMessage = "This item could not be deleted: \(error.localizedDescription)"
+        delete(folders: [folder])
+    }
+
+    private func delete(folders: [URL]) {
+        guard !folders.isEmpty else { return }
+        var firstError: Error?
+        for folder in folders {
+            do {
+                try FileManager.default.removeItem(at: folder)
+            } catch {
+                firstError = firstError ?? error
+            }
+        }
+        refresh()
+        if let firstError {
+            errorMessage = "Some items could not be deleted: \(firstError.localizedDescription)"
         }
     }
 
