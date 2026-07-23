@@ -17,6 +17,24 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
     @Published private(set) var activeStems: [StemKind] = []
     @Published private(set) var recordedTake: RecordedTake?
     @Published private(set) var shareURL: URL?
+    @Published var recordingMicrophoneLevel: Float {
+        didSet {
+            UserDefaults.standard.set(
+                recordingMicrophoneLevel,
+                forKey: Self.microphoneLevelDefaultsKey
+            )
+        }
+    }
+    @Published var recordingBackingLevel: Float {
+        didSet {
+            UserDefaults.standard.set(
+                recordingBackingLevel,
+                forKey: Self.backingLevelDefaultsKey
+            )
+        }
+    }
+    @Published private(set) var microphoneMeterLevel: Float = 0
+    @Published private(set) var isEchoCancellationActive = false
     @Published var alertMessage: String?
 
     private let engine = AVAudioEngine()
@@ -35,10 +53,21 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
     private var recordingID: UUID?
     private var currentTrackID: UUID?
     private var recordingStartedAt: Date?
+    private var activeRecordingMicrophoneLevel: Float = 1
+    private var activeRecordingBackingLevel: Float = 0.7
     private var interruptionShouldResume = false
     private let logger = Logger(subsystem: "com.shantanugoel.atarang.Atarang", category: "Audio")
+    private static let microphoneLevelDefaultsKey = "recordingMicrophoneLevel"
+    private static let backingLevelDefaultsKey = "recordingBackingLevel"
 
     init() {
+        let defaults = UserDefaults.standard
+        recordingMicrophoneLevel = defaults.object(
+            forKey: Self.microphoneLevelDefaultsKey
+        ) == nil ? 1 : defaults.float(forKey: Self.microphoneLevelDefaultsKey)
+        recordingBackingLevel = defaults.object(
+            forKey: Self.backingLevelDefaultsKey
+        ) == nil ? 0.7 : defaults.float(forKey: Self.backingLevelDefaultsKey)
         for stem in StemKind.allCases {
             let node = AVAudioPlayerNode()
             nodes[stem] = node
@@ -62,7 +91,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
 
     func load(track: LocalTrack) throws {
         if isRecording { stopRecording() }
-        stop(resetPosition: true)
+        stop(resetPosition: true, releaseSession: true)
         files = try Dictionary(uniqueKeysWithValues: track.files.map { key, url in
             (key, try AVAudioFile(forReading: url))
         })
@@ -81,7 +110,6 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         isLoaded = duration > 0
         recordedTake = nil
         shareURL = nil
-        try configurePlaybackSession()
     }
 
     func togglePlayback() {
@@ -99,12 +127,23 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         playbackGeneration += 1
         let generation = playbackGeneration
         for node in nodes.values { node.stop() }
-        try configurePlaybackSession()
+        // Recording has already activated a play-and-record session. Switching
+        // back to `.playback` here would silently drop microphone input just as
+        // the take begins.
+        if !isRecording {
+            try configurePlaybackSession()
+        }
         if !engine.isRunning {
             engine.prepare()
             do {
                 try engine.start()
             } catch {
+                // Resetting an engine after installing recording taps can leave
+                // a take running without a dependable microphone tap. Fail the
+                // recording cleanly instead; the caller tears down the session
+                // and lets the user retry.
+                if isRecording { throw error }
+
                 // A previous recorder/preview can leave AVFAudio render
                 // resources stale even after the session category changes.
                 // Resetting and retrying rebuilds the output unit against the
@@ -164,7 +203,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
     func suspend() {
         guard !isRecording else { return }
         updatePosition()
-        stop(resetPosition: false)
+        stop(resetPosition: false, releaseSession: true)
     }
 
     func seek(to newPosition: TimeInterval) {
@@ -202,7 +241,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
 
     func unload() {
         if isRecording { stopRecording() }
-        stop(resetPosition: true)
+        stop(resetPosition: true, releaseSession: true)
         files.removeAll()
         duration = 0
         title = ""
@@ -255,9 +294,15 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
             throw PlayerError.audioSetup("Could not create recording files", error)
         }
 
-        inputNode.installTap(onBus: 0, bufferSize: 4_096, format: microphoneFormat) { buffer, _ in
+        let takeID = recording.id
+        inputNode.installTap(onBus: 0, bufferSize: 4_096, format: microphoneFormat) { [weak self] buffer, _ in
             do { try micFile.write(from: buffer) }
             catch { print("Atarang microphone write failed: \(error)") }
+            let level = Self.meterLevel(for: buffer)
+            Task { @MainActor [weak self] in
+                guard let self, self.recordingID == takeID, self.isRecording else { return }
+                self.microphoneMeterLevel = level
+            }
         }
         engine.mainMixerNode.installTap(onBus: 0, bufferSize: 4_096, format: backingFormat) { buffer, _ in
             do { try mixFile.write(from: buffer) }
@@ -270,25 +315,70 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         backingURL = mixURL
         recordingID = recording.id
         recordingStartedAt = Date()
+        activeRecordingMicrophoneLevel = recordingMicrophoneLevel
+        activeRecordingBackingLevel = recordingBackingLevel
         recordingDuration = 0
+        microphoneMeterLevel = 0
         recordedTake = nil
         shareURL = nil
         isRecording = true
 
         do { try play() }
         catch {
+            engine.stop()
             removeRecordingTaps()
+            engine.reset()
             isRecording = false
+            deactivateAudioSession()
             throw PlayerError.audioSetup("Could not start the audio engine", error)
         }
         logger.info("Performance recording started")
     }
 
+    private nonisolated static func meterLevel(for buffer: AVAudioPCMBuffer) -> Float {
+        guard buffer.format.commonFormat == .pcmFormatFloat32,
+              let channels = buffer.floatChannelData,
+              buffer.frameLength > 0 else { return 0 }
+        let frameCount = Int(buffer.frameLength)
+        let channelCount = Int(buffer.format.channelCount)
+        var sumOfSquares: Float = 0
+        for channelIndex in 0..<channelCount {
+            let samples = channels[channelIndex]
+            for frameIndex in 0..<frameCount {
+                let sample = samples[frameIndex]
+                sumOfSquares += sample * sample
+            }
+        }
+        let sampleCount = Float(frameCount * channelCount)
+        let rms = sqrt(sumOfSquares / sampleCount)
+        let decibels = 20 * log10(max(rms, 0.000_001))
+        return min(1, max(0, (decibels + 60) / 60))
+    }
+
     private func stopRecording() {
         guard isRecording else { return }
+        if let recordingStartedAt {
+            recordingDuration = max(0, Date().timeIntervalSince(recordingStartedAt))
+        }
+        if isPlaying, let startedAt {
+            position = min(duration, startPosition + max(0, Date().timeIntervalSince(startedAt)))
+        }
         isRecording = false
-        updatePosition()
+
+        // Stop every render and input resource before removing the taps. This
+        // both stops the backing track at the end of a take and releases the
+        // microphone route so iOS can dismiss its recording indicator.
+        playbackGeneration += 1
+        for node in nodes.values { node.stop() }
+        engine.stop()
+        timer?.invalidate()
+        timer = nil
+        isPlaying = false
         removeRecordingTaps()
+        engine.reset()
+        deactivateAudioSession()
+        microphoneMeterLevel = 0
+        isEchoCancellationActive = false
 
         guard let microphoneURL, let backingURL, let recordingID else { return }
         let measuredDuration = min(
@@ -301,6 +391,8 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
             title: title,
             microphoneURL: microphoneURL,
             backingURL: backingURL,
+            microphoneLevel: activeRecordingMicrophoneLevel,
+            backingLevel: activeRecordingBackingLevel,
             duration: measuredDuration,
             createdAt: Date()
         )
@@ -311,6 +403,8 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
             createdAt: take.createdAt,
             duration: take.duration,
             sourceTrackID: currentTrackID,
+            microphoneLevel: take.microphoneLevel,
+            backingLevel: take.backingLevel,
             exportedFilename: nil
         )
         do {
@@ -348,6 +442,8 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
                     createdAt: take.createdAt,
                     duration: take.duration,
                     sourceTrackID: sourceTrackID,
+                    microphoneLevel: take.microphoneLevel,
+                    backingLevel: take.backingLevel,
                     exportedFilename: exportedURL.lastPathComponent
                 )
                 do {
@@ -410,7 +506,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         isPlaying = false
     }
 
-    private func stop(resetPosition: Bool) {
+    private func stop(resetPosition: Bool, releaseSession: Bool = false) {
         playbackGeneration += 1
         for node in nodes.values { node.stop() }
         engine.stop()
@@ -419,6 +515,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         timer = nil
         isPlaying = false
         if resetPosition { position = 0 }
+        if releaseSession { deactivateAudioSession() }
     }
 
     private func beginTimer() {
@@ -437,10 +534,11 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
     private func playbackCompleted(generation: Int) {
         guard generation == playbackGeneration, isPlaying else { return }
         position = duration
-        isPlaying = false
-        timer?.invalidate()
-        timer = nil
-        if isRecording { stopRecording() }
+        if isRecording {
+            stopRecording()
+        } else {
+            stop(resetPosition: false, releaseSession: true)
+        }
     }
 
     private func updatePosition() {
@@ -450,11 +548,22 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         guard isPlaying, let startedAt else { return }
         position = min(duration, startPosition + max(0, Date().timeIntervalSince(startedAt)))
         if position >= duration {
-            for node in nodes.values { node.stop() }
-            timer?.invalidate()
-            timer = nil
-            isPlaying = false
-            if isRecording { stopRecording() }
+            if isRecording {
+                stopRecording()
+            } else {
+                stop(resetPosition: false, releaseSession: true)
+            }
+        }
+    }
+
+    private func deactivateAudioSession() {
+        do {
+            try AVAudioSession.sharedInstance().setActive(
+                false,
+                options: .notifyOthersOnDeactivation
+            )
+        } catch {
+            logger.debug("Audio session was already inactive or busy: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -475,7 +584,18 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
             mode: .default,
             options: [.defaultToSpeaker, .allowBluetoothHFP]
         )
+        if #available(iOS 18.2, *), session.isEchoCancelledInputAvailable {
+            // This input path is tuned for capturing a wider range of audio
+            // while removing sound played through the built-in speaker. It is
+            // a better fit for singing and instruments than voice-chat DSP.
+            try session.setPrefersEchoCancelledInput(true)
+        }
         try session.setActive(true)
+        if #available(iOS 18.2, *) {
+            isEchoCancellationActive = session.isEchoCancelledInputEnabled
+        } else {
+            isEchoCancellationActive = false
+        }
     }
 
     @objc private func handleInterruption(_ notification: Notification) {

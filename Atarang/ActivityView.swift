@@ -1,6 +1,11 @@
 import SwiftUI
 import UIKit
 
+struct SharePayload: Identifiable {
+    let id = UUID()
+    let items: [Any]
+}
+
 struct ActivityView: UIViewControllerRepresentable {
     let items: [Any]
 

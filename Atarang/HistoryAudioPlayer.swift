@@ -36,11 +36,17 @@ final class HistoryAudioPlayer: NSObject, ObservableObject, AVAudioPlayerDelegat
         }
     }
 
-    func stop() {
+    func stop(releaseSession: Bool = false) {
         player?.stop()
         player = nil
         playingID = nil
         isPlaying = false
+        if releaseSession {
+            try? AVAudioSession.sharedInstance().setActive(
+                false,
+                options: .notifyOthersOnDeactivation
+            )
+        }
     }
 
     func pause() {

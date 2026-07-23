@@ -10,8 +10,7 @@ struct HistoryView: View {
 
     @State private var query = ""
     @State private var filter: HistoryFilter = .all
-    @State private var shareItems: [URL] = []
-    @State private var showingShareSheet = false
+    @State private var sharePayload: SharePayload?
     @State private var deletion: DeletionTarget?
 
     var body: some View {
@@ -45,8 +44,8 @@ struct HistoryView: View {
                 }
             }
             .refreshable { store.refresh() }
-            .sheet(isPresented: $showingShareSheet) {
-                ActivityView(items: shareItems)
+            .sheet(item: $sharePayload) { payload in
+                ActivityView(items: payload.items)
                     .presentationDetents([.medium, .large])
             }
             .confirmationDialog(
@@ -233,7 +232,7 @@ struct HistoryView: View {
 
     private func metadataLine(date: Date, duration: TimeInterval, bytes: Int64) -> some View {
         HStack(spacing: 5) {
-            Text(date, style: .relative)
+            Text(roughAge(date))
             Text("·")
             Text(time(duration))
             Text("·")
@@ -277,8 +276,29 @@ struct HistoryView: View {
 
     private func share(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
-        shareItems = urls
-        showingShareSheet = true
+        sharePayload = SharePayload(items: urls)
+    }
+
+    /// A deliberately low-frequency age label. Unlike `Text(date, style:
+    /// .relative)`, this doesn't install a timer that updates while the user is
+    /// browsing their library.
+    private func roughAge(_ date: Date) -> String {
+        let age = max(0, Date().timeIntervalSince(date))
+        switch age {
+        case ..<3_600:
+            return "Now"
+        case ..<86_400:
+            let hours = max(1, Int(age / 3_600))
+            return "\(hours) \(hours == 1 ? "hour" : "hours") ago"
+        case ..<604_800:
+            let days = max(1, Int(age / 86_400))
+            return "\(days) \(days == 1 ? "day" : "days") ago"
+        case ..<2_592_000:
+            let weeks = max(1, Int(age / 604_800))
+            return "\(weeks) \(weeks == 1 ? "week" : "weeks") ago"
+        default:
+            return date.formatted(.dateTime.month(.abbreviated).day().year())
+        }
     }
 
     private func confirmDelete(_ track: HistoryTrack) {

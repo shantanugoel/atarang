@@ -90,6 +90,8 @@ struct RecordedTake: Identifiable, Sendable {
     let title: String
     let microphoneURL: URL
     let backingURL: URL
+    let microphoneLevel: Float
+    let backingLevel: Float
     let duration: TimeInterval
     let createdAt: Date
 }
@@ -143,6 +145,8 @@ struct RecordingMetadata: Codable, Sendable {
     let createdAt: Date
     let duration: TimeInterval
     let sourceTrackID: UUID?
+    let microphoneLevel: Float?
+    let backingLevel: Float?
     var exportedFilename: String?
 }
 

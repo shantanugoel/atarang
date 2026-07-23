@@ -3,7 +3,14 @@ import Foundation
 
 enum RecordingExporter {
     static func export(take: RecordedTake) async throws -> URL {
-        let microphoneAsset = AVURLAsset(url: take.microphoneURL)
+        let processedMicrophoneURL = try boostedMicrophone(for: take)
+        defer {
+            if processedMicrophoneURL != take.microphoneURL {
+                try? FileManager.default.removeItem(at: processedMicrophoneURL)
+            }
+        }
+
+        let microphoneAsset = AVURLAsset(url: processedMicrophoneURL)
         let backingAsset = AVURLAsset(url: take.backingURL)
         guard let microphoneTrack = try await microphoneAsset.loadTracks(withMediaType: .audio).first,
               let backingTrack = try await backingAsset.loadTracks(withMediaType: .audio).first else {
@@ -36,7 +43,7 @@ enum RecordingExporter {
         let microphoneParameters = AVMutableAudioMixInputParameters(track: microphoneCompositionTrack)
         microphoneParameters.setVolume(1, at: .zero)
         let backingParameters = AVMutableAudioMixInputParameters(track: backingCompositionTrack)
-        backingParameters.setVolume(0.72, at: .zero)
+        backingParameters.setVolume(min(1, max(0, take.backingLevel)), at: .zero)
         let audioMix = AVMutableAudioMix()
         audioMix.inputParameters = [microphoneParameters, backingParameters]
 
@@ -70,12 +77,60 @@ enum RecordingExporter {
         }
     }
 
+    /// Keeps the original microphone capture untouched and applies the chosen
+    /// level only to a temporary export source. Peaks above full scale are
+    /// softly limited instead of wrapping or hard clipping.
+    private static func boostedMicrophone(for take: RecordedTake) throws -> URL {
+        let gain = min(2, max(0, take.microphoneLevel))
+        guard gain != 1 else { return take.microphoneURL }
+
+        let source = try AVAudioFile(forReading: take.microphoneURL)
+        let format = source.processingFormat
+        guard format.commonFormat == .pcmFormatFloat32 else {
+            throw ExportError.unsupportedMicrophoneFormat
+        }
+        let outputURL = take.microphoneURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("microphone-export.caf")
+        try? FileManager.default.removeItem(at: outputURL)
+        let output = try AVAudioFile(
+            forWriting: outputURL,
+            settings: source.fileFormat.settings,
+            commonFormat: .pcmFormatFloat32,
+            interleaved: format.isInterleaved
+        )
+        guard let buffer = AVAudioPCMBuffer(
+            pcmFormat: format,
+            frameCapacity: 8_192
+        ) else { throw ExportError.couldNotProcessMicrophone }
+
+        while source.framePosition < source.length {
+            try source.read(into: buffer)
+            apply(gain: gain, to: buffer)
+            try output.write(from: buffer)
+        }
+        return outputURL
+    }
+
+    private static func apply(gain: Float, to buffer: AVAudioPCMBuffer) {
+        guard let channels = buffer.floatChannelData else { return }
+        let frameCount = Int(buffer.frameLength)
+        for channelIndex in 0..<Int(buffer.format.channelCount) {
+            let samples = channels[channelIndex]
+            for frameIndex in 0..<frameCount {
+                let amplified = samples[frameIndex] * gain
+                samples[frameIndex] = amplified / max(1, abs(amplified))
+            }
+        }
+    }
 }
 
 private enum ExportError: LocalizedError {
     case missingAudio
     case couldNotCreateMix
     case couldNotCreateExporter
+    case unsupportedMicrophoneFormat
+    case couldNotProcessMicrophone
     case exportFailed
 
     var errorDescription: String? {
@@ -83,6 +138,8 @@ private enum ExportError: LocalizedError {
         case .missingAudio: "The recorded performance audio is missing."
         case .couldNotCreateMix: "Atarang could not create the performance mix."
         case .couldNotCreateExporter: "This device could not create an M4A exporter."
+        case .unsupportedMicrophoneFormat: "The microphone recording uses an unsupported audio format."
+        case .couldNotProcessMicrophone: "Atarang could not apply the microphone level."
         case .exportFailed: "The shareable M4A export failed."
         }
     }

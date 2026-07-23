@@ -7,7 +7,7 @@ struct ContentView: View {
     @StateObject private var historyAudioPlayer = HistoryAudioPlayer()
     @State private var youtubeURL: String
     @State private var didRunDebugURL = false
-    @State private var showingShareSheet = false
+    @State private var sharePayload: SharePayload?
     @State private var selectedTab = AppTab.mixer
     private let debugURL: String?
 
@@ -22,7 +22,7 @@ struct ContentView: View {
             NavigationStack {
                 ScrollView {
                     VStack(spacing: 22) {
-                        hero
+                        if !player.isLoaded { hero }
                         if player.isLoaded { mixer } else { importCard }
                         if model.isWorking { progressCard }
                     }
@@ -30,6 +30,18 @@ struct ContentView: View {
                 }
                 .background(Color(.systemGroupedBackground))
                 .navigationTitle("Atarang")
+                .toolbar {
+                    if player.isLoaded {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button {
+                                chooseAnotherSong()
+                            } label: {
+                                Label("New Song", systemImage: "plus")
+                            }
+                            .disabled(player.isRecording)
+                        }
+                    }
+                }
                 .alert("Couldn’t separate this song", isPresented: errorIsPresented) {
                     Button("OK") { model.errorMessage = nil }
                 } message: {
@@ -40,11 +52,9 @@ struct ContentView: View {
                 } message: {
                     Text(player.alertMessage ?? "Unknown audio error")
                 }
-                .sheet(isPresented: $showingShareSheet) {
-                    if let url = player.shareURL {
-                        ActivityView(items: [url])
-                            .presentationDetents([.medium, .large])
-                    }
+                .sheet(item: $sharePayload) { payload in
+                    ActivityView(items: payload.items)
+                        .presentationDetents([.medium, .large])
                 }
             }
             .tabItem { Label("Play", systemImage: "waveform.badge.mic") }
@@ -81,7 +91,7 @@ struct ContentView: View {
 
     @MainActor
     private func openHistoryTrack(_ track: HistoryTrack, autoplay: Bool) {
-        historyAudioPlayer.stop()
+        historyAudioPlayer.stop(releaseSession: true)
         do {
             try player.load(track: track.localTrack)
             selectedTab = .mixer
@@ -104,7 +114,7 @@ struct ContentView: View {
 
     @MainActor
     private func startRecording(_ track: HistoryTrack) {
-        historyAudioPlayer.stop()
+        historyAudioPlayer.stop(releaseSession: true)
         do {
             try player.load(track: track.localTrack)
             selectedTab = .mixer
@@ -177,7 +187,7 @@ struct ContentView: View {
                 .foregroundStyle(.secondary)
                 .accessibilityLabel("Supported stems: \(model.selectedModel.stemSummary)")
             if !ModelAssetStore.isInstalled(model.selectedModel) {
-                Text("This model will be securely downloaded the first time you use it.")
+                Text("Downloads once when first used.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -210,8 +220,20 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Button {
+                chooseAnotherSong()
+            } label: {
+                Label("Choose Another Song", systemImage: "arrow.triangle.2.circlepath")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+            .disabled(player.isRecording)
+
             VStack(spacing: 5) {
                 Slider(value: Binding(get: { player.position }, set: { player.seek(to: $0) }), in: 0...max(player.duration, 0.01))
+                    .accessibilityLabel("Playback position")
+                    .accessibilityValue("\(time(player.position)) of \(time(player.duration))")
                 HStack {
                     Text(time(player.position))
                     Spacer()
@@ -248,6 +270,7 @@ struct ContentView: View {
             }
 
             recordingStatus
+            recordingMixControls
 
             VStack(spacing: 14) {
                 ForEach(player.activeStems) { stem in
@@ -267,21 +290,22 @@ struct ContentView: View {
                 }
             } else if player.shareURL != nil {
                 Button {
-                    showingShareSheet = true
+                    if let url = player.shareURL {
+                        sharePayload = SharePayload(items: [url])
+                    }
                 } label: {
-                    Label("Share recorded performance", systemImage: "square.and.arrow.up")
+                    Label("Share Performance", systemImage: "square.and.arrow.up")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
             }
-
-            Button("Choose another song", systemImage: "arrow.triangle.2.circlepath") {
-                player.unload()
-                youtubeURL = ""
-            }
-            .font(.subheadline)
         }
         .cardStyle()
+    }
+
+    private func chooseAnotherSong() {
+        player.unload()
+        youtubeURL = ""
     }
 
     private var errorIsPresented: Binding<Bool> {
@@ -302,7 +326,12 @@ struct ContentView: View {
                     .monospacedDigit()
             }
             .foregroundStyle(.red)
-            Text("Recording and playback continue with the screen locked or Atarang in the background.")
+            if player.isEchoCancellationActive {
+                Label("Speaker bleed reduction on", systemImage: "waveform.and.mic")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Text("Recording continues if you lock your iPhone or leave Atarang.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -311,6 +340,61 @@ struct ContentView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+        }
+    }
+
+    private var recordingMixControls: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Label("Recording Mix", systemImage: "slider.horizontal.3")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                if player.isRecording {
+                    Label("Locked", systemImage: "lock.fill")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            RecordingLevelRow(
+                title: "Mic",
+                systemImage: "mic.fill",
+                color: .red,
+                value: $player.recordingMicrophoneLevel,
+                range: 0...2,
+                accessibilityLabel: "Microphone recording level"
+            )
+            .disabled(player.isRecording)
+
+            if player.isRecording {
+                MicrophoneMeter(level: player.microphoneMeterLevel)
+                    .accessibilityLabel("Live microphone input")
+                    .accessibilityValue(microphoneLevelDescription)
+            }
+
+            RecordingLevelRow(
+                title: "Backing",
+                systemImage: "waveform",
+                color: .indigo,
+                value: $player.recordingBackingLevel,
+                range: 0...1,
+                accessibilityLabel: "Backing recording level"
+            )
+            .disabled(player.isRecording)
+        }
+        .padding(14)
+        .background(
+            Color(.tertiarySystemGroupedBackground),
+            in: RoundedRectangle(cornerRadius: 14)
+        )
+    }
+
+    private var microphoneLevelDescription: String {
+        switch player.microphoneMeterLevel {
+        case ..<0.2: "Very low"
+        case ..<0.55: "Good"
+        case ..<0.85: "Strong"
+        default: "Very loud"
         }
     }
 
@@ -367,6 +451,8 @@ private struct StemRow: View {
                 }
                 Slider(value: $volume, in: 0...1)
                     .tint(stem.color)
+                    .accessibilityLabel("\(stem.title) level")
+                    .accessibilityValue("\(Int(volume * 100)) percent")
             }
             Button {
                 volume = volume == 0 ? 1 : 0
@@ -377,6 +463,66 @@ private struct StemRow: View {
             .buttonStyle(.plain)
             .foregroundStyle(volume == 0 ? .secondary : stem.color)
             .accessibilityLabel(volume == 0 ? "Unmute \(stem.title)" : "Mute \(stem.title)")
+        }
+    }
+}
+
+private struct RecordingLevelRow: View {
+    let title: String
+    let systemImage: String
+    let color: Color
+    @Binding var value: Float
+    let range: ClosedRange<Float>
+    let accessibilityLabel: String
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Label(title, systemImage: systemImage)
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(color)
+                .frame(width: 88, alignment: .leading)
+            Slider(value: $value, in: range, step: 0.05)
+                .tint(color)
+                .accessibilityLabel(accessibilityLabel)
+                .accessibilityValue("\(percentage) percent")
+            Text("\(percentage)%")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 42, alignment: .trailing)
+        }
+    }
+
+    private var percentage: Int {
+        Int((value * 100).rounded())
+    }
+}
+
+private struct MicrophoneMeter: View {
+    let level: Float
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("Input")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(width: 40, alignment: .leading)
+            GeometryReader { geometry in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(.secondary.opacity(0.16))
+                    Capsule()
+                        .fill(meterColor)
+                        .frame(width: geometry.size.width * CGFloat(level))
+                }
+            }
+            .frame(height: 7)
+        }
+    }
+
+    private var meterColor: Color {
+        switch level {
+        case ..<0.55: .green
+        case ..<0.85: .yellow
+        default: .red
         }
     }
 }
