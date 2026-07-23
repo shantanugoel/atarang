@@ -49,28 +49,28 @@ changes, and recording before adding new user-facing controls.
 
 ### Work
 
-- [ ] Introduce a single playback-state model for position, duration, rate,
+- [x] Introduce a single playback-state model for position, duration, rate,
       loop range, and playback generation.
-- [ ] Derive the playhead from audio render/sample time rather than only wall
+- [x] Derive the playhead from audio render/sample time rather than only wall
       clock time.
-- [ ] Route every active stem through identical time/pitch processing.
-- [ ] Verify that stem synchronization is maintained after seeking, pausing,
+- [x] Route every active stem through identical time/pitch processing.
+- [~] Verify that stem synchronization is maintained after seeking, pausing,
       route changes, interruptions, and repeated playback.
-- [ ] Define loop-boundary scheduling that does not create gaps, double starts,
+- [x] Define loop-boundary scheduling that does not create gaps, double starts,
       or stale completion callbacks.
-- [ ] Define how transformed backing audio is captured by the existing
+- [x] Define how transformed backing audio is captured by the existing
       recording pipeline.
-- [ ] Add unit coverage for range validation, rate-aware position calculation,
+- [x] Add unit coverage for range validation, rate-aware position calculation,
       loop transitions, and persisted state migration.
-- [ ] Add integration/manual test cases for headphones, speaker playback,
+- [x] Add integration/manual test cases for headphones, speaker playback,
       Bluetooth routes, backgrounding, and screen lock.
 
 ### Acceptance criteria
 
-- [ ] All stems remain perceptibly synchronized for a complete song.
-- [ ] Seeking and restarting do not accumulate synchronization drift.
-- [ ] Playback position remains correct at supported speed settings.
-- [ ] Existing playback, mixing, recording, export, and History behavior does
+- [~] All stems remain perceptibly synchronized for a complete song.
+- [~] Seeking and restarting do not accumulate synchronization drift.
+- [~] Playback position remains correct at supported speed settings.
+- [~] Existing playback, mixing, recording, export, and History behavior does
       not regress.
 
 ## Phase 1 — Core song practice
@@ -276,4 +276,3 @@ These should remain outside committed phases until there is evidence of demand:
 - [ ] Test reopened tracks and older library metadata.
 - [ ] Update `README.md` when the phase ships.
 - [ ] Record known limitations and deferred work in this plan.
-

@@ -9,8 +9,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
     @Published private(set) var isPlaying = false
     @Published private(set) var isRecording = false
     @Published private(set) var isExporting = false
-    @Published private(set) var position: TimeInterval = 0
-    @Published private(set) var duration: TimeInterval = 0
+    @Published private(set) var playbackState = PlaybackState()
     @Published private(set) var recordingDuration: TimeInterval = 0
     @Published private(set) var title = ""
     @Published private(set) var separationModel: SeparationModelKind = .htdemucs
@@ -39,17 +38,22 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
     @Published private(set) var microphonePermissionDenied = false
     @Published var alertMessage: String?
 
+    var position: TimeInterval { playbackState.position }
+    var duration: TimeInterval { playbackState.duration }
+    var playbackRate: Float { playbackState.rate }
+    var pitchSemitones: Float { playbackState.pitchSemitones }
+    var loopRange: PlaybackLoopRange? { playbackState.loopRange }
+
     private let engine = AVAudioEngine()
     private var nodes: [StemKind: AVAudioPlayerNode] = [:]
+    private var timePitchNodes: [StemKind: AVAudioUnitTimePitch] = [:]
     private var files: [StemKind: AVAudioFile] = [:]
     private var volumes = Dictionary(uniqueKeysWithValues: StemKind.allCases.map { ($0, Float(1)) })
     private var lastAudibleVolumes = Dictionary(
         uniqueKeysWithValues: StemKind.allCases.map { ($0, Float(1)) }
     )
     private var timer: Timer?
-    private var startedAt: Date?
-    private var startPosition: TimeInterval = 0
-    private var playbackGeneration = 0
+    private var renderAnchorPosition: TimeInterval = 0
 
     private var microphoneFile: AVAudioFile?
     private var backingFile: AVAudioFile?
@@ -76,8 +80,11 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         ) == nil ? 0.7 : defaults.float(forKey: Self.backingLevelDefaultsKey)
         for stem in StemKind.allCases {
             let node = AVAudioPlayerNode()
+            let timePitch = AVAudioUnitTimePitch()
             nodes[stem] = node
+            timePitchNodes[stem] = timePitch
             engine.attach(node)
+            engine.attach(timePitch)
         }
         NotificationCenter.default.addObserver(
             self,
@@ -90,6 +97,12 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
             selector: #selector(handleRouteChange),
             name: AVAudioSession.routeChangeNotification,
             object: AVAudioSession.sharedInstance()
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleEngineConfigurationChange),
+            name: .AVAudioEngineConfigurationChange,
+            object: engine
         )
     }
 
@@ -105,18 +118,26 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         guard !files.isEmpty, Set(files.keys) == expectedStems else { throw PlayerError.incompleteTrack }
         activeStems = track.separationModel.stems
         for stem in activeStems {
-            guard let node = nodes[stem], let file = files[stem] else { continue }
+            guard let node = nodes[stem],
+                  let timePitch = timePitchNodes[stem],
+                  let file = files[stem] else { continue }
             engine.disconnectNodeOutput(node)
-            engine.connect(node, to: engine.mainMixerNode, format: file.processingFormat)
+            engine.disconnectNodeOutput(timePitch)
+            engine.connect(node, to: timePitch, format: file.processingFormat)
+            engine.connect(timePitch, to: engine.mainMixerNode, format: file.processingFormat)
         }
-        duration = files.values.map { Double($0.length) / $0.processingFormat.sampleRate }.min() ?? 0
+        playbackState.load(
+            duration: files.values
+                .map { Double($0.length) / $0.processingFormat.sampleRate }
+                .min() ?? 0
+        )
         title = track.title
         separationModel = track.separationModel
         currentTrackID = track.id
         restoreStemLevels(for: track.id)
         soloedStem = nil
         applyStemVolumes()
-        isLoaded = duration > 0
+        isLoaded = playbackState.duration > 0
         recordedTake = nil
         shareURL = nil
     }
@@ -131,10 +152,12 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
 
     func play() throws {
         guard isLoaded else { return }
-        if position >= duration { position = 0 }
+        if position >= duration { playbackState.seek(to: 0) }
+        if let loopRange, (position < loopRange.start || position >= loopRange.end) {
+            playbackState.seek(to: loopRange.start)
+        }
 
-        playbackGeneration += 1
-        let generation = playbackGeneration
+        let generation = playbackState.beginNewGeneration()
         for node in nodes.values { node.stop() }
         // Recording has already activated a play-and-record session. Switching
         // back to `.playback` here would silently drop microphone input just as
@@ -164,37 +187,16 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
             }
         }
 
+        applyPlaybackTransform()
         let leadTime = 0.08
         let startHostTime = mach_absolute_time() + AVAudioTime.hostTime(forSeconds: leadTime)
         let startTime = AVAudioTime(hostTime: startHostTime)
+        renderAnchorPosition = position
+        schedulePass(from: position, generation: generation)
         for stem in activeStems {
-            guard let file = files[stem], let node = nodes[stem] else { continue }
-            let frame = AVAudioFramePosition(position * file.processingFormat.sampleRate)
-            let remaining = max(0, file.length - frame)
-            if stem == .vocals {
-                node.scheduleSegment(
-                    file,
-                    startingFrame: frame,
-                    frameCount: AVAudioFrameCount(remaining),
-                    at: nil,
-                    completionCallbackType: .dataPlayedBack
-                ) { [self] _ in
-                    Task { @MainActor [self] in self.playbackCompleted(generation: generation) }
-                }
-            } else {
-                node.scheduleSegment(
-                    file,
-                    startingFrame: frame,
-                    frameCount: AVAudioFrameCount(remaining),
-                    at: nil
-                )
-            }
-            node.volume = effectiveVolume(for: stem)
-            node.play(at: startTime)
+            nodes[stem]?.volume = effectiveVolume(for: stem)
+            nodes[stem]?.play(at: startTime)
         }
-
-        startPosition = position
-        startedAt = Date().addingTimeInterval(leadTime)
         isPlaying = true
         beginTimer()
     }
@@ -219,7 +221,45 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         guard !isRecording else { return }
         let shouldResume = isPlaying
         pausePlayback()
-        position = min(max(0, newPosition), duration)
+        playbackState.seek(to: newPosition)
+        if shouldResume { try? play() }
+    }
+
+    func setPlaybackRate(_ rate: Float) {
+        guard !isRecording else { return }
+        updatePosition()
+        let shouldResume = isPlaying
+        if shouldResume { pausePlayback() }
+        playbackState.setRate(rate)
+        applyPlaybackTransform()
+        if shouldResume { try? play() }
+    }
+
+    func setPitchSemitones(_ semitones: Float) {
+        guard !isRecording else { return }
+        updatePosition()
+        let shouldResume = isPlaying
+        if shouldResume { pausePlayback() }
+        playbackState.setPitchSemitones(semitones)
+        applyPlaybackTransform()
+        if shouldResume { try? play() }
+    }
+
+    @discardableResult
+    func setLoop(start: TimeInterval, end: TimeInterval) -> Bool {
+        guard !isRecording else { return false }
+        let shouldResume = isPlaying
+        if shouldResume { pausePlayback() }
+        let accepted = playbackState.setLoop(start: start, end: end)
+        if shouldResume { try? play() }
+        return accepted
+    }
+
+    func clearLoop() {
+        guard !isRecording else { return }
+        let shouldResume = isPlaying
+        if shouldResume { pausePlayback() }
+        playbackState.clearLoop()
         if shouldResume { try? play() }
     }
 
@@ -301,7 +341,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         if isRecording { stopRecording() }
         stop(resetPosition: true, releaseSession: true)
         files.removeAll()
-        duration = 0
+        playbackState.unload()
         title = ""
         separationModel = .htdemucs
         activeStems = []
@@ -323,7 +363,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         let resumePosition = position
         pausePlayback()
         engine.stop()
-        position = resumePosition
+        playbackState.seek(to: resumePosition)
         do { try configureRecordingSession() }
         catch { throw PlayerError.audioSetup("Could not activate microphone mode", error) }
 
@@ -423,15 +463,13 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         if let recordingStartedAt {
             recordingDuration = max(0, Date().timeIntervalSince(recordingStartedAt))
         }
-        if isPlaying, let startedAt {
-            position = min(duration, startPosition + max(0, Date().timeIntervalSince(startedAt)))
-        }
+        updatePosition()
         isRecording = false
 
         // Stop every render and input resource before removing the taps. This
         // both stops the backing track at the end of a take and releases the
         // microphone route so iOS can dismiss its recording indicator.
-        playbackGeneration += 1
+        playbackState.beginNewGeneration()
         for node in nodes.values { node.stop() }
         engine.stop()
         timer?.invalidate()
@@ -562,7 +600,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
 
     private func pausePlayback() {
         updatePosition()
-        playbackGeneration += 1
+        playbackState.beginNewGeneration()
         for node in nodes.values { node.stop() }
         timer?.invalidate()
         timer = nil
@@ -570,14 +608,14 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
     }
 
     private func stop(resetPosition: Bool, releaseSession: Bool = false) {
-        playbackGeneration += 1
+        playbackState.beginNewGeneration()
         for node in nodes.values { node.stop() }
         engine.stop()
         engine.reset()
         timer?.invalidate()
         timer = nil
         isPlaying = false
-        if resetPosition { position = 0 }
+        if resetPosition { playbackState.seek(to: 0) }
         if releaseSession { deactivateAudioSession() }
     }
 
@@ -594,9 +632,79 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
 
     @objc private func timerFired() { updatePosition() }
 
+    private func applyPlaybackTransform() {
+        for stem in activeStems {
+            timePitchNodes[stem]?.rate = playbackState.rate
+            timePitchNodes[stem]?.pitch = playbackState.pitchSemitones * 100
+        }
+    }
+
+    /// Queues the same source-time range on every stem. A single timing stem
+    /// owns completions, preventing N callbacks from starting N loop passes.
+    private func schedulePass(from start: TimeInterval, generation: Int) {
+        let end = playbackState.loopRange?.end ?? playbackState.duration
+        guard end > start, let timingStem = activeStems.first else {
+            playbackCompleted(generation: generation)
+            return
+        }
+
+        for stem in activeStems {
+            guard let file = files[stem], let node = nodes[stem] else { continue }
+            let sampleRate = file.processingFormat.sampleRate
+            let startingFrame = min(
+                file.length,
+                AVAudioFramePosition(max(0, start) * sampleRate)
+            )
+            let endingFrame = min(
+                file.length,
+                AVAudioFramePosition(max(start, end) * sampleRate)
+            )
+            let frameCount = AVAudioFrameCount(max(0, endingFrame - startingFrame))
+            guard frameCount > 0 else { continue }
+
+            if stem == timingStem {
+                let callbackType: AVAudioPlayerNodeCompletionCallbackType =
+                    playbackState.loopRange == nil ? .dataPlayedBack : .dataConsumed
+                node.scheduleSegment(
+                    file,
+                    startingFrame: startingFrame,
+                    frameCount: frameCount,
+                    at: nil,
+                    completionCallbackType: callbackType
+                ) { [weak self] _ in
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        if let loop = self.playbackState.loopRange {
+                            self.scheduleNextLoopPass(
+                                from: loop.start,
+                                generation: generation
+                            )
+                        } else {
+                            self.playbackCompleted(generation: generation)
+                        }
+                    }
+                }
+            } else {
+                node.scheduleSegment(
+                    file,
+                    startingFrame: startingFrame,
+                    frameCount: frameCount,
+                    at: nil
+                )
+            }
+        }
+    }
+
+    private func scheduleNextLoopPass(from start: TimeInterval, generation: Int) {
+        guard isPlaying,
+              generation == playbackState.playbackGeneration,
+              playbackState.loopRange != nil else { return }
+        schedulePass(from: start, generation: generation)
+    }
+
     private func playbackCompleted(generation: Int) {
-        guard generation == playbackGeneration, isPlaying else { return }
-        position = duration
+        guard generation == playbackState.playbackGeneration, isPlaying else { return }
+        playbackState.seek(to: duration)
         if isRecording {
             stopRecording()
         } else {
@@ -608,8 +716,16 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         if isRecording, let recordingStartedAt {
             recordingDuration = max(0, Date().timeIntervalSince(recordingStartedAt))
         }
-        guard isPlaying, let startedAt else { return }
-        position = min(duration, startPosition + max(0, Date().timeIntervalSince(startedAt)))
+        guard isPlaying,
+              let timingStem = activeStems.first,
+              let node = nodes[timingStem],
+              let renderTime = node.lastRenderTime,
+              let playerTime = node.playerTime(forNodeTime: renderTime) else { return }
+        playbackState.updatePosition(
+            renderSampleTime: playerTime.sampleTime,
+            sampleRate: playerTime.sampleRate,
+            anchorPosition: renderAnchorPosition
+        )
         if position >= duration {
             if isRecording {
                 stopRecording()
@@ -698,7 +814,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
               let type = AVAudioSession.InterruptionType(rawValue: rawType) else { return }
         switch type {
         case .began:
-            interruptionShouldResume = isPlaying
+            interruptionShouldResume = isPlaying && !isRecording
             if isRecording { stopRecording() }
             pausePlayback()
         case .ended:
@@ -718,6 +834,21 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
               AVAudioSession.RouteChangeReason(rawValue: rawReason) == .oldDeviceUnavailable else { return }
         if isRecording { stopRecording() }
         pausePlayback()
+    }
+
+    @objc private func handleEngineConfigurationChange() {
+        if isRecording {
+            stopRecording()
+            return
+        }
+        guard isPlaying else { return }
+        updatePosition()
+        stop(resetPosition: false)
+        do {
+            try play()
+        } catch {
+            alertMessage = error.localizedDescription
+        }
     }
 }
 
