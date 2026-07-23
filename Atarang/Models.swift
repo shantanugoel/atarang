@@ -75,6 +75,53 @@ enum SeparationModelKind: String, CaseIterable, Identifiable, Codable, Sendable 
 
     var stemSummary: String { stems.map(\.title).joined(separator: ", ") }
 
+    var choiceTitle: String {
+        switch self {
+        case .htdemucs: "4 stems — Recommended"
+        case .htdemucs6s: "6 stems — Most control"
+        case .mdx23cInstVocHQ: "Vocals + backing — High quality"
+        case .kimVocals: "Vocals + backing — Vocal focused"
+        }
+    }
+
+    var shortChoiceTitle: String {
+        switch self {
+        case .htdemucs: "4 stems"
+        case .htdemucs6s: "6 stems"
+        case .mdx23cInstVocHQ, .kimVocals: "Vocals + backing"
+        }
+    }
+
+    var recommendationLabel: String? {
+        switch self {
+        case .htdemucs: "Recommended"
+        case .htdemucs6s: "Most control"
+        case .mdx23cInstVocHQ: "High quality"
+        case .kimVocals: "Vocal focused"
+        }
+    }
+
+    var downloadSize: String? {
+        switch self {
+        case .htdemucs: nil
+        case .htdemucs6s: "136 MB"
+        case .mdx23cInstVocHQ: "40 MB"
+        case .kimVocals: "67 MB"
+        }
+    }
+
+    var performanceHint: String {
+        switch self {
+        case .htdemucs: "Balanced quality and speed"
+        case .htdemucs6s: "Slowest; best for detailed instrument control"
+        case .mdx23cInstVocHQ: "Best general two-track vocal split"
+        case .kimVocals: "Alternative vocal-focused character"
+        }
+    }
+
+    /// Increment this when a model or its output processing changes incompatibly.
+    var separationCacheVersion: Int { 1 }
+
     var isAvailableOnCurrentDevice: Bool {
         switch self {
         case .htdemucs6s:
@@ -86,7 +133,7 @@ enum SeparationModelKind: String, CaseIterable, Identifiable, Codable, Sendable 
 
     var unavailabilityMessage: String? {
         guard !isAvailableOnCurrentDevice else { return nil }
-        return "6-stem needs a newer high-memory iPhone or more free memory."
+        return "6-stem needs a newer high-memory device or more free memory."
     }
 }
 
@@ -105,7 +152,24 @@ struct OriginalMetadata: Codable, Sendable {
     let title: String
     let createdAt: Date
     let sourceURL: URL
+    let sourceKey: String?
     let audioFilename: String
+
+    init(
+        id: UUID,
+        title: String,
+        createdAt: Date,
+        sourceURL: URL,
+        sourceKey: String? = nil,
+        audioFilename: String
+    ) {
+        self.id = id
+        self.title = title
+        self.createdAt = createdAt
+        self.sourceURL = sourceURL
+        self.sourceKey = sourceKey
+        self.audioFilename = audioFilename
+    }
 }
 
 struct RecordedTake: Identifiable, Sendable {
@@ -124,8 +188,10 @@ struct TrackMetadata: Codable, Sendable {
     let title: String
     let createdAt: Date
     let sourceURL: URL?
+    let sourceKey: String?
     let sourceOriginalID: UUID?
     let separationModel: SeparationModelKind
+    let separationCacheVersion: Int
     let stems: [StemKind]
 
     init(
@@ -133,21 +199,27 @@ struct TrackMetadata: Codable, Sendable {
         title: String,
         createdAt: Date,
         sourceURL: URL?,
+        sourceKey: String? = nil,
         sourceOriginalID: UUID?,
         separationModel: SeparationModelKind,
+        separationCacheVersion: Int? = nil,
         stems: [StemKind]
     ) {
         self.id = id
         self.title = title
         self.createdAt = createdAt
         self.sourceURL = sourceURL
+        self.sourceKey = sourceKey
         self.sourceOriginalID = sourceOriginalID
         self.separationModel = separationModel
+        self.separationCacheVersion = separationCacheVersion
+            ?? separationModel.separationCacheVersion
         self.stems = stems
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, createdAt, sourceURL, sourceOriginalID, separationModel, stems
+        case id, title, createdAt, sourceURL, sourceKey, sourceOriginalID
+        case separationModel, separationCacheVersion, stems
     }
 
     init(from decoder: Decoder) throws {
@@ -156,11 +228,16 @@ struct TrackMetadata: Codable, Sendable {
         title = try values.decode(String.self, forKey: .title)
         createdAt = try values.decode(Date.self, forKey: .createdAt)
         sourceURL = try values.decodeIfPresent(URL.self, forKey: .sourceURL)
+        sourceKey = try values.decodeIfPresent(String.self, forKey: .sourceKey)
         sourceOriginalID = try values.decodeIfPresent(UUID.self, forKey: .sourceOriginalID)
         separationModel = try values.decodeIfPresent(
             SeparationModelKind.self,
             forKey: .separationModel
         ) ?? .htdemucs
+        separationCacheVersion = try values.decodeIfPresent(
+            Int.self,
+            forKey: .separationCacheVersion
+        ) ?? separationModel.separationCacheVersion
         stems = try values.decodeIfPresent([StemKind].self, forKey: .stems)
             ?? SeparationModelKind.htdemucs.stems
     }

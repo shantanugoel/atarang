@@ -35,12 +35,17 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
     }
     @Published private(set) var microphoneMeterLevel: Float = 0
     @Published private(set) var isEchoCancellationActive = false
+    @Published private(set) var soloedStem: StemKind?
+    @Published private(set) var microphonePermissionDenied = false
     @Published var alertMessage: String?
 
     private let engine = AVAudioEngine()
     private var nodes: [StemKind: AVAudioPlayerNode] = [:]
     private var files: [StemKind: AVAudioFile] = [:]
     private var volumes = Dictionary(uniqueKeysWithValues: StemKind.allCases.map { ($0, Float(1)) })
+    private var lastAudibleVolumes = Dictionary(
+        uniqueKeysWithValues: StemKind.allCases.map { ($0, Float(1)) }
+    )
     private var timer: Timer?
     private var startedAt: Date?
     private var startPosition: TimeInterval = 0
@@ -59,6 +64,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
     private let logger = Logger(subsystem: "com.shantanugoel.atarang.Atarang", category: "Audio")
     private static let microphoneLevelDefaultsKey = "recordingMicrophoneLevel"
     private static let backingLevelDefaultsKey = "recordingBackingLevel"
+    private static let stemLevelDefaultsPrefix = "stemLevels."
 
     init() {
         let defaults = UserDefaults.standard
@@ -107,6 +113,9 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         title = track.title
         separationModel = track.separationModel
         currentTrackID = track.id
+        restoreStemLevels(for: track.id)
+        soloedStem = nil
+        applyStemVolumes()
         isLoaded = duration > 0
         recordedTake = nil
         shareURL = nil
@@ -180,7 +189,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
                     at: nil
                 )
             }
-            node.volume = volumes[stem] ?? 1
+            node.volume = effectiveVolume(for: stem)
             node.play(at: startTime)
         }
 
@@ -233,11 +242,60 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
     func setVolume(_ volume: Float, for stem: StemKind) {
         let value = min(max(volume, 0), 1)
         volumes[stem] = value
-        nodes[stem]?.volume = value
+        if value > 0 { lastAudibleVolumes[stem] = value }
+        applyStemVolumes()
+        persistStemLevels()
         objectWillChange.send()
     }
 
     func volume(for stem: StemKind) -> Float { volumes[stem] ?? 1 }
+
+    var hasCustomMix: Bool {
+        activeStems.contains { abs((volumes[$0] ?? 1) - 1) > 0.001 }
+    }
+
+    func toggleMute(for stem: StemKind) {
+        if (volumes[stem] ?? 1) == 0 {
+            setVolume(lastAudibleVolumes[stem] ?? 1, for: stem)
+        } else {
+            lastAudibleVolumes[stem] = volumes[stem] ?? 1
+            setVolume(0, for: stem)
+        }
+    }
+
+    func toggleSolo(for stem: StemKind) {
+        soloedStem = soloedStem == stem ? nil : stem
+        applyStemVolumes()
+        objectWillChange.send()
+    }
+
+    func resetMix() {
+        soloedStem = nil
+        for stem in activeStems {
+            volumes[stem] = 1
+            lastAudibleVolumes[stem] = 1
+        }
+        applyStemVolumes()
+        persistStemLevels()
+        objectWillChange.send()
+    }
+
+    func applyPracticePreset(_ preset: PracticeMixPreset) {
+        soloedStem = nil
+        for stem in activeStems {
+            let value: Float
+            switch preset {
+            case .fullMix: value = 1
+            case .withoutVocals: value = stem == .vocals ? 0 : 1
+            case .vocalsOnly: value = stem == .vocals ? 1 : 0
+            }
+            volumes[stem] = value
+            if value > 0 { lastAudibleVolumes[stem] = value }
+        }
+        applyStemVolumes()
+        persistStemLevels()
+        objectWillChange.send()
+    }
 
     func unload() {
         if isRecording { stopRecording() }
@@ -247,6 +305,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         title = ""
         separationModel = .htdemucs
         activeStems = []
+        soloedStem = nil
         currentTrackID = nil
         isLoaded = false
         recordedTake = nil
@@ -255,7 +314,11 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
 
     private func startRecording() async throws {
         guard isLoaded else { throw PlayerError.noTrack }
-        guard await microphonePermissionGranted() else { throw PlayerError.microphoneDenied }
+        microphonePermissionDenied = false
+        guard await microphonePermissionGranted() else {
+            microphonePermissionDenied = true
+            throw PlayerError.microphoneDenied
+        }
 
         let resumePosition = position
         pausePlayback()
@@ -567,6 +630,38 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         }
     }
 
+    private func effectiveVolume(for stem: StemKind) -> Float {
+        guard let soloedStem else { return volumes[stem] ?? 1 }
+        return soloedStem == stem ? (volumes[stem] ?? 1) : 0
+    }
+
+    private func applyStemVolumes() {
+        for stem in activeStems {
+            nodes[stem]?.volume = effectiveVolume(for: stem)
+        }
+    }
+
+    private func persistStemLevels() {
+        guard let currentTrackID else { return }
+        let values = Dictionary(uniqueKeysWithValues: activeStems.map {
+            ($0.rawValue, Double(volumes[$0] ?? 1))
+        })
+        UserDefaults.standard.set(
+            values,
+            forKey: Self.stemLevelDefaultsPrefix + currentTrackID.uuidString
+        )
+    }
+
+    private func restoreStemLevels(for trackID: UUID) {
+        let key = Self.stemLevelDefaultsPrefix + trackID.uuidString
+        let saved = UserDefaults.standard.dictionary(forKey: key) as? [String: Double]
+        for stem in activeStems {
+            let value = Float(saved?[stem.rawValue] ?? 1)
+            volumes[stem] = min(1, max(0, value))
+            lastAudibleVolumes[stem] = value > 0 ? value : 1
+        }
+    }
+
     private func configurePlaybackSession() throws {
         let session = AVAudioSession.sharedInstance()
         if session.category != .playback {
@@ -624,6 +719,12 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         if isRecording { stopRecording() }
         pausePlayback()
     }
+}
+
+enum PracticeMixPreset {
+    case fullMix
+    case withoutVocals
+    case vocalsOnly
 }
 
 private enum PlayerError: LocalizedError {

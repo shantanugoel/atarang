@@ -7,6 +7,7 @@ struct HistoryOriginal: Identifiable, Sendable {
     let title: String
     let createdAt: Date
     let sourceURL: URL
+    let sourceKey: String?
     let folderURL: URL
     let audioURL: URL
     let duration: TimeInterval
@@ -18,8 +19,10 @@ struct HistoryTrack: Identifiable, Sendable {
     let title: String
     let createdAt: Date
     let sourceURL: URL?
+    let sourceKey: String?
     let sourceOriginalID: UUID?
     let separationModel: SeparationModelKind
+    let separationCacheVersion: Int
     let folderURL: URL
     let files: [StemKind: URL]
     let duration: TimeInterval
@@ -229,8 +232,11 @@ final class HistoryStore: ObservableObject {
                 title: metadata?.title ?? "Separated track",
                 createdAt: metadata?.createdAt ?? fallbackDate,
                 sourceURL: metadata?.sourceURL,
+                sourceKey: metadata?.sourceKey,
                 sourceOriginalID: metadata?.sourceOriginalID,
                 separationModel: separationModel,
+                separationCacheVersion: metadata?.separationCacheVersion
+                    ?? separationModel.separationCacheVersion,
                 folderURL: folder,
                 files: files,
                 duration: audioDuration(at: files[.vocals] ?? files.values.first),
@@ -254,6 +260,7 @@ final class HistoryStore: ObservableObject {
                 title: metadata.title,
                 createdAt: metadata.createdAt,
                 sourceURL: metadata.sourceURL,
+                sourceKey: metadata.sourceKey,
                 folderURL: folder,
                 audioURL: audioURL,
                 duration: audioDuration(at: audioURL),

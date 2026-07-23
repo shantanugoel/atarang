@@ -6,6 +6,8 @@ enum LibrarySeparationSource: Sendable {
 }
 
 struct HistoryView: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @ObservedObject var store: HistoryStore
     @ObservedObject var audioPlayer: HistoryAudioPlayer
     let audioPlaybackDisabled: Bool
@@ -13,6 +15,7 @@ struct HistoryView: View {
     let recordTrack: (HistoryTrack) -> Void
     let recordAgain: (HistoryRecording) -> Void
     let separateSource: (LibrarySeparationSource, SeparationModelKind) -> Void
+    let createFirstSeparation: () -> Void
 
     @State private var query = ""
     @State private var category: LibraryCategory = .separations
@@ -24,27 +27,36 @@ struct HistoryView: View {
     @State private var isSelecting = false
     @State private var selectedItems: Set<LibraryItemID> = []
     @State private var showsBatchDeleteConfirmation = false
+    @State private var unavailableActionMessage: String?
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                Picker("Library category", selection: $category) {
-                    ForEach(LibraryCategory.allCases) { category in
-                        Text(category.title).tag(category)
+                Group {
+                    if dynamicTypeSize.isAccessibilitySize {
+                        Picker("Library category", selection: $category) {
+                            ForEach(LibraryCategory.allCases) { category in
+                                Label(category.title, systemImage: category.icon).tag(category)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        Picker("Library category", selection: $category) {
+                            ForEach(LibraryCategory.allCases) { category in
+                                Text(category.title).tag(category)
+                            }
+                        }
+                        .pickerStyle(.segmented)
                     }
                 }
-                .pickerStyle(.segmented)
                 .disabled(isSelecting)
                 .padding(.horizontal)
                 .padding(.bottom, 10)
 
                 Group {
                     if store.originals.isEmpty && store.tracks.isEmpty && store.recordings.isEmpty {
-                        ContentUnavailableView(
-                            "Your library is empty",
-                            systemImage: "music.note.house",
-                            description: Text("Original songs, separations, and performances will appear here.")
-                        )
+                        emptyLibraryView
                     } else if visibleItemCount == 0 {
                         emptyCategoryView
                     } else {
@@ -52,6 +64,8 @@ struct HistoryView: View {
                     }
                 }
             }
+            .frame(maxWidth: horizontalSizeClass == .regular ? 1000 : .infinity)
+            .frame(maxWidth: .infinity)
             .navigationTitle("Library")
             .toolbar {
                 if isSelecting {
@@ -72,6 +86,13 @@ struct HistoryView: View {
             }
             .searchable(text: $query, prompt: "Search \(category.searchPrompt)")
             .refreshable { store.refresh() }
+            .onReceive(
+                NotificationCenter.default.publisher(
+                    for: .atarangUnavailableLibraryAction
+                )
+            ) { notification in
+                unavailableActionMessage = notification.object as? String
+            }
             .onChange(of: category) {
                 endSelection()
             }
@@ -98,11 +119,12 @@ struct HistoryView: View {
                 BatchDeleteConfirmationSheet(
                     count: selectedItems.count,
                     byteCount: selectedBytes,
-                    itemName: category.batchItemName
+                    itemName: category.batchItemName,
+                    consequence: batchDeletionConsequence
                 ) {
                     performBatchDeletion()
                 }
-                .presentationDetents([.height(245)])
+                .presentationDetents([.medium])
                 .presentationDragIndicator(.visible)
             }
             .alert("Library problem", isPresented: errorIsPresented) {
@@ -113,6 +135,30 @@ struct HistoryView: View {
             } message: {
                 Text(store.errorMessage ?? audioPlayer.errorMessage ?? "Unknown error")
             }
+            .alert(
+                "Action unavailable",
+                isPresented: Binding(
+                    get: { unavailableActionMessage != nil },
+                    set: { if !$0 { unavailableActionMessage = nil } }
+                )
+            ) {
+                Button("OK") { unavailableActionMessage = nil }
+            } message: {
+                Text(unavailableActionMessage ?? "")
+            }
+        }
+    }
+
+    private var emptyLibraryView: some View {
+        ContentUnavailableView {
+            Label("Your library is empty", systemImage: "music.note.house")
+        } description: {
+            Text("Original songs, separations, and performances will appear here.")
+        } actions: {
+            Button("Separate Your First Song") {
+                createFirstSeparation()
+            }
+            .buttonStyle(.borderedProminent)
         }
     }
 
@@ -161,6 +207,18 @@ struct HistoryView: View {
                     ? category.emptyDescription
                     : "No \(category.searchPrompt) match “\(query)”."
             )
+        } actions: {
+            if query.isEmpty {
+                Button("Go to Studio") {
+                    createFirstSeparation()
+                }
+                .buttonStyle(.borderedProminent)
+            } else {
+                Button("Clear Search") {
+                    query = ""
+                }
+                .buttonStyle(.bordered)
+            }
         }
     }
 
@@ -174,7 +232,11 @@ struct HistoryView: View {
                 bytes: original.byteCount,
                 systemImage: "arrow.down.circle.fill",
                 color: .blue,
-                item: item
+                item: item,
+                primaryIcon: playIcon(for: original.id),
+                primaryLabel: audioPlayer.playingID == original.id && audioPlayer.isPlaying
+                    ? "Pause original"
+                    : "Play original"
             ) {
                 audioPlayer.toggle(id: original.id, url: original.audioURL)
             }
@@ -229,9 +291,11 @@ struct HistoryView: View {
                 bytes: track.byteCount,
                 systemImage: "waveform",
                 color: .indigo,
-                item: item
+                item: item,
+                primaryIcon: "slider.horizontal.3",
+                primaryLabel: "Open mixer"
             ) {
-                openTrack(track, true)
+                openTrack(track, false)
             }
 
             if !isSelecting, expandedItem == item {
@@ -240,8 +304,8 @@ struct HistoryView: View {
                     inlineDeletion
                 } else {
                     HStack(spacing: 3) {
-                        LibraryAction(title: "Mixer", systemImage: "slider.horizontal.3") {
-                            openTrack(track, false)
+                        LibraryAction(title: "Play", systemImage: "play.fill") {
+                            openTrack(track, true)
                         }
                         LibraryAction(title: "Record", systemImage: "record.circle") {
                             recordTrack(track)
@@ -249,7 +313,9 @@ struct HistoryView: View {
                         LibraryAction(
                             title: "Separate",
                             systemImage: "arrow.triangle.branch",
-                            disabled: !canSeparateAgain(track)
+                            unavailableReason: canSeparateAgain(track)
+                                ? nil
+                                : "The original source for this separation is no longer available."
                         ) {
                             requestSeparation(for: track)
                         }
@@ -292,7 +358,11 @@ struct HistoryView: View {
                 systemImage: "mic.fill",
                 color: .red,
                 item: item,
-                playEnabled: recording.playbackURL != nil
+                primaryIcon: playIcon(for: recording.id),
+                primaryLabel: audioPlayer.playingID == recording.id && audioPlayer.isPlaying
+                    ? "Pause performance"
+                    : "Play performance",
+                primaryEnabled: recording.playbackURL != nil
             ) {
                 if let url = recording.playbackURL {
                     audioPlayer.toggle(id: recording.id, url: url)
@@ -308,21 +378,27 @@ struct HistoryView: View {
                         LibraryAction(
                             title: "Edit Mix",
                             systemImage: "slider.horizontal.3",
-                            disabled: !recording.canEditMix
+                            unavailableReason: recording.canEditMix
+                                ? nil
+                                : "The raw microphone and backing files for this older performance are unavailable."
                         ) {
                             editMix(recording)
                         }
                         LibraryAction(
                             title: "Share",
                             systemImage: "square.and.arrow.up",
-                            disabled: recording.playbackURL == nil
+                            unavailableReason: recording.playbackURL == nil
+                                ? "This performance does not have an exported audio file to share."
+                                : nil
                         ) {
                             if let url = recording.playbackURL { share([url]) }
                         }
                         LibraryAction(
                             title: "Record",
                             systemImage: "record.circle",
-                            disabled: !canRecordAgain(recording)
+                            unavailableReason: canRecordAgain(recording)
+                                ? nil
+                                : "The separated song used for this performance is no longer available."
                         ) {
                             recordAgain(recording)
                         }
@@ -356,8 +432,10 @@ struct HistoryView: View {
         systemImage: String,
         color: Color,
         item: LibraryItemID,
-        playEnabled: Bool = true,
-        play: @escaping () -> Void
+        primaryIcon: String,
+        primaryLabel: String,
+        primaryEnabled: Bool = true,
+        primaryAction: @escaping () -> Void
     ) -> some View {
         HStack(spacing: 13) {
             Image(systemName: systemImage)
@@ -373,7 +451,7 @@ struct HistoryView: View {
                     Text(subtitle)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
                 }
                 metadataLine(date: date, duration: duration, bytes: bytes)
             }
@@ -391,15 +469,15 @@ struct HistoryView: View {
                     selectedItems.contains(item) ? "Selected" : "Not selected"
                 )
             } else {
-                Button(action: play) {
-                    Image(systemName: playIcon(for: item.id))
+                Button(action: primaryAction) {
+                    Image(systemName: primaryIcon)
                         .frame(width: 34, height: 34)
                         .background(color.opacity(0.11), in: Circle())
                         .foregroundStyle(color)
                 }
                 .buttonStyle(.plain)
-                .disabled(audioPlaybackDisabled || !playEnabled)
-                .accessibilityLabel(playIcon(for: item.id) == "pause.fill" ? "Pause" : "Play")
+                .disabled(audioPlaybackDisabled || !primaryEnabled)
+                .accessibilityLabel(primaryLabel)
 
                 Image(systemName: expandedItem == item ? "chevron.up" : "chevron.down")
                     .font(.caption.weight(.semibold))
@@ -420,25 +498,54 @@ struct HistoryView: View {
         .accessibilityHint(
             isSelecting ? "Toggles selection" : "Shows actions for this item"
         )
+        .accessibilityValue(expandedItem == item ? "Expanded" : "Collapsed")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction(named: isSelecting ? "Toggle selection" : "Show actions") {
+            if isSelecting {
+                toggleSelection(of: item)
+            } else {
+                deletion = nil
+                expandedItem = expandedItem == item ? nil : item
+            }
+        }
     }
 
     private var inlineDeletion: some View {
-        HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Delete “\(deletion?.title ?? "item")”?")
-                    .font(.subheadline.weight(.semibold))
-                Text("This permanently removes its saved audio.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+        Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: 10) {
+                    deletionCopy
+                    HStack {
+                        Button("Cancel") { deletion = nil }
+                            .buttonStyle(.bordered)
+                        Button("Delete", role: .destructive) { performDeletion() }
+                            .buttonStyle(.borderedProminent)
+                            .tint(.red)
+                    }
+                }
+            } else {
+                HStack(spacing: 10) {
+                    deletionCopy
+                    Spacer(minLength: 4)
+                    Button("Cancel") { deletion = nil }
+                        .buttonStyle(.bordered)
+                    Button("Delete", role: .destructive) { performDeletion() }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.red)
+                }
             }
-            Spacer(minLength: 4)
-            Button("Cancel") { deletion = nil }
-                .buttonStyle(.bordered)
-            Button("Delete", role: .destructive) { performDeletion() }
-                .buttonStyle(.borderedProminent)
-                .tint(.red)
         }
         .padding(.vertical, 10)
+    }
+
+    private var deletionCopy: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("Delete “\(deletion?.title ?? "item")”?")
+                .font(.subheadline.weight(.semibold))
+            Text(deletion?.message ?? "This permanently removes its saved audio.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 
     private var selectionBar: some View {
@@ -557,6 +664,30 @@ struct HistoryView: View {
         case .originals: store.originals.reduce(0) { $0 + $1.byteCount }
         case .separations: store.tracks.reduce(0) { $0 + $1.byteCount }
         case .performances: store.recordings.reduce(0) { $0 + $1.byteCount }
+        }
+    }
+
+    private var batchDeletionConsequence: String? {
+        let ids = Set(selectedItems.map(\.id))
+        switch category {
+        case .originals:
+            let related = store.tracks.filter {
+                guard let sourceOriginalID = $0.sourceOriginalID else { return false }
+                return ids.contains(sourceOriginalID)
+            }.count
+            return related == 0
+                ? nil
+                : "\(related) saved separation\(related == 1 ? "" : "s") will remain, but regenerating them may require another download."
+        case .separations:
+            let related = store.recordings.filter {
+                guard let sourceTrackID = $0.sourceTrackID else { return false }
+                return ids.contains(sourceTrackID)
+            }.count
+            return related == 0
+                ? nil
+                : "\(related) performance\(related == 1 ? "" : "s") will remain, but Record Again will be unavailable."
+        case .performances:
+            return nil
         }
     }
 
@@ -681,9 +812,38 @@ struct HistoryView: View {
         title: String,
         kind: DeletionTarget.Kind
     ) {
+        let message: String
+        switch kind {
+        case .original:
+            let relatedTracks = store.tracks.filter { $0.sourceOriginalID == item.id }
+            let trackIDs = Set(relatedTracks.map(\.id))
+            let relatedRecordings = store.recordings.filter {
+                guard let sourceTrackID = $0.sourceTrackID else { return false }
+                return trackIDs.contains(sourceTrackID)
+            }
+            if relatedTracks.isEmpty {
+                message = "This permanently removes the downloaded original audio."
+            } else {
+                message = "Its \(relatedTracks.count) separation\(relatedTracks.count == 1 ? "" : "s") remain, but cannot be regenerated without downloading again. \(relatedRecordings.count) related performance\(relatedRecordings.count == 1 ? "" : "s") remain playable."
+            }
+        case .track:
+            let relatedCount = store.recordings.filter {
+                $0.sourceTrackID == item.id
+            }.count
+            message = relatedCount == 0
+                ? "This permanently removes all of its saved stems."
+                : "\(relatedCount) performance\(relatedCount == 1 ? "" : "s") remain playable, but “Record Again” will no longer be available."
+        case .recording:
+            message = "This permanently removes the performance and its saved audio."
+        }
         expandedItem = item
         withAnimation(.snappy(duration: 0.2)) {
-            deletion = DeletionTarget(item: item, title: title, kind: kind)
+            deletion = DeletionTarget(
+                item: item,
+                title: title,
+                kind: kind,
+                message: message
+            )
         }
     }
 
@@ -723,7 +883,7 @@ struct HistoryView: View {
         }
         .font(.caption)
         .foregroundStyle(.secondary)
-        .lineLimit(1)
+        .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
     }
 
     private func roughAge(_ date: Date) -> String {
@@ -777,9 +937,9 @@ private enum LibraryCategory: String, CaseIterable, Identifiable {
 
     var storageLabel: String {
         switch self {
-        case .originals: "Originals on this iPhone"
-        case .separations: "Separations on this iPhone"
-        case .performances: "Performances on this iPhone"
+        case .originals: "Originals on this device"
+        case .separations: "Separations on this device"
+        case .performances: "Performances on this device"
         }
     }
 
@@ -818,9 +978,11 @@ private struct LibraryItemID: Hashable {
 }
 
 private struct BatchDeleteConfirmationSheet: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let count: Int
     let byteCount: Int64
     let itemName: String
+    let consequence: String?
     let onDelete: () -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -841,21 +1003,44 @@ private struct BatchDeleteConfirmationSheet: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-            }
-            HStack {
-                Button("Cancel") { dismiss() }
-                    .buttonStyle(.bordered)
-                    .frame(maxWidth: .infinity)
-                Button("Delete", role: .destructive) {
-                    dismiss()
-                    onDelete()
+                if let consequence {
+                    Text(consequence)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(.red)
-                .frame(maxWidth: .infinity)
+            }
+            Group {
+                if dynamicTypeSize.isAccessibilitySize {
+                    VStack {
+                        deleteButton
+                        cancelButton
+                    }
+                } else {
+                    HStack {
+                        cancelButton
+                        deleteButton
+                    }
+                }
             }
         }
         .padding()
+    }
+
+    private var cancelButton: some View {
+        Button("Cancel") { dismiss() }
+            .buttonStyle(.bordered)
+            .frame(maxWidth: .infinity)
+    }
+
+    private var deleteButton: some View {
+        Button("Delete", role: .destructive) {
+            dismiss()
+            onDelete()
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(.red)
+        .frame(maxWidth: .infinity)
     }
 }
 
@@ -864,6 +1049,7 @@ private struct DeletionTarget {
     let item: LibraryItemID
     let title: String
     let kind: Kind
+    let message: String
 }
 
 private struct SeparationRequest: Identifiable {
@@ -953,17 +1139,32 @@ private struct SeparationChoiceSheet: View {
 private struct LibraryAction: View {
     let title: String
     let systemImage: String
-    var disabled = false
+    var unavailableReason: String?
     let action: () -> Void
 
     var body: some View {
-        Button(action: action) {
+        Button {
+            if let unavailableReason {
+                NotificationCenter.default.post(
+                    name: .atarangUnavailableLibraryAction,
+                    object: unavailableReason
+                )
+            } else {
+                action()
+            }
+        } label: {
             LibraryActionLabel(title: title, systemImage: systemImage)
         }
         .buttonStyle(.plain)
-        .disabled(disabled)
-        .opacity(disabled ? 0.35 : 1)
+        .opacity(unavailableReason == nil ? 1 : 0.48)
+        .accessibilityHint(unavailableReason ?? "")
     }
+}
+
+private extension Notification.Name {
+    static let atarangUnavailableLibraryAction = Notification.Name(
+        "AtarangUnavailableLibraryAction"
+    )
 }
 
 private struct LibraryActionLabel: View {
@@ -976,7 +1177,8 @@ private struct LibraryActionLabel: View {
                 .font(.body.weight(.semibold))
             Text(title)
                 .font(.caption2)
-                .lineLimit(1)
+                .lineLimit(2)
+                .minimumScaleFactor(0.8)
         }
         .frame(maxWidth: .infinity, minHeight: 48)
         .contentShape(Rectangle())

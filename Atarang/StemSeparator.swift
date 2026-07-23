@@ -53,7 +53,7 @@ enum StemSeparatorError: LocalizedError {
         switch self {
         case .modelNotFound(let model): "The bundled \(model.title) model could not be loaded."
         case .modelUnavailable(let model):
-            model.unavailabilityMessage ?? "\(model.title) is not available on this iPhone."
+            model.unavailabilityMessage ?? "\(model.title) is not available on this device."
         case .incompatibleModel(let model, let message): "The \(model.title) model is incompatible: \(message)"
         case .unsupportedFormat: "The downloaded audio format could not be converted."
         case .inferenceFailed(let message): "On-device separation failed: \(message)"

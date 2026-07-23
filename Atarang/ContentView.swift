@@ -1,6 +1,11 @@
 import SwiftUI
+import UIKit
 
 struct ContentView: View {
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @AppStorage("didExplainRecording") private var didExplainRecording = false
+    @AppStorage("hasUsedStudio") private var hasUsedStudio = false
     @StateObject private var model = SeparationModel()
     @StateObject private var player = StemPlayer()
     @StateObject private var history = HistoryStore()
@@ -9,6 +14,13 @@ struct ContentView: View {
     @State private var didRunDebugURL = false
     @State private var sharePayload: SharePayload?
     @State private var selectedTab = AppTab.studio
+    @State private var existingSeparation: LocalTrack?
+    @State private var existingModels: [SeparationModelKind] = []
+    @State private var separationTask: Task<Void, Never>?
+    @State private var existingLookupTask: Task<Void, Never>?
+    @State private var pendingModelDownload: ModelDownloadRequest?
+    @State private var studioNotice: String?
+    @State private var showsRecordingIntroduction = false
     private let debugURL: String?
 
     init() {
@@ -22,7 +34,14 @@ struct ContentView: View {
             NavigationStack {
                 ScrollView {
                     VStack(spacing: 22) {
-                        if !player.isLoaded { hero }
+                        if !player.isLoaded,
+                           !hasUsedStudio,
+                           !dynamicTypeSize.isAccessibilitySize {
+                            hero
+                        }
+                        if let studioNotice {
+                            noticeBanner(studioNotice)
+                        }
                         if player.isLoaded {
                             mixerHeader
                             mixer
@@ -32,11 +51,23 @@ struct ContentView: View {
                         if model.isWorking { progressCard }
                     }
                     .padding()
+                    .frame(
+                        maxWidth: horizontalSizeClass == .regular ? 760 : .infinity
+                    )
+                    .frame(maxWidth: .infinity)
                 }
                 .scrollIndicators(.hidden)
                 .scrollBounceBehavior(.basedOnSize)
                 .scrollDismissesKeyboard(.interactively)
                 .background(Color(.systemGroupedBackground))
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    if player.isLoaded {
+                        compactTransport
+                            .padding(.horizontal)
+                            .padding(.vertical, 8)
+                            .background(.bar)
+                    }
+                }
                 .navigationTitle("Atarang")
                 .navigationBarTitleDisplayMode(.large)
                 .toolbar(player.isLoaded ? .hidden : .visible, for: .navigationBar)
@@ -46,13 +77,40 @@ struct ContentView: View {
                     Text(model.errorMessage ?? "Unknown error")
                 }
                 .alert("Audio problem", isPresented: playerErrorIsPresented) {
+                    if player.microphonePermissionDenied {
+                        Button("Open Settings") {
+                            if let url = URL(string: UIApplication.openSettingsURLString) {
+                                UIApplication.shared.open(url)
+                            }
+                        }
+                    }
                     Button("OK") { player.alertMessage = nil }
                 } message: {
                     Text(player.alertMessage ?? "Unknown audio error")
                 }
+                .alert(item: $pendingModelDownload) { request in
+                    Alert(
+                        title: Text("Download \(model.selectedModel.downloadSize ?? "model")?"),
+                        message: Text(
+                            "\(model.selectedModel.title) is downloaded once and kept on this device. Separation begins after the download finishes."
+                        ),
+                        primaryButton: .default(Text("Download and Continue")) {
+                            startSeparation(force: request.force)
+                        },
+                        secondaryButton: .cancel()
+                    )
+                }
                 .sheet(item: $sharePayload) { payload in
                     ActivityView(items: payload.items)
                         .presentationDetents([.medium, .large])
+                }
+                .sheet(isPresented: $showsRecordingIntroduction) {
+                    RecordingIntroductionSheet {
+                        didExplainRecording = true
+                        showsRecordingIntroduction = false
+                        Task { await player.toggleRecording() }
+                    }
+                    .presentationDetents([.medium, .large])
                 }
             }
             .tabItem { Label("Studio", systemImage: "slider.horizontal.3") }
@@ -65,7 +123,10 @@ struct ContentView: View {
                 openTrack: openHistoryTrack,
                 recordTrack: startRecording,
                 recordAgain: recordAgain,
-                separateSource: separateLibrarySource
+                separateSource: separateLibrarySource,
+                createFirstSeparation: {
+                    selectedTab = .studio
+                }
             )
             .tabItem { Label("Library", systemImage: "music.note.house") }
             .tag(AppTab.history)
@@ -82,10 +143,21 @@ struct ContentView: View {
                 historyAudioPlayer.stop()
             }
         }
+        .onChange(of: youtubeURL) { refreshExistingSeparation() }
+        .onChange(of: model.selectedModel) { refreshExistingSeparation() }
+        .onOpenURL(perform: handleIncomingURL)
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: UIApplication.didBecomeActiveNotification
+            )
+        ) { _ in
+            consumePendingImport()
+        }
         .task {
+            consumePendingImport()
             guard !didRunDebugURL, let debugURL, !debugURL.isEmpty else { return }
             didRunDebugURL = true
-            await separate(debugURL)
+            await separate(debugURL, force: false)
         }
     }
 
@@ -94,6 +166,7 @@ struct ContentView: View {
         historyAudioPlayer.stop(releaseSession: true)
         do {
             try player.load(track: track.localTrack)
+            hasUsedStudio = true
             selectedTab = .studio
             if autoplay { try player.play() }
         } catch {
@@ -117,6 +190,7 @@ struct ContentView: View {
         historyAudioPlayer.stop(releaseSession: true)
         do {
             try player.load(track: track.localTrack)
+            hasUsedStudio = true
             selectedTab = .studio
             Task { await player.toggleRecording() }
         } catch {
@@ -133,24 +207,31 @@ struct ContentView: View {
         historyAudioPlayer.stop(releaseSession: true)
         model.selectedModel = separationModel
         selectedTab = .studio
-        Task { @MainActor in
-            let track: LocalTrack?
+        separationTask?.cancel()
+        separationTask = Task { @MainActor in
+            defer { separationTask = nil }
+            let result: SeparationResult?
             switch source {
             case .original(let original):
-                track = await model.separate(
+                result = await model.separate(
                     original: original,
-                    using: separationModel
+                    using: separationModel,
+                    force: true
                 )
             case .track(let historyTrack):
                 guard let sourceURL = historyTrack.sourceURL else {
                     model.errorMessage = "The original source is unavailable for this separation."
                     return
                 }
-                track = await model.separate(youtubeURL: sourceURL.absoluteString)
+                result = await model.separate(
+                    youtubeURL: sourceURL.absoluteString,
+                    force: true
+                )
             }
-            guard let track else { return }
+            guard let result else { return }
             do {
-                try player.load(track: track)
+                try player.load(track: result.track)
+                hasUsedStudio = true
             } catch {
                 model.errorMessage = error.localizedDescription
             }
@@ -176,47 +257,113 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 14) {
             Label("Separate a song", systemImage: "link")
                 .font(.headline)
-            TextField("Paste a YouTube URL", text: $youtubeURL)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .keyboardType(.URL)
-                .textFieldStyle(.roundedBorder)
+            Group {
+                if dynamicTypeSize.isAccessibilitySize {
+                    VStack(alignment: .leading, spacing: 8) {
+                        urlField
+                        pasteButton
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                    }
+                } else {
+                    HStack(spacing: 8) {
+                        urlField
+                        pasteButton
+                    }
+                }
+            }
+            if let urlValidationMessage {
+                Label(urlValidationMessage, systemImage: "exclamationmark.circle")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            } else if youtubeURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text("Paste a YouTube video link to continue.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             modelPicker
             Button {
-                Task { await separate(youtubeURL) }
+                if let existingSeparation {
+                    openExistingSeparation(existingSeparation)
+                } else {
+                    requestSeparation(force: false)
+                }
             } label: {
-                Label("Create \(model.selectedModel.stems.count) stems", systemImage: "wand.and.stars")
+                Label(
+                    existingSeparation == nil
+                        ? "Create \(model.selectedModel.stems.count) stems"
+                        : "Open Existing \(model.selectedModel.stems.count)-Stem Mix",
+                    systemImage: existingSeparation == nil ? "wand.and.stars" : "bolt.fill"
+                )
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
             .disabled(
-                youtubeURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                YouTubeSource.validatedURL(from: youtubeURL) == nil
                     || model.isWorking
                     || !model.selectedModel.isAvailableOnCurrentDevice
             )
+            if existingSeparation != nil {
+                Button("Separate Again") {
+                    requestSeparation(force: true)
+                }
+                .frame(maxWidth: .infinity)
+                .disabled(model.isWorking)
+                .accessibilityHint("Runs the same separation again instead of opening saved stems")
+            }
         }
         .cardStyle()
     }
 
     private var modelPicker: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Picker("Separation model", selection: $model.selectedModel) {
-                ForEach(SeparationModelKind.allCases) { separationModel in
-                    Text(
-                        separationModel.isAvailableOnCurrentDevice
-                            ? (ModelAssetStore.isInstalled(separationModel)
-                                ? separationModel.title
-                                : "\(separationModel.title) — downloads once")
-                            : "\(separationModel.title) — unavailable"
-                    )
-                    .tag(separationModel)
-                    .disabled(!separationModel.isAvailableOnCurrentDevice)
+            if dynamicTypeSize.isAccessibilitySize {
+                Menu {
+                    ForEach(SeparationModelKind.allCases) { separationModel in
+                        Button {
+                            model.selectedModel = separationModel
+                        } label: {
+                            Label(
+                                separationModel.choiceTitle,
+                                systemImage: model.selectedModel == separationModel
+                                    ? "checkmark"
+                                    : "circle"
+                            )
+                        }
+                        .disabled(!separationModel.isAvailableOnCurrentDevice)
+                    }
+                } label: {
+                    HStack {
+                        Text(model.selectedModel.shortChoiceTitle)
+                            .font(.headline)
+                        Spacer()
+                        Image(systemName: "chevron.up.chevron.down")
+                    }
+                    .frame(maxWidth: .infinity)
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.bordered)
+                .disabled(model.isWorking)
+            } else {
+                Picker("Separation style", selection: $model.selectedModel) {
+                    ForEach(SeparationModelKind.allCases) { separationModel in
+                        Text(modelChoiceLabel(separationModel))
+                            .tag(separationModel)
+                            .disabled(!separationModel.isAvailableOnCurrentDevice)
+                    }
+                }
+                .pickerStyle(.menu)
+                .disabled(model.isWorking)
             }
-            .pickerStyle(.menu)
-            .disabled(model.isWorking)
-            Text(model.selectedModel.detail)
+            Text(
+                [
+                    model.selectedModel.recommendationLabel,
+                    model.selectedModel.title,
+                    model.selectedModel.performanceHint
+                ]
+                .compactMap { $0 }
+                .joined(separator: " · ")
+            )
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Text(model.selectedModel.stemSummary)
@@ -228,11 +375,55 @@ struct ContentView: View {
                     .font(.caption)
                     .foregroundStyle(.orange)
             } else if !ModelAssetStore.isInstalled(model.selectedModel) {
-                Text("Downloads once when first used.")
+                Text("Downloads \(model.selectedModel.downloadSize ?? "once") once when first used.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            if let existingSeparation {
+                Label(
+                    "Already separated with \(existingSeparation.separationModel.title) \(existingSeparation.createdAt.formatted(.relative(presentation: .named))).",
+                    systemImage: "checkmark.circle.fill"
+                )
+                .font(.caption)
+                .foregroundStyle(.green)
+            } else if !existingModels.isEmpty {
+                Text(
+                    "Saved with \(existingModels.map(\.title).joined(separator: ", ")). Select that style to open it instantly."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
         }
+    }
+
+    private var urlField: some View {
+        TextField("Paste a YouTube URL", text: $youtubeURL)
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+            .keyboardType(.URL)
+            .textFieldStyle(.roundedBorder)
+            .accessibilityLabel("YouTube URL")
+    }
+
+    private var pasteButton: some View {
+        Button("Paste") {
+            if let value = UIPasteboard.general.string {
+                youtubeURL = value
+            }
+        }
+        .buttonStyle(.bordered)
+        .accessibilityHint("Pastes a YouTube link from the clipboard")
+    }
+
+    private func modelChoiceLabel(_ separationModel: SeparationModelKind) -> String {
+        guard separationModel.isAvailableOnCurrentDevice else {
+            return "\(separationModel.choiceTitle) — unavailable"
+        }
+        guard !ModelAssetStore.isInstalled(separationModel),
+              let downloadSize = separationModel.downloadSize else {
+            return separationModel.choiceTitle
+        }
+        return "\(separationModel.choiceTitle) · \(downloadSize)"
     }
 
     private var progressCard: some View {
@@ -248,6 +439,20 @@ struct ContentView: View {
                 Spacer()
                 Text("\(Int(model.progress * 100))%").monospacedDigit().foregroundStyle(.secondary)
             }
+            HStack {
+                Text(
+                    model.estimatedRemainingText
+                        ?? "This can take several minutes on older devices."
+                )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Cancel", role: .cancel) {
+                    separationTask?.cancel()
+                    separationTask = nil
+                }
+                .buttonStyle(.bordered)
+            }
         }
         .cardStyle()
     }
@@ -255,7 +460,9 @@ struct ContentView: View {
     private var mixer: some View {
         VStack(spacing: 12) {
             VStack(spacing: 3) {
-                Text(player.title).font(.headline).lineLimit(1)
+                Text(player.title)
+                    .font(.headline)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
                 Text("\(player.activeStems.count)-stem mix · \(player.separationModel.title)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -274,41 +481,50 @@ struct ContentView: View {
                 .foregroundStyle(.secondary)
             }
 
-            HStack(spacing: 34) {
-                Button {
-                    player.togglePlayback()
-                } label: {
-                    Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                        .font(.title2)
-                        .frame(width: 56, height: 56)
-                        .background(.indigo, in: Circle())
-                        .foregroundStyle(.white)
-                }
-                .disabled(player.isRecording)
-                .opacity(player.isRecording ? 0.45 : 1)
-                .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
-
-                Button {
-                    Task { await player.toggleRecording() }
-                } label: {
-                    Image(systemName: player.isRecording ? "stop.fill" : "record.circle")
-                        .font(.title2)
-                        .frame(width: 56, height: 56)
-                        .background(player.isRecording ? Color.red : Color.red.opacity(0.14), in: Circle())
-                        .foregroundStyle(player.isRecording ? .white : .red)
-                }
-                .accessibilityLabel(player.isRecording ? "Stop recording" : "Record performance")
-            }
-
             recordingStatus
             recordingMixControls
 
-            VStack(spacing: 9) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Label("Stem Mix", systemImage: "music.note.list")
+                        .font(.subheadline.weight(.semibold))
+                    Text("Levels are saved for this song.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Menu {
+                    Button("Full Mix") {
+                        player.applyPracticePreset(.fullMix)
+                    }
+                    Button("Without Vocals") {
+                        player.applyPracticePreset(.withoutVocals)
+                    }
+                    Button("Vocals Only") {
+                        player.applyPracticePreset(.vocalsOnly)
+                    }
+                    Divider()
+                    Button("Reset All Levels") {
+                        player.resetMix()
+                    }
+                } label: {
+                    Label("Presets", systemImage: "slider.horizontal.2.square")
+                }
+                .disabled(player.isRecording)
+            }
+
+            LazyVGrid(columns: stemColumns, spacing: 9) {
                 ForEach(player.activeStems) { stem in
-                    StemRow(stem: stem, volume: Binding(
-                        get: { player.volume(for: stem) },
-                        set: { player.setVolume($0, for: stem) }
-                    ))
+                    StemRow(
+                        stem: stem,
+                        volume: Binding(
+                            get: { player.volume(for: stem) },
+                            set: { player.setVolume($0, for: stem) }
+                        ),
+                        isSoloed: player.soloedStem == stem,
+                        toggleMute: { player.toggleMute(for: stem) },
+                        toggleSolo: { player.toggleSolo(for: stem) }
+                    )
                 }
             }
 
@@ -343,15 +559,23 @@ struct ContentView: View {
             Button {
                 chooseAnotherSong()
             } label: {
-                Image(systemName: "plus")
-                    .font(.title2.weight(.semibold))
-                    .frame(width: 44, height: 44)
+                Label("New Song", systemImage: "plus")
+                    .font(.subheadline.weight(.semibold))
+                    .padding(.horizontal, 10)
+                    .frame(minHeight: 44)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.bordered)
             .foregroundStyle(.indigo)
             .disabled(player.isRecording)
             .accessibilityLabel("New Song")
         }
+    }
+
+    private var stemColumns: [GridItem] {
+        if horizontalSizeClass == .regular, !dynamicTypeSize.isAccessibilitySize {
+            return [GridItem(.flexible(), spacing: 12), GridItem(.flexible())]
+        }
+        return [GridItem(.flexible())]
     }
 
     private func chooseAnotherSong() {
@@ -365,6 +589,64 @@ struct ContentView: View {
 
     private var playerErrorIsPresented: Binding<Bool> {
         Binding(get: { player.alertMessage != nil }, set: { if !$0 { player.alertMessage = nil } })
+    }
+
+    private var compactTransport: some View {
+        HStack(spacing: 14) {
+            Button {
+                player.togglePlayback()
+            } label: {
+                Label(
+                    player.isPlaying ? "Pause" : "Play",
+                    systemImage: player.isPlaying ? "pause.fill" : "play.fill"
+                )
+                .labelStyle(TransportLabelStyle(color: .indigo))
+            }
+            .buttonStyle(.plain)
+            .disabled(player.isRecording)
+            .opacity(player.isRecording ? 0.45 : 1)
+
+            Button {
+                requestRecording()
+            } label: {
+                Label(
+                    player.isRecording ? "Stop" : "Record",
+                    systemImage: player.isRecording ? "stop.fill" : "record.circle"
+                )
+                .labelStyle(
+                    TransportLabelStyle(
+                        color: .red,
+                        isActive: player.isRecording
+                    )
+                )
+            }
+            .buttonStyle(.plain)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(player.isRecording ? "Recording" : player.title)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                Text(
+                    player.isRecording
+                        ? time(player.recordingDuration)
+                        : "\(time(player.position)) / \(time(player.duration))"
+                )
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(player.isRecording ? .red : .secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    private func requestRecording() {
+        if player.isRecording {
+            Task { await player.toggleRecording() }
+        } else if didExplainRecording {
+            Task { await player.toggleRecording() }
+        } else {
+            showsRecordingIntroduction = true
+        }
     }
 
     @ViewBuilder
@@ -382,7 +664,7 @@ struct ContentView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            Text("Recording continues if you lock your iPhone or leave Atarang.")
+            Text("Recording continues if you lock your device or leave Atarang.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -449,15 +731,125 @@ struct ContentView: View {
         }
     }
 
+    private var urlValidationMessage: String? {
+        let trimmed = youtubeURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return YouTubeSource.validatedURL(from: trimmed) == nil
+            ? "Enter a valid youtube.com or youtu.be video link."
+            : nil
+    }
+
+    private func refreshExistingSeparation() {
+        existingLookupTask?.cancel()
+        let lookupURL = youtubeURL
+        let lookupModel = model.selectedModel
+        existingLookupTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+            existingSeparation = model.existingSeparation(
+                youtubeURL: lookupURL,
+                using: lookupModel
+            )
+            existingModels = model.existingSeparationModels(
+                youtubeURL: lookupURL
+            )
+        }
+    }
+
+    private func requestSeparation(force: Bool) {
+        guard YouTubeSource.validatedURL(from: youtubeURL) != nil else { return }
+        if !ModelAssetStore.isInstalled(model.selectedModel),
+           model.selectedModel.downloadSize != nil {
+            pendingModelDownload = ModelDownloadRequest(force: force)
+        } else {
+            startSeparation(force: force)
+        }
+    }
+
+    private func handleIncomingURL(_ incomingURL: URL) {
+        let candidate: String?
+        if incomingURL.scheme?.lowercased() == "atarang" {
+            candidate = URLComponents(
+                url: incomingURL,
+                resolvingAgainstBaseURL: false
+            )?.queryItems?.first(where: { $0.name == "url" })?.value
+        } else {
+            candidate = incomingURL.absoluteString
+        }
+        guard let candidate,
+              YouTubeSource.validatedURL(from: candidate) != nil else {
+            model.errorMessage = "The shared item does not contain a valid YouTube video link."
+            return
+        }
+        if player.isLoaded { player.unload() }
+        youtubeURL = candidate
+        selectedTab = .studio
+        studioNotice = "YouTube link received. Choose a separation style to continue."
+    }
+
+    private func consumePendingImport() {
+        guard let value = UserDefaults.standard.string(
+            forKey: PendingYouTubeImport.defaultsKey
+        ) else { return }
+        UserDefaults.standard.removeObject(
+            forKey: PendingYouTubeImport.defaultsKey
+        )
+        if let url = URL(string: value) {
+            handleIncomingURL(url)
+        }
+    }
+
+    private func startSeparation(force: Bool) {
+        separationTask?.cancel()
+        separationTask = Task { @MainActor in
+            await separate(youtubeURL, force: force)
+            separationTask = nil
+        }
+    }
+
+    private func openExistingSeparation(_ track: LocalTrack) {
+        do {
+            try player.load(track: track)
+            hasUsedStudio = true
+            studioNotice = "Opened a saved separation instantly."
+        } catch {
+            model.errorMessage = error.localizedDescription
+        }
+    }
+
     @MainActor
-    private func separate(_ url: String) async {
-        if let track = await model.separate(youtubeURL: url) {
+    private func separate(_ url: String, force: Bool) async {
+        if let result = await model.separate(youtubeURL: url, force: force) {
             do {
-                try player.load(track: track)
+                try player.load(track: result.track)
+                hasUsedStudio = true
+                studioNotice = result.reusedExistingSeparation
+                    ? "Opened a saved separation instantly."
+                    : "Separation ready to mix."
+                refreshExistingSeparation()
                 await runDebugRecordingIfRequested()
             }
             catch { model.errorMessage = error.localizedDescription }
         }
+    }
+
+    private func noticeBanner(_ text: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+            Text(text)
+                .font(.subheadline)
+            Spacer()
+            Button {
+                studioNotice = nil
+            } label: {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Dismiss")
+        }
+        .padding(12)
+        .background(Color.green.opacity(0.1), in: RoundedRectangle(cornerRadius: 14))
     }
 
     @MainActor
@@ -483,42 +875,96 @@ private enum AppTab {
     case studio, history
 }
 
+private struct ModelDownloadRequest: Identifiable {
+    let id = UUID()
+    let force: Bool
+}
+
 private struct StemRow: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let stem: StemKind
     @Binding var volume: Float
+    let isSoloed: Bool
+    let toggleMute: () -> Void
+    let toggleSolo: () -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: stem.icon)
-                .frame(width: 25)
-                .foregroundStyle(stem.color)
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text(stem.title).font(.subheadline.weight(.semibold))
-                    Spacer()
-                    Text("\(Int(volume * 100))%")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
+        Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: 10) {
+                    header
+                    levelSlider
+                    HStack {
+                        Spacer()
+                        muteButton
+                        soloButton
+                    }
                 }
-                Slider(value: $volume, in: 0...1)
-                    .tint(stem.color)
-                    .accessibilityLabel("\(stem.title) level")
-                    .accessibilityValue("\(Int(volume * 100)) percent")
+            } else {
+                HStack(spacing: 10) {
+                    Image(systemName: stem.icon)
+                        .frame(width: 25)
+                        .foregroundStyle(stem.color)
+                    VStack(alignment: .leading, spacing: 4) {
+                        header
+                        levelSlider
+                    }
+                    muteButton
+                    soloButton
+                }
             }
-            Button {
-                volume = volume == 0 ? 1 : 0
-            } label: {
-                Image(systemName: volume == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                    .frame(width: 30)
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(volume == 0 ? .secondary : stem.color)
-            .accessibilityLabel(volume == 0 ? "Unmute \(stem.title)" : "Mute \(stem.title)")
         }
+        .padding(.vertical, 5)
+    }
+
+    private var header: some View {
+        HStack {
+            if dynamicTypeSize.isAccessibilitySize {
+                Image(systemName: stem.icon)
+                    .foregroundStyle(stem.color)
+            }
+            Text(stem.title)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+            Spacer()
+            Text("\(Int(volume * 100))%")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .fixedSize()
+        }
+    }
+
+    private var levelSlider: some View {
+        Slider(value: $volume, in: 0...1)
+            .tint(stem.color)
+            .accessibilityLabel("\(stem.title) level")
+            .accessibilityValue("\(Int(volume * 100)) percent")
+    }
+
+    private var muteButton: some View {
+        Button(action: toggleMute) {
+            Image(systemName: volume == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                .frame(minWidth: 38, minHeight: 38)
+        }
+        .buttonStyle(.bordered)
+        .foregroundStyle(volume == 0 ? .secondary : stem.color)
+        .accessibilityLabel(volume == 0 ? "Unmute \(stem.title)" : "Mute \(stem.title)")
+    }
+
+    private var soloButton: some View {
+        Button(action: toggleSolo) {
+            Text("S")
+                .font(.caption.weight(.bold))
+                .frame(minWidth: 22, minHeight: 22)
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(isSoloed ? stem.color : .secondary.opacity(0.35))
+        .accessibilityLabel(isSoloed ? "Turn off solo for \(stem.title)" : "Solo \(stem.title)")
     }
 }
 
 private struct RecordingLevelRow: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let title: String
     let systemImage: String
     let color: Color
@@ -527,24 +973,101 @@ private struct RecordingLevelRow: View {
     let accessibilityLabel: String
 
     var body: some View {
-        HStack(spacing: 12) {
+        Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: 8) {
+                    labelAndValue
+                    slider
+                }
+            } else {
+                HStack(spacing: 12) {
+                    Label(title, systemImage: systemImage)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(color)
+                        .frame(minWidth: 76, alignment: .leading)
+                    slider
+                    Text("\(percentage)%")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .fixedSize()
+                }
+            }
+        }
+    }
+
+    private var labelAndValue: some View {
+        HStack {
             Label(title, systemImage: systemImage)
                 .font(.subheadline.weight(.medium))
                 .foregroundStyle(color)
-                .frame(width: 88, alignment: .leading)
-            Slider(value: $value, in: range, step: 0.05)
-                .tint(color)
-                .accessibilityLabel(accessibilityLabel)
-                .accessibilityValue("\(percentage) percent")
+            Spacer()
             Text("\(percentage)%")
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
-                .frame(width: 42, alignment: .trailing)
+                .fixedSize()
         }
+    }
+
+    private var slider: some View {
+        Slider(value: $value, in: range, step: 0.05)
+            .tint(color)
+            .accessibilityLabel(accessibilityLabel)
+            .accessibilityValue("\(percentage) percent")
     }
 
     private var percentage: Int {
         Int((value * 100).rounded())
+    }
+}
+
+private struct TransportLabelStyle: LabelStyle {
+    let color: Color
+    var isActive = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        VStack(spacing: 3) {
+            configuration.icon
+                .font(.headline)
+                .frame(width: 48, height: 38)
+                .background(isActive ? color : color.opacity(0.14), in: Capsule())
+                .foregroundStyle(isActive ? .white : color)
+            configuration.title
+                .font(.caption2.weight(.semibold))
+        }
+    }
+}
+
+private struct RecordingIntroductionSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let continueRecording: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 18) {
+                Label("Record your performance", systemImage: "mic.circle.fill")
+                    .font(.title2.bold())
+                    .foregroundStyle(.red)
+                Text(
+                    "Atarang records your microphone together with the backing mix. The recording stays on this device unless you share it."
+                )
+                Label("Use headphones for the cleanest recording.", systemImage: "headphones")
+                Label("Recording can continue while the screen is locked.", systemImage: "lock")
+                Spacer()
+                Button {
+                    continueRecording()
+                } label: {
+                    Label("Continue", systemImage: "mic.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+                Button("Not Now") { dismiss() }
+                    .frame(maxWidth: .infinity)
+            }
+            .padding()
+            .navigationTitle("Before You Record")
+            .navigationBarTitleDisplayMode(.inline)
+        }
     }
 }
 

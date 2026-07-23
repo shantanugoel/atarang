@@ -1,19 +1,58 @@
+import AVFoundation
 import Foundation
 import Combine
 import OSLog
 import YoutubeDL
+
+enum SeparationResult {
+    case reused(LocalTrack)
+    case created(LocalTrack)
+
+    var track: LocalTrack {
+        switch self {
+        case .reused(let track), .created(let track): track
+        }
+    }
+
+    var reusedExistingSeparation: Bool {
+        if case .reused = self { return true }
+        return false
+    }
+}
 
 @MainActor
 final class SeparationModel: ObservableObject {
     @Published var isWorking = false
     @Published var progress = 0.0
     @Published var statusText = "Preparing…"
+    @Published var estimatedRemainingText: String?
     @Published var errorMessage: String?
     @Published var selectedModel: SeparationModelKind = .htdemucs
     private let logger = Logger(subsystem: "com.shantanugoel.atarang.Atarang", category: "Separation")
+    private var separationStartedAt: Date?
 
-    func separate(youtubeURL: String) async -> LocalTrack? {
-        guard let url = URL(string: youtubeURL), isYouTubeURL(url) else {
+    func existingSeparation(
+        youtubeURL: String,
+        using separationModel: SeparationModelKind
+    ) -> LocalTrack? {
+        guard let url = YouTubeSource.validatedURL(from: youtubeURL),
+              let original = try? savedOriginal(for: url) else { return nil }
+        return try? savedTrack(for: original, using: separationModel)
+    }
+
+    func existingSeparationModels(youtubeURL: String) -> [SeparationModelKind] {
+        guard let url = YouTubeSource.validatedURL(from: youtubeURL),
+              let original = try? savedOriginal(for: url) else { return [] }
+        return SeparationModelKind.allCases.filter {
+            (try? savedTrack(for: original, using: $0)) != nil
+        }
+    }
+
+    func separate(
+        youtubeURL: String,
+        force: Bool = false
+    ) async -> SeparationResult? {
+        guard let url = YouTubeSource.validatedURL(from: youtubeURL) else {
             errorMessage = "Enter a valid youtube.com or youtu.be URL."
             return nil
         }
@@ -26,10 +65,13 @@ final class SeparationModel: ObservableObject {
             return nil
         }
         progress = 0.01
+        estimatedRemainingText = nil
+        separationStartedAt = nil
         statusText = "Reading video information…"
         defer { isWorking = false }
 
         do {
+            try Task.checkCancellation()
             let original: SavedOriginal
             if let existing = try savedOriginal(for: url) {
                 original = existing
@@ -48,6 +90,7 @@ final class SeparationModel: ObservableObject {
                 }
                 defer { slowNotice.cancel() }
                 let downloaded = try await downloadAudio(from: url)
+                try Task.checkCancellation()
                 slowNotice.cancel()
                 original = try persistOriginal(
                     downloadedURL: downloaded.url,
@@ -60,7 +103,21 @@ final class SeparationModel: ObservableObject {
                 NotificationCenter.default.post(name: .atarangLibraryDidChange, object: nil)
                 logger.info("Audio saved to Originals")
             }
-            return try await separate(original: original, using: separationModel)
+            if !force, let existing = try savedTrack(
+                for: original,
+                using: separationModel
+            ) {
+                progress = 1
+                statusText = "Opened saved separation"
+                return .reused(existing)
+            }
+            return .created(
+                try await separate(original: original, using: separationModel)
+            )
+        } catch is CancellationError {
+            statusText = "Cancelled"
+            progress = 0
+            return nil
         } catch {
             logger.error("Separation failed: \(error.localizedDescription, privacy: .public)")
             errorMessage = friendlyMessage(for: error)
@@ -70,8 +127,9 @@ final class SeparationModel: ObservableObject {
 
     func separate(
         original: HistoryOriginal,
-        using separationModel: SeparationModelKind
-    ) async -> LocalTrack? {
+        using separationModel: SeparationModelKind,
+        force: Bool = true
+    ) async -> SeparationResult? {
         guard separationModel.isAvailableOnCurrentDevice else {
             errorMessage = separationModel.unavailabilityMessage
             return nil
@@ -79,18 +137,37 @@ final class SeparationModel: ObservableObject {
         isWorking = true
         selectedModel = separationModel
         progress = 0.17
+        estimatedRemainingText = nil
+        separationStartedAt = nil
         statusText = "Using saved original…"
         defer { isWorking = false }
         do {
-            return try await separate(
-                original: SavedOriginal(
-                    id: original.id,
-                    title: original.title,
-                    sourceURL: original.sourceURL,
-                    audioURL: original.audioURL
-                ),
-                using: separationModel
+            let savedOriginal = SavedOriginal(
+                id: original.id,
+                title: original.title,
+                sourceURL: original.sourceURL,
+                sourceKey: original.sourceKey
+                    ?? YouTubeSource.canonicalKey(for: original.sourceURL),
+                audioURL: original.audioURL
             )
+            if !force, let existing = try savedTrack(
+                for: savedOriginal,
+                using: separationModel
+            ) {
+                progress = 1
+                statusText = "Opened saved separation"
+                return .reused(existing)
+            }
+            return .created(
+                try await separate(
+                    original: savedOriginal,
+                    using: separationModel
+                )
+            )
+        } catch is CancellationError {
+            statusText = "Cancelled"
+            progress = 0
+            return nil
         } catch {
             logger.error("Separation failed: \(error.localizedDescription, privacy: .public)")
             errorMessage = friendlyMessage(for: error)
@@ -124,6 +201,7 @@ final class SeparationModel: ObservableObject {
             modelKind: separationModel,
             artifact: artifact
         )
+        try Task.checkCancellation()
         let output = try outputFolder()
         let files: [StemKind: URL]
         do {
@@ -132,8 +210,13 @@ final class SeparationModel: ObservableObject {
                 outputFolder: output.folder
             ) { value in
                 Task { @MainActor [weak self] in
-                    self?.statusText = "Separating \(separationModel.stems.count) stems on this iPhone…"
-                    self?.progress = 0.2 + value * 0.78
+                    guard let self else { return }
+                    if self.separationStartedAt == nil {
+                        self.separationStartedAt = Date()
+                    }
+                    self.statusText = "Separating \(separationModel.stems.count) stems on this device…"
+                    self.progress = 0.2 + value * 0.78
+                    self.updateEstimatedRemaining(forSeparationProgress: value)
                 }
             }
         } catch {
@@ -143,12 +226,14 @@ final class SeparationModel: ObservableObject {
 
         progress = 1
         statusText = "Ready to mix"
+        estimatedRemainingText = nil
         let createdAt = Date()
         let metadata = TrackMetadata(
             id: output.id,
             title: original.title,
             createdAt: createdAt,
             sourceURL: original.sourceURL,
+            sourceKey: original.sourceKey,
             sourceOriginalID: original.id,
             separationModel: separationModel,
             stems: separationModel.stems
@@ -207,7 +292,7 @@ final class SeparationModel: ObservableObject {
         guard let mediaURL = URL(string: selection.url) else {
             throw SeparationFailure.noCompatibleAudio
         }
-        statusText = "Downloading audio to this iPhone…"
+        statusText = "Downloading audio to this device…"
         progress = 0.14
         var request = URLRequest(url: mediaURL)
         selection.headers.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
@@ -259,6 +344,7 @@ final class SeparationModel: ObservableObject {
                     title: title,
                     createdAt: Date(),
                     sourceURL: sourceURL,
+                    sourceKey: YouTubeSource.canonicalKey(for: sourceURL),
                     audioFilename: audioURL.lastPathComponent
                 ),
                 to: folder.appendingPathComponent(LibraryMetadata.originalFilename)
@@ -271,6 +357,7 @@ final class SeparationModel: ObservableObject {
             id: id,
             title: title,
             sourceURL: sourceURL,
+            sourceKey: YouTubeSource.canonicalKey(for: sourceURL),
             audioURL: audioURL
         )
     }
@@ -287,17 +374,78 @@ final class SeparationModel: ObservableObject {
             guard let metadata = try? LibraryMetadata.read(
                 OriginalMetadata.self,
                 from: metadataURL
-            ), metadata.sourceURL == sourceURL else { continue }
+            ) else { continue }
+            let requestedKey = YouTubeSource.canonicalKey(for: sourceURL)
+            let metadataKey = metadata.sourceKey
+                ?? YouTubeSource.canonicalKey(for: metadata.sourceURL)
+            guard metadata.sourceURL == sourceURL
+                    || (requestedKey != nil && requestedKey == metadataKey) else { continue }
             let audioURL = folder.appendingPathComponent(metadata.audioFilename)
             guard FileManager.default.fileExists(atPath: audioURL.path) else { continue }
             return SavedOriginal(
                 id: metadata.id,
                 title: metadata.title,
                 sourceURL: metadata.sourceURL,
+                sourceKey: metadataKey,
                 audioURL: audioURL
             )
         }
         return nil
+    }
+
+    private func savedTrack(
+        for original: SavedOriginal,
+        using separationModel: SeparationModelKind
+    ) throws -> LocalTrack? {
+        let root = try libraryRoot(named: "Tracks")
+        let folders = try FileManager.default.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )
+        var matches: [(Date, LocalTrack)] = []
+        for folder in folders {
+            let metadataURL = folder.appendingPathComponent(LibraryMetadata.trackFilename)
+            guard let metadata = try? LibraryMetadata.read(
+                TrackMetadata.self,
+                from: metadataURL
+            ), metadata.separationModel == separationModel,
+               metadata.separationCacheVersion == separationModel.separationCacheVersion,
+               metadata.stems == separationModel.stems else { continue }
+
+            let metadataKey = metadata.sourceKey
+                ?? metadata.sourceURL.flatMap(YouTubeSource.canonicalKey(for:))
+            let sameSource = metadata.sourceOriginalID == original.id
+                || (original.sourceKey != nil && metadataKey == original.sourceKey)
+            guard sameSource else { continue }
+
+            let files: [StemKind: URL] = Dictionary(
+                uniqueKeysWithValues: separationModel.stems.compactMap { stem -> (StemKind, URL)? in
+                let url = folder
+                    .appendingPathComponent(stem.rawValue)
+                    .appendingPathExtension("wav")
+                guard FileManager.default.fileExists(atPath: url.path),
+                      (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0 > 0,
+                      (try? AVAudioFile(forReading: url)) != nil else {
+                    return nil
+                }
+                return (stem, url)
+            })
+            guard files.count == separationModel.stems.count else { continue }
+            matches.append((
+                metadata.createdAt,
+                LocalTrack(
+                    id: metadata.id,
+                    title: metadata.title,
+                    files: files,
+                    createdAt: metadata.createdAt,
+                    sourceURL: metadata.sourceURL,
+                    sourceOriginalID: metadata.sourceOriginalID,
+                    separationModel: metadata.separationModel
+                )
+            ))
+        }
+        return matches.max { $0.0 < $1.0 }?.1
     }
 
     private func libraryRoot(named name: String) throws -> URL {
@@ -319,6 +467,23 @@ final class SeparationModel: ObservableObject {
         return host == "youtu.be" || host == "youtube.com" || host.hasSuffix(".youtube.com")
     }
 
+    private func updateEstimatedRemaining(forSeparationProgress progress: Double) {
+        guard progress > 0.02, progress < 1, let separationStartedAt else {
+            estimatedRemainingText = nil
+            return
+        }
+        let elapsed = Date().timeIntervalSince(separationStartedAt)
+        let remaining = elapsed * (1 - progress) / progress
+        guard remaining.isFinite, remaining > 5 else {
+            estimatedRemainingText = "Almost done"
+            return
+        }
+        let minutes = max(1, Int(ceil(remaining / 60)))
+        estimatedRemainingText = minutes == 1
+            ? "About 1 minute remaining"
+            : "About \(minutes) minutes remaining"
+    }
+
     private func friendlyMessage(for error: Error) -> String {
         if let urlError = error as? URLError {
             return "The download failed: \(urlError.localizedDescription). Check your connection and try again."
@@ -331,6 +496,7 @@ private struct SavedOriginal: Sendable {
     let id: UUID
     let title: String
     let sourceURL: URL
+    let sourceKey: String?
     let audioURL: URL
 }
 
@@ -352,7 +518,7 @@ private enum SeparationFailure: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .noCompatibleAudio: "YouTube did not provide an iPhone-compatible audio stream for this video."
+        case .noCompatibleAudio: "YouTube did not provide a compatible audio stream for this video."
         case .httpStatus(let code): "YouTube refused the audio download (HTTP \(code))."
         }
     }
