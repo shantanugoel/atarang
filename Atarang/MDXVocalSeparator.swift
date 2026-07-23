@@ -223,19 +223,7 @@ final class MDXVocalSeparator: @unchecked Sendable {
     }
 
     private func floatValues(from array: MLMultiArray) -> [Float] {
-        switch array.dataType {
-        case .float16:
-            let values = array.dataPointer.bindMemory(to: Float16.self, capacity: array.count)
-            return (0..<array.count).map { Float(values[$0]) }
-        case .float32:
-            let values = array.dataPointer.bindMemory(to: Float.self, capacity: array.count)
-            return Array(UnsafeBufferPointer(start: values, count: array.count))
-        case .double:
-            let values = array.dataPointer.bindMemory(to: Double.self, capacity: array.count)
-            return (0..<array.count).map { Float(values[$0]) }
-        default:
-            return (0..<array.count).map { array[$0].floatValue }
-        }
+        MLMultiArrayFloatReader(array).values()
     }
 
     private func write(

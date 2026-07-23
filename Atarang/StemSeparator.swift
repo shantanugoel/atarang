@@ -216,35 +216,19 @@ final class CoreMLWaveformSeparator: @unchecked Sendable {
                 "expected \(modelKind.stems.count) output stems but received only \(sources.count) values."
             )
         }
+        let sourceReader = MLMultiArrayFloatReader(sources)
         for (stemIndex, stem) in modelKind.stems.enumerated() {
             var samples = [Float](repeating: 0, count: segmentSamples * 2)
             let base = stemIndex * 2 * segmentSamples
             for frame in 0..<segmentSamples {
-                samples[frame * 2] = sample(from: sources, at: base + frame)
-                samples[frame * 2 + 1] = sample(
-                    from: sources,
+                samples[frame * 2] = sourceReader.value(at: base + frame)
+                samples[frame * 2 + 1] = sourceReader.value(
                     at: base + segmentSamples + frame
                 )
             }
             stems[stem] = samples
         }
         return stems
-    }
-
-    private func sample(from array: MLMultiArray, at index: Int) -> Float {
-        switch array.dataType {
-        case .float16:
-            let values = array.dataPointer.bindMemory(to: Float16.self, capacity: array.count)
-            return Float(values[index])
-        case .float32:
-            let values = array.dataPointer.bindMemory(to: Float.self, capacity: array.count)
-            return values[index]
-        case .double:
-            let values = array.dataPointer.bindMemory(to: Double.self, capacity: array.count)
-            return Float(values[index])
-        default:
-            return array[index].floatValue
-        }
     }
 
     private func sliceChunk(mix: AVAudioPCMBuffer, start: Int) -> [Float] {

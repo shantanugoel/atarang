@@ -35,6 +35,7 @@ struct ContentView: View {
                 }
                 .scrollIndicators(.hidden)
                 .scrollBounceBehavior(.basedOnSize)
+                .scrollDismissesKeyboard(.interactively)
                 .background(Color(.systemGroupedBackground))
                 .navigationTitle("Atarang")
                 .navigationBarTitleDisplayMode(.large)
@@ -69,6 +70,7 @@ struct ContentView: View {
             .tabItem { Label("Library", systemImage: "music.note.house") }
             .tag(AppTab.history)
         }
+        .background(KeyboardDismissController())
         .tint(.indigo)
         .onReceive(NotificationCenter.default.publisher(for: .atarangLibraryDidChange)) { _ in
             history.refresh()

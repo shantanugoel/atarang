@@ -146,6 +146,7 @@ struct HistoryView: View {
             }
         }
         .listStyle(.insetGrouped)
+        .scrollDismissesKeyboard(.interactively)
     }
 
     private var emptyCategoryView: some View {
