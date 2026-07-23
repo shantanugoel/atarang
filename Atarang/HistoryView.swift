@@ -12,6 +12,7 @@ struct HistoryView: View {
     @State private var filter: HistoryFilter = .all
     @State private var sharePayload: SharePayload?
     @State private var deletion: DeletionTarget?
+    @State private var editingMix: HistoryRecording?
 
     var body: some View {
         NavigationStack {
@@ -47,6 +48,10 @@ struct HistoryView: View {
             .sheet(item: $sharePayload) { payload in
                 ActivityView(items: payload.items)
                     .presentationDetents([.medium, .large])
+            }
+            .sheet(item: $editingMix) { recording in
+                RecordingMixEditor(store: store, recording: recording)
+                    .presentationDetents([.large])
             }
             .confirmationDialog(
                 deletion.map { "Delete “\($0.title)” ?" } ?? "Delete item?",
@@ -106,6 +111,11 @@ struct HistoryView: View {
                                     }
                                     .tint(.indigo)
                                 }
+                                Button { editMix(recording) } label: {
+                                    Label("Edit Mix", systemImage: "slider.horizontal.3")
+                                }
+                                .tint(.orange)
+                                .disabled(!recording.canEditMix)
                             }
                             .contextMenu { recordingActions(recording) }
                     }
@@ -179,6 +189,15 @@ struct HistoryView: View {
             }
         }
         .padding(.vertical, 3)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if recording.canEditMix { editMix(recording) }
+        }
+        .accessibilityHint(
+            recording.canEditMix
+                ? "Opens microphone and backing mix controls"
+                : "Original audio is unavailable for editing"
+        )
     }
 
     @ViewBuilder
@@ -203,6 +222,10 @@ struct HistoryView: View {
 
     @ViewBuilder
     private func recordingActions(_ recording: HistoryRecording) -> some View {
+        Button { editMix(recording) } label: {
+            Label("Edit Mix", systemImage: "slider.horizontal.3")
+        }
+        .disabled(!recording.canEditMix)
         if let url = recording.playbackURL {
             Button { audioPlayer.toggle(id: recording.id, url: url) } label: {
                 Label("Play", systemImage: "play.fill")
@@ -277,6 +300,12 @@ struct HistoryView: View {
     private func share(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
         sharePayload = SharePayload(items: urls)
+    }
+
+    private func editMix(_ recording: HistoryRecording) {
+        guard recording.canEditMix else { return }
+        audioPlayer.stop(releaseSession: true)
+        editingMix = recording
     }
 
     /// A deliberately low-frequency age label. Unlike `Text(date, style:

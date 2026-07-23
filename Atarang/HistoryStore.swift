@@ -32,8 +32,16 @@ struct HistoryRecording: Identifiable, Sendable {
     let duration: TimeInterval
     let sourceTrackID: UUID?
     let folderURL: URL
+    let microphoneURL: URL?
+    let backingURL: URL?
+    let microphoneLevel: Float
+    let backingLevel: Float
     let playbackURL: URL?
     let byteCount: Int64
+
+    var canEditMix: Bool {
+        microphoneURL != nil && backingURL != nil
+    }
 }
 
 @MainActor
@@ -63,6 +71,88 @@ final class HistoryStore: ObservableObject {
 
     func delete(recording: HistoryRecording) {
         delete(folder: recording.folderURL)
+    }
+
+    func saveMix(
+        recording: HistoryRecording,
+        microphoneLevel: Float,
+        backingLevel: Float,
+        asNew: Bool
+    ) async throws {
+        guard let sourceMicrophoneURL = recording.microphoneURL,
+              let sourceBackingURL = recording.backingURL else {
+            throw HistoryStoreError.missingRawAudio
+        }
+
+        let destinationFolder: URL
+        let destinationMicrophoneURL: URL
+        let destinationBackingURL: URL
+        let id: UUID
+        let title: String
+        let createdAt: Date
+
+        if asNew {
+            id = UUID()
+            destinationFolder = try libraryRoot(named: "Recordings", create: true)
+                .appendingPathComponent(id.uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(
+                at: destinationFolder,
+                withIntermediateDirectories: true
+            )
+            destinationMicrophoneURL = destinationFolder.appendingPathComponent("microphone.caf")
+            destinationBackingURL = destinationFolder.appendingPathComponent("backing.caf")
+            do {
+                try FileManager.default.copyItem(at: sourceMicrophoneURL, to: destinationMicrophoneURL)
+                try FileManager.default.copyItem(at: sourceBackingURL, to: destinationBackingURL)
+            } catch {
+                try? FileManager.default.removeItem(at: destinationFolder)
+                throw error
+            }
+            title = nextMixTitle(for: recording.title)
+            createdAt = Date()
+        } else {
+            id = recording.id
+            destinationFolder = recording.folderURL
+            destinationMicrophoneURL = sourceMicrophoneURL
+            destinationBackingURL = sourceBackingURL
+            title = recording.title
+            createdAt = recording.createdAt
+        }
+
+        let take = RecordedTake(
+            id: id,
+            title: title,
+            microphoneURL: destinationMicrophoneURL,
+            backingURL: destinationBackingURL,
+            microphoneLevel: min(2, max(0, microphoneLevel)),
+            backingLevel: min(1, max(0, backingLevel)),
+            duration: recording.duration,
+            createdAt: createdAt
+        )
+
+        do {
+            let exportedURL = try await RecordingExporter.export(take: take)
+            let metadata = RecordingMetadata(
+                id: id,
+                title: title,
+                createdAt: createdAt,
+                duration: recording.duration,
+                sourceTrackID: recording.sourceTrackID,
+                microphoneLevel: take.microphoneLevel,
+                backingLevel: take.backingLevel,
+                exportedFilename: exportedURL.lastPathComponent
+            )
+            try LibraryMetadata.write(
+                metadata,
+                to: destinationFolder.appendingPathComponent(LibraryMetadata.recordingFilename)
+            )
+        } catch {
+            if asNew { try? FileManager.default.removeItem(at: destinationFolder) }
+            throw error
+        }
+
+        refresh()
+        NotificationCenter.default.post(name: .atarangLibraryDidChange, object: nil)
     }
 
     private func delete(folder: URL) {
@@ -109,7 +199,10 @@ final class HistoryStore: ObservableObject {
             let metadata = try? LibraryMetadata.read(RecordingMetadata.self, from: metadataURL)
             let exported = exportedAudio(in: folder, preferredName: metadata?.exportedFilename)
             let microphone = folder.appendingPathComponent("microphone.caf")
-            guard exported != nil || FileManager.default.fileExists(atPath: microphone.path) else { return nil }
+            let backing = folder.appendingPathComponent("backing.caf")
+            let microphoneExists = FileManager.default.fileExists(atPath: microphone.path)
+            let backingExists = FileManager.default.fileExists(atPath: backing.path)
+            guard exported != nil || microphoneExists else { return nil }
             let fallbackDate = createdAt(for: folder)
             let id = metadata?.id ?? UUID(uuidString: folder.lastPathComponent) ?? UUID()
             return HistoryRecording(
@@ -119,6 +212,10 @@ final class HistoryStore: ObservableObject {
                 duration: metadata?.duration ?? audioDuration(at: exported ?? microphone),
                 sourceTrackID: metadata?.sourceTrackID,
                 folderURL: folder,
+                microphoneURL: microphoneExists ? microphone : nil,
+                backingURL: backingExists ? backing : nil,
+                microphoneLevel: metadata?.microphoneLevel ?? 1,
+                backingLevel: metadata?.backingLevel ?? 0.7,
                 playbackURL: exported,
                 byteCount: folderSize(folder)
             )
@@ -178,5 +275,27 @@ final class HistoryStore: ObservableObject {
             total += Int64(values.fileSize ?? 0)
         }
         return total
+    }
+
+    private func nextMixTitle(for title: String) -> String {
+        let base = title.replacingOccurrences(
+            of: #" Mix(?: \d+)?$"#,
+            with: "",
+            options: .regularExpression
+        )
+        let existing = Set(recordings.map(\.title))
+        let first = "\(base) Mix"
+        guard existing.contains(first) else { return first }
+        var number = 2
+        while existing.contains("\(base) Mix \(number)") { number += 1 }
+        return "\(base) Mix \(number)"
+    }
+}
+
+private enum HistoryStoreError: LocalizedError {
+    case missingRawAudio
+
+    var errorDescription: String? {
+        "The original microphone and backing audio are needed to edit this mix."
     }
 }

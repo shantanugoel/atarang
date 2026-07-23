@@ -51,7 +51,11 @@ enum RecordingExporter {
             .deletingLastPathComponent()
             .appendingPathComponent("Atarang Performance")
             .appendingPathExtension("m4a")
-        try? FileManager.default.removeItem(at: outputURL)
+        let stagingURL = take.microphoneURL
+            .deletingLastPathComponent()
+            .appendingPathComponent(".mix-\(UUID().uuidString)")
+            .appendingPathExtension("m4a")
+        defer { try? FileManager.default.removeItem(at: stagingURL) }
         guard let exporter = AVAssetExportSession(
             asset: composition,
             presetName: AVAssetExportPresetAppleM4A
@@ -60,20 +64,32 @@ enum RecordingExporter {
 
         #if os(iOS)
         if #available(iOS 18.0, *) {
-            try await exporter.export(to: outputURL, as: .m4a)
+            try await exporter.export(to: stagingURL, as: .m4a)
+            try commitExport(from: stagingURL, to: outputURL)
             return outputURL
         }
         #endif
-        exporter.outputURL = outputURL
+        exporter.outputURL = stagingURL
         exporter.outputFileType = .m4a
         await withCheckedContinuation { continuation in
             exporter.exportAsynchronously { continuation.resume() }
         }
         switch exporter.status {
-        case .completed: return outputURL
+        case .completed:
+            try commitExport(from: stagingURL, to: outputURL)
+            return outputURL
         case .failed: throw exporter.error ?? ExportError.exportFailed
         case .cancelled: throw CancellationError()
         default: throw ExportError.exportFailed
+        }
+    }
+
+    private static func commitExport(from stagingURL: URL, to outputURL: URL) throws {
+        let fileManager = FileManager.default
+        if fileManager.fileExists(atPath: outputURL.path) {
+            _ = try fileManager.replaceItemAt(outputURL, withItemAt: stagingURL)
+        } else {
+            try fileManager.moveItem(at: stagingURL, to: outputURL)
         }
     }
 
