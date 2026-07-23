@@ -178,7 +178,7 @@ struct ContentView: View {
             try player.load(track: track.localTrack)
             hasUsedStudio = true
             selectedTab = .studio
-            if autoplay { try player.play() }
+            if autoplay { player.requestPlayback() }
         } catch {
             player.alertMessage = error.localizedDescription
             selectedTab = .studio
@@ -665,7 +665,7 @@ struct ContentView: View {
                             Button("Reference") {
                                 takePreviewPlayer.stop(releaseSession: true)
                                 player.seek(to: player.loopRange?.start ?? 0)
-                                try? player.play()
+                                player.requestPlayback()
                             }
                             .buttonStyle(.bordered)
                             Button(takePreviewPlayer.isPlaying ? "Stop Take" : "Latest Take") {

@@ -55,8 +55,8 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         return max(0, practiceSettings.repetitionTarget - completedRepetitions)
     }
 
-    private let engine = AVAudioEngine()
-    private let metronomeNode = AVAudioPlayerNode()
+    private var engine = AVAudioEngine()
+    private var metronomeNode = AVAudioPlayerNode()
     private var nodes: [StemKind: AVAudioPlayerNode] = [:]
     private var timePitchNodes: [StemKind: AVAudioUnitTimePitch] = [:]
     private var files: [StemKind: AVAudioFile] = [:]
@@ -82,6 +82,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
     private var lastPracticePersistenceDate = Date.distantPast
     private var tapTempoDates: [Date] = []
     private var loopResumeTask: Task<Void, Never>?
+    private var playbackRequestID = 0
     private let practiceSettingsStore = PracticeSettingsStore()
     private let logger = Logger(subsystem: "com.shantanugoel.atarang.Atarang", category: "Audio")
     private static let microphoneLevelDefaultsKey = "recordingMicrophoneLevel"
@@ -138,6 +139,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
     deinit { NotificationCenter.default.removeObserver(self) }
 
     func load(track: LocalTrack) throws {
+        cancelPendingPlaybackRequest()
         if isRecording { stopRecording() }
         stop(resetPosition: true, releaseSession: true)
         files = try Dictionary(uniqueKeysWithValues: track.files.map { key, url in
@@ -198,20 +200,66 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
     private func startPlaybackWithCountIn() {
         cancelCountIn()
         guard practiceSettings.countInClicks > 0 else {
-            do { try play() }
-            catch { alertMessage = error.localizedDescription }
+            requestPlayback()
             return
         }
         countInTask = Task { @MainActor [weak self] in
             guard let self else { return }
             let completed = await self.performCountIn()
             guard completed else { return }
-            do { try self.play() }
-            catch { self.alertMessage = error.localizedDescription }
+            self.requestPlayback()
         }
     }
 
-    func play() throws {
+    /// Starts normal playback and retries once after a transient Core Audio I/O
+    /// startup failure. Session category changes can briefly leave the hardware
+    /// route unavailable even though activation itself succeeded.
+    func requestPlayback() {
+        playbackRequestID += 1
+        let requestID = playbackRequestID
+        alertMessage = nil
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try self.play()
+                return
+            } catch {
+                guard Self.isTransientAudioIOStartFailure(error),
+                      requestID == self.playbackRequestID,
+                      self.isLoaded,
+                      !self.isRecording else {
+                    self.alertMessage = error.localizedDescription
+                    return
+                }
+                self.logger.warning(
+                    "Audio output was not ready; releasing the session before retrying: \(error.localizedDescription, privacy: .public)"
+                )
+            }
+
+            self.engine.stop()
+            self.engine.reset()
+            self.deactivateAudioSession()
+            do {
+                try await Task.sleep(for: .milliseconds(250))
+            } catch {
+                return
+            }
+            guard requestID == self.playbackRequestID,
+                  self.isLoaded,
+                  !self.isRecording else { return }
+            do {
+                try self.play()
+                self.alertMessage = nil
+            } catch {
+                self.alertMessage = Self.playbackStartupMessage(for: error)
+                self.logger.error(
+                    "Audio output retry failed: \(error.localizedDescription, privacy: .public)"
+                )
+            }
+        }
+    }
+
+    private func play() throws {
         guard isLoaded else { return }
         if position >= duration { playbackState.seek(to: 0) }
         if let loopRange, (position < loopRange.start || position >= loopRange.end) {
@@ -266,6 +314,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
 
     func pause() {
         guard !isRecording else { return }
+        cancelPendingPlaybackRequest()
         cancelCountIn()
         pausePlayback()
     }
@@ -277,6 +326,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
     /// session fail when the preview player takes over.
     func suspend() {
         guard !isRecording else { return }
+        cancelPendingPlaybackRequest()
         cancelCountIn()
         updatePosition()
         stop(resetPosition: false, releaseSession: true)
@@ -284,12 +334,13 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
 
     func seek(to newPosition: TimeInterval) {
         guard !isRecording else { return }
+        cancelPendingPlaybackRequest()
         cancelCountIn()
         let shouldResume = isPlaying
         pausePlayback()
         playbackState.seek(to: newPosition)
         persistPracticeSettings()
-        if shouldResume { try? play() }
+        if shouldResume { requestPlayback() }
     }
 
     func skipBackward(seconds: TimeInterval = 5) {
@@ -305,7 +356,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         practiceSettings.playbackRate = playbackState.rate
         persistPracticeSettings()
         applyPlaybackTransform()
-        if shouldResume { try? play() }
+        if shouldResume { requestPlayback() }
     }
 
     func setPitchSemitones(_ semitones: Float) {
@@ -317,7 +368,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         practiceSettings.pitchSemitones = playbackState.pitchSemitones
         persistPracticeSettings()
         applyPlaybackTransform()
-        if shouldResume { try? play() }
+        if shouldResume { requestPlayback() }
     }
 
     @discardableResult
@@ -326,7 +377,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         let shouldResume = isPlaying
         if shouldResume { pausePlayback() }
         let accepted = playbackState.setLoop(start: start, end: end)
-        if shouldResume { try? play() }
+        if shouldResume { requestPlayback() }
         return accepted
     }
 
@@ -340,7 +391,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         practiceSettings.isLoopEnabled = false
         completedRepetitions = 0
         persistPracticeSettings()
-        if shouldResume { try? play() }
+        if shouldResume { requestPlayback() }
     }
 
     func setLoopBoundaryA(at value: TimeInterval? = nil) {
@@ -385,7 +436,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
             let shouldResume = isPlaying
             if shouldResume { pausePlayback() }
             playbackState.clearLoop()
-            if shouldResume { try? play() }
+            if shouldResume { requestPlayback() }
         }
         practiceSettings.isLoopEnabled = enabled
         completedRepetitions = 0
@@ -619,7 +670,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         resetMix()
         completedRepetitions = 0
         isTempoRampHeld = false
-        if shouldResume { try? play() }
+        if shouldResume { requestPlayback() }
     }
 
     func toggleRecording() async {
@@ -701,6 +752,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
     }
 
     func unload() {
+        cancelPendingPlaybackRequest()
         if isRecording { stopRecording() }
         stop(resetPosition: true, releaseSession: true)
         files.removeAll()
@@ -721,6 +773,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
 
     private func startRecording() async throws {
         guard isLoaded else { throw PlayerError.noTrack }
+        cancelPendingPlaybackRequest()
         isLoopTakeRecording = practiceSettings.isLoopEnabled
             && practiceSettings.loopRange != nil
         microphonePermissionDenied = false
@@ -811,7 +864,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         catch {
             engine.stop()
             removeRecordingTaps()
-            engine.reset()
+            rebuildPlaybackEngine()
             isRecording = false
             isLoopTakeRecording = false
             deactivateAudioSession()
@@ -860,7 +913,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         timer = nil
         isPlaying = false
         removeRecordingTaps()
-        engine.reset()
+        rebuildPlaybackEngine()
         deactivateAudioSession()
         microphoneMeterLevel = 0
         isEchoCancellationActive = false
@@ -912,6 +965,68 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         microphoneFile = nil
         backingFile = nil
         recordingStartedAt = nil
+    }
+
+    /// Recording instantiates the engine's RemoteIO input path. Resetting that
+    /// engine does not remove the input unit, and starting it later under a
+    /// playback-only session can fail with Core Audio FourCC "what". Replace
+    /// the engine so subsequent playback owns a clean output-only graph.
+    private func rebuildPlaybackEngine() {
+        let oldEngine = engine
+        NotificationCenter.default.removeObserver(
+            self,
+            name: .AVAudioEngineConfigurationChange,
+            object: oldEngine
+        )
+        oldEngine.stop()
+
+        let replacement = AVAudioEngine()
+        let replacementMetronome = AVAudioPlayerNode()
+        var replacementNodes: [StemKind: AVAudioPlayerNode] = [:]
+        var replacementTimePitchNodes: [StemKind: AVAudioUnitTimePitch] = [:]
+        for stem in StemKind.allCases {
+            let node = AVAudioPlayerNode()
+            let timePitch = AVAudioUnitTimePitch()
+            replacementNodes[stem] = node
+            replacementTimePitchNodes[stem] = timePitch
+            replacement.attach(node)
+            replacement.attach(timePitch)
+        }
+        replacement.attach(replacementMetronome)
+        replacement.connect(
+            replacementMetronome,
+            to: replacement.mainMixerNode,
+            format: AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: 8_000,
+                channels: 1,
+                interleaved: false
+            )
+        )
+        for stem in activeStems {
+            guard let node = replacementNodes[stem],
+                  let timePitch = replacementTimePitchNodes[stem],
+                  let file = files[stem] else { continue }
+            replacement.connect(node, to: timePitch, format: file.processingFormat)
+            replacement.connect(
+                timePitch,
+                to: replacement.mainMixerNode,
+                format: file.processingFormat
+            )
+        }
+
+        engine = replacement
+        metronomeNode = replacementMetronome
+        nodes = replacementNodes
+        timePitchNodes = replacementTimePitchNodes
+        applyPlaybackTransform()
+        applyStemVolumes()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleEngineConfigurationChange),
+            name: .AVAudioEngineConfigurationChange,
+            object: replacement
+        )
     }
 
     private func export(_ take: RecordedTake, sourceTrackID: UUID?) {
@@ -1179,6 +1294,26 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         }
     }
 
+    private func cancelPendingPlaybackRequest() {
+        playbackRequestID += 1
+    }
+
+    private nonisolated static func isTransientAudioIOStartFailure(_ error: Error) -> Bool {
+        var candidate: NSError? = error as NSError
+        while let current = candidate {
+            if current.code == 2_003_329_396 { return true } // FourCC "what"
+            candidate = current.userInfo[NSUnderlyingErrorKey] as? NSError
+        }
+        return false
+    }
+
+    private nonisolated static func playbackStartupMessage(for error: Error) -> String {
+        guard isTransientAudioIOStartFailure(error) else {
+            return error.localizedDescription
+        }
+        return "Audio output could not start. Check that no call or another app is using audio, then reconnect headphones if needed and try again."
+    }
+
     private func effectiveVolume(for stem: StemKind) -> Float {
         if practiceSettings.metronomeOnly, practiceSettings.metronomeEnabled {
             return 0
@@ -1273,7 +1408,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         let resumePosition = position
         pausePlayback()
         playbackState.seek(to: resumePosition)
-        try? play()
+        requestPlayback()
     }
 
     private func clampedRate(_ rate: Float) -> Float {
@@ -1309,7 +1444,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
             }
             guard !Task.isCancelled,
                   expectedGeneration == self.playbackState.playbackGeneration else { return }
-            try? self.play()
+            self.requestPlayback()
         }
     }
 
@@ -1423,8 +1558,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
             let rawOptions = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
             let options = AVAudioSession.InterruptionOptions(rawValue: rawOptions)
             if interruptionShouldResume, options.contains(.shouldResume) {
-                try? configurePlaybackSession()
-                try? play()
+                requestPlayback()
             }
             interruptionShouldResume = false
         @unknown default: break
@@ -1446,11 +1580,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         guard isPlaying else { return }
         updatePosition()
         stop(resetPosition: false)
-        do {
-            try play()
-        } catch {
-            alertMessage = error.localizedDescription
-        }
+        requestPlayback()
     }
 }
 
