@@ -68,6 +68,44 @@ final class RecordingMixPreviewPlayer: ObservableObject {
         engine.prepare()
     }
 
+    func load(take: RecordedTake) throws {
+        stop()
+        let microphoneFile = try AVAudioFile(forReading: take.microphoneURL)
+        let backingFile = try AVAudioFile(forReading: take.backingURL)
+        guard microphoneFile.processingFormat.sampleRate > 0,
+              backingFile.processingFormat.sampleRate > 0 else {
+            throw PreviewError.invalidAudio
+        }
+
+        engine.disconnectNodeOutput(microphoneNode)
+        engine.disconnectNodeOutput(backingNode)
+        engine.disconnectNodeOutput(microphoneGain)
+        engine.connect(
+            microphoneNode,
+            to: microphoneGain,
+            format: microphoneFile.processingFormat
+        )
+        engine.connect(
+            microphoneGain,
+            to: engine.mainMixerNode,
+            format: microphoneFile.processingFormat
+        )
+        engine.connect(
+            backingNode,
+            to: engine.mainMixerNode,
+            format: backingFile.processingFormat
+        )
+        self.microphoneFile = microphoneFile
+        self.backingFile = backingFile
+        duration = min(
+            Self.duration(of: microphoneFile),
+            Self.duration(of: backingFile)
+        )
+        position = 0
+        setLevels(microphone: take.microphoneLevel, backing: take.backingLevel)
+        engine.prepare()
+    }
+
     func setLevels(microphone: Float, backing: Float) {
         let microphone = min(2, max(0, microphone))
         microphoneNode.volume = microphone == 0 ? 0 : 1

@@ -144,58 +144,58 @@ comparison of practice takes.
 
 ### 1. Pitch and key
 
-- [ ] Add pitch transpose independent of playback speed.
-- [ ] Display the change in semitones.
-- [ ] Offer octave and reset shortcuts where useful.
-- [ ] Verify acceptable quality across vocals, bass, guitar, and full backing.
-- [ ] Record the transformed backing exactly as the user hears it.
+- [x] Add pitch transpose independent of playback speed.
+- [x] Display the change in semitones.
+- [x] Offer octave and reset shortcuts where useful.
+- [~] Verify acceptable quality across vocals, bass, guitar, and full backing.
+- [x] Record the transformed backing exactly as the user hears it.
 
 ### 2. Manual metronome
 
-- [ ] Add manual BPM entry and tap tempo.
-- [ ] Add quarter-note, eighth-note, triplet, and sixteenth-note subdivisions.
-- [ ] Add downbeat accent and click level controls.
-- [ ] Let the user align the first click/downbeat manually with the song.
-- [ ] Clearly label the metronome as manually aligned; do not imply automatic
+- [x] Add manual BPM entry and tap tempo.
+- [x] Add quarter-note, eighth-note, triplet, and sixteenth-note subdivisions.
+- [x] Add downbeat accent and click level controls.
+- [x] Let the user align the first click/downbeat manually with the song.
+- [x] Clearly label the metronome as manually aligned; do not imply automatic
       tempo tracking.
-- [ ] Support metronome-only use within a loaded song before considering a
+- [x] Support metronome-only use within a loaded song before considering a
       standalone utility.
 
 ### 3. Repetition and tempo ramp
 
-- [ ] Add an optional loop repetition target.
-- [ ] Show completed and remaining repetitions.
-- [ ] Optionally pause for a configurable duration between repetitions.
-- [ ] Add tempo ramping after a chosen number of repetitions.
-- [ ] Let the user set starting speed, increment, and target speed.
-- [ ] Provide an immediate way to stop or hold the current speed.
+- [x] Add an optional loop repetition target.
+- [x] Show completed and remaining repetitions.
+- [x] Optionally pause for a configurable duration between repetitions.
+- [x] Add tempo ramping after a chosen number of repetitions.
+- [x] Let the user set starting speed, increment, and target speed.
+- [x] Provide an immediate way to stop or hold the current speed.
 
 ### 4. Saved practice sections
 
-- [ ] Save multiple named A–B regions per song.
-- [ ] Provide useful default names and quick rename.
-- [ ] Allow fast switching among regions such as Intro, Verse, Chorus, or Solo.
-- [ ] Preserve independent speed or target settings only if user testing shows
+- [x] Save multiple named A–B regions per song.
+- [x] Provide useful default names and quick rename.
+- [x] Allow fast switching among regions such as Intro, Verse, Chorus, or Solo.
+- [x] Preserve independent speed or target settings only if user testing shows
       that this is understandable.
 
 ### 5. Loop recording and take comparison
 
-- [ ] When recording with a loop active, initially support **Record one pass**.
-- [ ] Play the count-in, record from A to B, and stop automatically at B.
-- [ ] Lock loop, speed, pitch, and target settings during recording.
-- [ ] Let the user quickly alternate between the reference and latest take.
-- [ ] Keep the existing microphone/backing level editor and export behavior.
-- [ ] Decide whether continuous multi-loop session recording belongs in a later
+- [x] When recording with a loop active, initially support **Record one pass**.
+- [x] Play the count-in, record from A to B, and stop automatically at B.
+- [x] Lock loop, speed, pitch, and target settings during recording.
+- [x] Let the user quickly alternate between the reference and latest take.
+- [x] Keep the existing microphone/backing level editor and export behavior.
+- [x] Decide whether continuous multi-loop session recording belongs in a later
       release rather than silently producing repeated phrases.
 
 ### Phase 2 acceptance criteria
 
-- [ ] Singers can move a song into a comfortable key without altering tempo.
-- [ ] Instrumentalists can build a phrase from a slower speed to performance
+- [~] Singers can move a song into a comfortable key without altering tempo.
+- [x] Instrumentalists can build a phrase from a slower speed to performance
       speed automatically.
-- [ ] Users can save and return to multiple difficult sections of a song.
-- [ ] A loop take starts and ends predictably and is immediately comparable.
-- [ ] Manual click alignment stays stable for constant-tempo material.
+- [x] Users can save and return to multiple difficult sections of a song.
+- [x] A loop take starts and ends predictably and is immediately comparable.
+- [~] Manual click alignment stays stable for constant-tempo material.
 
 ## Phase 3 — Analysis-assisted practice
 

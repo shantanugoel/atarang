@@ -19,6 +19,9 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
     @Published private(set) var shareURL: URL?
     @Published private(set) var practiceSettings = SongPracticeSettings()
     @Published private(set) var countInRemaining = 0
+    @Published private(set) var completedRepetitions = 0
+    @Published private(set) var isTempoRampHeld = false
+    @Published private(set) var isLoopTakeRecording = false
     @Published var recordingMicrophoneLevel: Float {
         didSet {
             UserDefaults.standard.set(
@@ -47,8 +50,13 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
     var pitchSemitones: Float { playbackState.pitchSemitones }
     var loopRange: PlaybackLoopRange? { playbackState.loopRange }
     var isCountingIn: Bool { countInRemaining > 0 }
+    var remainingRepetitions: Int {
+        guard practiceSettings.repetitionTarget > 0 else { return 0 }
+        return max(0, practiceSettings.repetitionTarget - completedRepetitions)
+    }
 
     private let engine = AVAudioEngine()
+    private let metronomeNode = AVAudioPlayerNode()
     private var nodes: [StemKind: AVAudioPlayerNode] = [:]
     private var timePitchNodes: [StemKind: AVAudioUnitTimePitch] = [:]
     private var files: [StemKind: AVAudioFile] = [:]
@@ -72,6 +80,8 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
     private var countInTask: Task<Void, Never>?
     private var countInGeneration = 0
     private var lastPracticePersistenceDate = Date.distantPast
+    private var tapTempoDates: [Date] = []
+    private var loopResumeTask: Task<Void, Never>?
     private let practiceSettingsStore = PracticeSettingsStore()
     private let logger = Logger(subsystem: "com.shantanugoel.atarang.Atarang", category: "Audio")
     private static let microphoneLevelDefaultsKey = "recordingMicrophoneLevel"
@@ -94,6 +104,17 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
             engine.attach(node)
             engine.attach(timePitch)
         }
+        engine.attach(metronomeNode)
+        engine.connect(
+            metronomeNode,
+            to: engine.mainMixerNode,
+            format: AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: 8_000,
+                channels: 1,
+                interleaved: false
+            )
+        )
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleInterruption),
@@ -150,6 +171,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         )
         playbackState.seek(to: practiceSettings.lastPosition)
         playbackState.setRate(practiceSettings.playbackRate)
+        playbackState.setPitchSemitones(practiceSettings.pitchSemitones)
         if practiceSettings.isLoopEnabled,
            let loop = practiceSettings.loopRange {
             _ = playbackState.setLoop(start: loop.start, end: loop.end)
@@ -159,6 +181,9 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         isLoaded = playbackState.duration > 0
         recordedTake = nil
         shareURL = nil
+        completedRepetitions = 0
+        isTempoRampHeld = false
+        isLoopTakeRecording = false
     }
 
     func togglePlayback() {
@@ -195,6 +220,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
 
         let generation = playbackState.beginNewGeneration()
         for node in nodes.values { node.stop() }
+        metronomeNode.stop()
         // Recording has already activated a play-and-record session. Switching
         // back to `.playback` here would silently drop microphone input just as
         // the take begins.
@@ -233,6 +259,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
             nodes[stem]?.volume = effectiveVolume(for: stem)
             nodes[stem]?.play(at: startTime)
         }
+        metronomeNode.play(at: startTime)
         isPlaying = true
         beginTimer()
     }
@@ -287,6 +314,8 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         let shouldResume = isPlaying
         if shouldResume { pausePlayback() }
         playbackState.setPitchSemitones(semitones)
+        practiceSettings.pitchSemitones = playbackState.pitchSemitones
+        persistPracticeSettings()
         applyPlaybackTransform()
         if shouldResume { try? play() }
     }
@@ -309,6 +338,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         practiceSettings.loopStart = nil
         practiceSettings.loopEnd = nil
         practiceSettings.isLoopEnabled = false
+        completedRepetitions = 0
         persistPracticeSettings()
         if shouldResume { try? play() }
     }
@@ -358,6 +388,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
             if shouldResume { try? play() }
         }
         practiceSettings.isLoopEnabled = enabled
+        completedRepetitions = 0
         persistPracticeSettings()
     }
 
@@ -369,6 +400,177 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
     func setCountInClicks(_ clicks: Int) {
         guard SongPracticeSettings.supportedCountInClicks.contains(clicks) else { return }
         practiceSettings.countInClicks = clicks
+        persistPracticeSettings()
+    }
+
+    func setMetronomeEnabled(_ enabled: Bool) {
+        guard !isRecording else { return }
+        practiceSettings.metronomeEnabled = enabled
+        persistAndRestartIfPlaying()
+    }
+
+    func setMetronomeBPM(_ bpm: Int) {
+        guard !isRecording else { return }
+        practiceSettings.metronomeBPM = min(
+            max(bpm, SongPracticeSettings.supportedBPMRange.lowerBound),
+            SongPracticeSettings.supportedBPMRange.upperBound
+        )
+        persistAndRestartIfPlaying()
+    }
+
+    func tapTempo() {
+        guard !isRecording else { return }
+        let now = Date()
+        if let last = tapTempoDates.last, now.timeIntervalSince(last) > 2 {
+            tapTempoDates.removeAll()
+        }
+        tapTempoDates.append(now)
+        tapTempoDates = Array(tapTempoDates.suffix(5))
+        guard tapTempoDates.count >= 2 else { return }
+        let intervals = zip(tapTempoDates.dropFirst(), tapTempoDates).map {
+            $0.0.timeIntervalSince($0.1)
+        }
+        let average = intervals.reduce(0, +) / Double(intervals.count)
+        guard average > 0 else { return }
+        setMetronomeBPM(Int((60 / average).rounded()))
+    }
+
+    func setMetronomeSubdivision(_ subdivision: MetronomeSubdivision) {
+        guard !isRecording else { return }
+        practiceSettings.metronomeSubdivision = subdivision
+        persistAndRestartIfPlaying()
+    }
+
+    func setMetronomeAccentEnabled(_ enabled: Bool) {
+        guard !isRecording else { return }
+        practiceSettings.metronomeAccentEnabled = enabled
+        persistAndRestartIfPlaying()
+    }
+
+    func setMetronomeLevel(_ level: Float) {
+        guard !isRecording else { return }
+        practiceSettings.metronomeLevel = min(max(level, 0), 1)
+        persistAndRestartIfPlaying()
+    }
+
+    func alignMetronome(at position: TimeInterval? = nil) {
+        guard !isRecording else { return }
+        practiceSettings.metronomeAlignment = min(
+            max(0, position ?? self.position),
+            duration
+        )
+        persistAndRestartIfPlaying()
+    }
+
+    func setMetronomeOnly(_ enabled: Bool) {
+        guard !isRecording else { return }
+        practiceSettings.metronomeOnly = enabled
+        applyStemVolumes()
+        persistPracticeSettings()
+    }
+
+    func setRepetitionTarget(_ target: Int) {
+        guard !isRecording else { return }
+        practiceSettings.repetitionTarget = min(max(0, target), 999)
+        completedRepetitions = 0
+        persistPracticeSettings()
+    }
+
+    func setRepetitionPause(_ seconds: TimeInterval) {
+        guard !isRecording else { return }
+        practiceSettings.repetitionPause = min(max(0, seconds), 10)
+        persistPracticeSettings()
+    }
+
+    func configureTempoRamp(
+        enabled: Bool? = nil,
+        every repetitions: Int? = nil,
+        start: Float? = nil,
+        increment: Float? = nil,
+        target: Float? = nil
+    ) {
+        guard !isRecording else { return }
+        if let enabled { practiceSettings.tempoRampEnabled = enabled }
+        if let repetitions {
+            practiceSettings.tempoRampEvery = min(max(1, repetitions), 99)
+        }
+        if let start {
+            practiceSettings.tempoRampStart = clampedRate(start)
+        }
+        if let increment {
+            practiceSettings.tempoRampIncrement = min(max(0.01, increment), 0.5)
+        }
+        if let target {
+            practiceSettings.tempoRampTarget = clampedRate(target)
+        }
+        if practiceSettings.tempoRampStart > practiceSettings.tempoRampTarget {
+            practiceSettings.tempoRampStart = practiceSettings.tempoRampTarget
+        }
+        persistPracticeSettings()
+    }
+
+    func beginTempoRamp() {
+        guard !isRecording,
+              practiceSettings.tempoRampEnabled,
+              practiceSettings.loopRange != nil else { return }
+        if !practiceSettings.isLoopEnabled {
+            setLoopEnabled(true)
+        }
+        completedRepetitions = 0
+        isTempoRampHeld = false
+        setPlaybackRate(practiceSettings.tempoRampStart)
+    }
+
+    func toggleTempoRampHold() {
+        isTempoRampHeld.toggle()
+    }
+
+    func stopStructuredPractice() {
+        loopResumeTask?.cancel()
+        completedRepetitions = 0
+        isTempoRampHeld = true
+        pause()
+    }
+
+    func saveCurrentSection() {
+        guard let loop = practiceSettings.loopRange else { return }
+        let number = practiceSettings.savedSections.count + 1
+        let commonNames = ["Intro", "Verse", "Chorus", "Bridge", "Solo", "Outro"]
+        let defaultName = number <= commonNames.count
+            ? commonNames[number - 1]
+            : "Section \(number)"
+        practiceSettings.savedSections.append(
+            SavedPracticeSection(
+                name: defaultName,
+                start: loop.start,
+                end: loop.end
+            )
+        )
+        persistPracticeSettings()
+    }
+
+    func loadSection(_ id: UUID) {
+        guard !isRecording,
+              let section = practiceSettings.savedSections.first(
+                where: { $0.id == id }
+              ) else { return }
+        updateSavedLoop(start: section.start, end: section.end)
+        setLoopEnabled(true)
+        seek(to: section.start)
+        completedRepetitions = 0
+    }
+
+    func renameSection(_ id: UUID, to name: String) {
+        guard let index = practiceSettings.savedSections.firstIndex(
+            where: { $0.id == id }
+        ) else { return }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        practiceSettings.savedSections[index].name = trimmed.isEmpty ? "Section" : trimmed
+        persistPracticeSettings()
+    }
+
+    func deleteSection(_ id: UUID) {
+        practiceSettings.savedSections.removeAll { $0.id == id }
         persistPracticeSettings()
     }
 
@@ -412,8 +614,11 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         practiceSettings.validate(duration: duration, availableStems: activeStems)
         playbackState.clearLoop()
         playbackState.setRate(1)
+        playbackState.setPitchSemitones(0)
         playbackState.seek(to: 0)
         resetMix()
+        completedRepetitions = 0
+        isTempoRampHeld = false
         if shouldResume { try? play() }
     }
 
@@ -501,6 +706,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         files.removeAll()
         persistPracticeSettings()
         cancelCountIn()
+        loopResumeTask?.cancel()
         playbackState.unload()
         title = ""
         separationModel = .htdemucs
@@ -515,15 +721,24 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
 
     private func startRecording() async throws {
         guard isLoaded else { throw PlayerError.noTrack }
+        isLoopTakeRecording = practiceSettings.isLoopEnabled
+            && practiceSettings.loopRange != nil
         microphonePermissionDenied = false
         guard await microphonePermissionGranted() else {
             microphonePermissionDenied = true
+            isLoopTakeRecording = false
             throw PlayerError.microphoneDenied
         }
 
+        if isLoopTakeRecording, let loop = playbackState.loopRange {
+            seek(to: loop.start)
+        }
         if practiceSettings.countInClicks > 0 {
             let completed = await performCountIn()
-            guard completed else { return }
+            guard completed else {
+                isLoopTakeRecording = false
+                return
+            }
         }
 
         let resumePosition = position
@@ -598,6 +813,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
             removeRecordingTaps()
             engine.reset()
             isRecording = false
+            isLoopTakeRecording = false
             deactivateAudioSession()
             throw PlayerError.audioSetup("Could not start the audio engine", error)
         }
@@ -631,12 +847,14 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         }
         updatePosition()
         isRecording = false
+        isLoopTakeRecording = false
 
         // Stop every render and input resource before removing the taps. This
         // both stops the backing track at the end of a take and releases the
         // microphone route so iOS can dismiss its recording indicator.
         playbackState.beginNewGeneration()
         for node in nodes.values { node.stop() }
+        metronomeNode.stop()
         engine.stop()
         timer?.invalidate()
         timer = nil
@@ -768,6 +986,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         updatePosition()
         playbackState.beginNewGeneration()
         for node in nodes.values { node.stop() }
+        metronomeNode.stop()
         timer?.invalidate()
         timer = nil
         isPlaying = false
@@ -777,6 +996,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
     private func stop(resetPosition: Bool, releaseSession: Bool = false) {
         playbackState.beginNewGeneration()
         for node in nodes.values { node.stop() }
+        metronomeNode.stop()
         engine.stop()
         engine.reset()
         timer?.invalidate()
@@ -815,6 +1035,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
             return
         }
 
+        scheduleMetronomePass(from: start, to: end)
         for stem in activeStems {
             guard let file = files[stem], let node = nodes[stem] else { continue }
             let sampleRate = file.processingFormat.sampleRate
@@ -830,8 +1051,23 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
             guard frameCount > 0 else { continue }
 
             if stem == timingStem {
+                let nextCompletionStopsAtTarget =
+                    practiceSettings.repetitionTarget > 0
+                    && completedRepetitions + 1 >= practiceSettings.repetitionTarget
+                let nextCompletionChangesRate =
+                    practiceSettings.tempoRampEnabled
+                    && !isTempoRampHeld
+                    && (completedRepetitions + 1).isMultiple(
+                        of: max(1, practiceSettings.tempoRampEvery)
+                    )
                 let callbackType: AVAudioPlayerNodeCompletionCallbackType =
-                    playbackState.loopRange == nil ? .dataPlayedBack : .dataConsumed
+                    playbackState.loopRange == nil
+                        || isLoopTakeRecording
+                        || practiceSettings.repetitionPause > 0
+                        || nextCompletionStopsAtTarget
+                        || nextCompletionChangesRate
+                        ? .dataPlayedBack
+                        : .dataConsumed
                 node.scheduleSegment(
                     file,
                     startingFrame: startingFrame,
@@ -841,7 +1077,10 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
                 ) { [weak self] _ in
                     Task { @MainActor [weak self] in
                         guard let self else { return }
-                        if let loop = self.playbackState.loopRange {
+                        if self.isRecording && self.isLoopTakeRecording {
+                            self.playbackState.seek(to: self.playbackState.loopRange?.end ?? self.duration)
+                            self.stopRecording()
+                        } else if let loop = self.playbackState.loopRange {
                             self.scheduleNextLoopPass(
                                 from: loop.start,
                                 generation: generation
@@ -866,7 +1105,31 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         guard isPlaying,
               generation == playbackState.playbackGeneration,
               playbackState.loopRange != nil else { return }
-        schedulePass(from: start, generation: generation)
+        completedRepetitions += 1
+        if practiceSettings.repetitionTarget > 0,
+           completedRepetitions >= practiceSettings.repetitionTarget {
+            playbackState.seek(to: playbackState.loopRange?.end ?? position)
+            stop(resetPosition: false, releaseSession: true)
+            return
+        }
+
+        let shouldRamp = practiceSettings.tempoRampEnabled
+            && !isTempoRampHeld
+            && completedRepetitions.isMultiple(
+                of: max(1, practiceSettings.tempoRampEvery)
+            )
+            && playbackState.rate < practiceSettings.tempoRampTarget
+        if shouldRamp {
+            let nextRate = min(
+                practiceSettings.tempoRampTarget,
+                playbackState.rate + practiceSettings.tempoRampIncrement
+            )
+            restartLoop(at: start, rate: nextRate, after: practiceSettings.repetitionPause)
+        } else if practiceSettings.repetitionPause > 0 {
+            restartLoop(at: start, rate: nil, after: practiceSettings.repetitionPause)
+        } else {
+            schedulePass(from: start, generation: generation)
+        }
     }
 
     private func playbackCompleted(generation: Int) {
@@ -917,6 +1180,9 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
     }
 
     private func effectiveVolume(for stem: StemKind) -> Float {
+        if practiceSettings.metronomeOnly, practiceSettings.metronomeEnabled {
+            return 0
+        }
         guard let soloedStem else { return volumes[stem] ?? 1 }
         return soloedStem == stem ? (volumes[stem] ?? 1) : 0
     }
@@ -956,6 +1222,7 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
         guard let currentTrackID else { return }
         practiceSettings.lastPosition = position
         practiceSettings.playbackRate = playbackState.rate
+        practiceSettings.pitchSemitones = playbackState.pitchSemitones
         practiceSettingsStore.save(practiceSettings, for: currentTrackID)
         lastPracticePersistenceDate = Date()
     }
@@ -998,6 +1265,119 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
             volumes[stem] = min(1, max(0, value))
             lastAudibleVolumes[stem] = value > 0 ? value : 1
         }
+    }
+
+    private func persistAndRestartIfPlaying() {
+        persistPracticeSettings()
+        guard isPlaying else { return }
+        let resumePosition = position
+        pausePlayback()
+        playbackState.seek(to: resumePosition)
+        try? play()
+    }
+
+    private func clampedRate(_ rate: Float) -> Float {
+        min(
+            max(rate, PlaybackState.supportedRateRange.lowerBound),
+            PlaybackState.supportedRateRange.upperBound
+        )
+    }
+
+    private func restartLoop(
+        at start: TimeInterval,
+        rate: Float?,
+        after pause: TimeInterval
+    ) {
+        let expectedGeneration = playbackState.playbackGeneration
+        loopResumeTask?.cancel()
+        loopResumeTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.forEachPlaybackNode { $0.stop() }
+            self.metronomeNode.stop()
+            self.timer?.invalidate()
+            self.timer = nil
+            self.isPlaying = false
+            self.playbackState.seek(to: start)
+            if let rate {
+                self.playbackState.setRate(rate)
+                self.practiceSettings.playbackRate = self.playbackState.rate
+                self.applyPlaybackTransform()
+                self.persistPracticeSettings()
+            }
+            if pause > 0 {
+                try? await Task.sleep(for: .seconds(pause))
+            }
+            guard !Task.isCancelled,
+                  expectedGeneration == self.playbackState.playbackGeneration else { return }
+            try? self.play()
+        }
+    }
+
+    private func forEachPlaybackNode(_ body: (AVAudioPlayerNode) -> Void) {
+        for node in nodes.values { body(node) }
+    }
+
+    /// Builds one lightweight click track for the currently scheduled source
+    /// range. It is queued alongside the stems, so it shares their loop and
+    /// recording boundaries and is captured by the backing-mix tap.
+    private func scheduleMetronomePass(from start: TimeInterval, to end: TimeInterval) {
+        guard practiceSettings.metronomeEnabled,
+              end > start,
+              playbackState.rate > 0 else { return }
+        let sampleRate = 8_000.0
+        let renderDuration = (end - start) / Double(playbackState.rate)
+        let frameCapacity = AVAudioFrameCount(max(1, (renderDuration * sampleRate).rounded(.up)))
+        guard let format = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: sampleRate,
+            channels: 1,
+            interleaved: false
+        ),
+        let buffer = AVAudioPCMBuffer(
+            pcmFormat: format,
+            frameCapacity: frameCapacity
+        ),
+        let samples = buffer.floatChannelData?[0] else { return }
+        buffer.frameLength = frameCapacity
+        samples.initialize(repeating: 0, count: Int(frameCapacity))
+
+        let bpm = Double(practiceSettings.metronomeBPM)
+        let clicksPerBeat = practiceSettings.metronomeSubdivision.clicksPerBeat
+        let clickInterval = 60 / bpm / Double(clicksPerBeat)
+        let alignment = practiceSettings.metronomeAlignment
+        let firstIndex = Int(ceil((start - alignment) / clickInterval))
+        var clickIndex = firstIndex
+        let clickLength = max(1, Int(sampleRate * 0.018))
+        while true {
+            let sourceTime = alignment + Double(clickIndex) * clickInterval
+            if sourceTime >= end { break }
+            if sourceTime >= start {
+                let renderTime = (sourceTime - start) / Double(playbackState.rate)
+                let frame = Int((renderTime * sampleRate).rounded())
+                let subdivisionIndex = ((clickIndex % clicksPerBeat) + clicksPerBeat)
+                    % clicksPerBeat
+                let beatIndex = Int(
+                    floor((sourceTime - alignment) / (60 / bpm))
+                )
+                let isDownbeat = subdivisionIndex == 0
+                    && ((beatIndex % 4) + 4) % 4 == 0
+                let frequency = isDownbeat && practiceSettings.metronomeAccentEnabled
+                    ? 1_600.0
+                    : 1_050.0
+                let accentGain: Float = isDownbeat
+                    && practiceSettings.metronomeAccentEnabled ? 1 : 0.72
+                for offset in 0..<clickLength where frame + offset < Int(frameCapacity) {
+                    let envelope = Float(clickLength - offset) / Float(clickLength)
+                    let phase = 2 * Double.pi * frequency * Double(offset) / sampleRate
+                    samples[frame + offset] += Float(sin(phase))
+                        * envelope
+                        * accentGain
+                        * practiceSettings.metronomeLevel
+                }
+            }
+            clickIndex += 1
+        }
+        metronomeNode.scheduleBuffer(buffer)
     }
 
     private func configurePlaybackSession() throws {

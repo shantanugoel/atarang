@@ -40,8 +40,12 @@ and practise against the rest of the band.
   piano, instrumental, or other parts depending on the selected model.
 - **A hands-on stem mixer** — set a level for every stem, mute or solo parts,
   and jump between Full Mix, Without Vocals, and Vocals Only presets.
+- **Structured song practice** — save A–B sections, transpose by semitones,
+  add a manually aligned metronome, count repetitions, and ramp from a slower
+  starting speed to performance tempo.
 - **Performance recording** — capture the microphone and live backing mix
-  together, with independent microphone and backing levels.
+  together, with independent microphone and backing levels; an active loop
+  records one predictable pass from A to B.
 - **Background-friendly sessions** — playback and recording continue when the
   app is backgrounded or the screen is locked.
 - **A personal music library** — browse originals, separations, and

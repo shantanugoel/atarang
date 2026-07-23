@@ -10,6 +10,7 @@ struct ContentView: View {
     @StateObject private var player = StemPlayer()
     @StateObject private var history = HistoryStore()
     @StateObject private var historyAudioPlayer = HistoryAudioPlayer()
+    @StateObject private var takePreviewPlayer = RecordingMixPreviewPlayer()
     @State private var youtubeURL: String
     @State private var didRunDebugURL = false
     @State private var sharePayload: SharePayload?
@@ -21,6 +22,8 @@ struct ContentView: View {
     @State private var pendingModelDownload: ModelDownloadRequest?
     @State private var studioNotice: String?
     @State private var showsRecordingIntroduction = false
+    @State private var editingSectionID: UUID?
+    @State private var sectionNameDraft = ""
     private let debugURL: String?
 
     init() {
@@ -144,6 +147,7 @@ struct ContentView: View {
         .onChange(of: selectedTab) { _, tab in
             if tab == .history, !player.isRecording {
                 player.suspend()
+                takePreviewPlayer.stop(releaseSession: true)
             } else if tab == .studio {
                 historyAudioPlayer.stop()
             }
@@ -169,6 +173,7 @@ struct ContentView: View {
     @MainActor
     private func openHistoryTrack(_ track: HistoryTrack, autoplay: Bool) {
         historyAudioPlayer.stop(releaseSession: true)
+        takePreviewPlayer.stop(releaseSession: true)
         do {
             try player.load(track: track.localTrack)
             hasUsedStudio = true
@@ -193,6 +198,7 @@ struct ContentView: View {
     @MainActor
     private func startRecording(_ track: HistoryTrack) {
         historyAudioPlayer.stop(releaseSession: true)
+        takePreviewPlayer.stop(releaseSession: true)
         do {
             try player.load(track: track.localTrack)
             hasUsedStudio = true
@@ -615,7 +621,11 @@ struct ContentView: View {
                 .accessibilityValue("\(Int(player.playbackRate * 100)) percent")
             }
 
+            pitchControls
             loopControls
+            savedSectionControls
+            repetitionControls
+            metronomeControls
             practiceMixControls
 
             VStack(alignment: .leading, spacing: 8) {
@@ -643,6 +653,41 @@ struct ContentView: View {
             }
             .practiceSectionStyle()
 
+            if player.practiceSettings.loopRange != nil {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("Loop Take", systemImage: "record.circle")
+                        .font(.subheadline.weight(.semibold))
+                    Text("Record captures one pass from A to B, then stops automatically. Loop, speed, key, and target controls stay locked for the take.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if let take = player.recordedTake {
+                        HStack {
+                            Button("Reference") {
+                                takePreviewPlayer.stop(releaseSession: true)
+                                player.seek(to: player.loopRange?.start ?? 0)
+                                try? player.play()
+                            }
+                            .buttonStyle(.bordered)
+                            Button(takePreviewPlayer.isPlaying ? "Stop Take" : "Latest Take") {
+                                if takePreviewPlayer.isPlaying {
+                                    takePreviewPlayer.stop(releaseSession: true)
+                                } else {
+                                    player.suspend()
+                                    do {
+                                        try takePreviewPlayer.load(take: take)
+                                        takePreviewPlayer.play()
+                                    } catch {
+                                        player.alertMessage = error.localizedDescription
+                                    }
+                                }
+                            }
+                            .buttonStyle(.borderedProminent)
+                        }
+                    }
+                }
+                .practiceSectionStyle()
+            }
+
             Button("Reset Practice Settings", role: .destructive) {
                 player.resetPracticeSettings()
             }
@@ -654,6 +699,127 @@ struct ContentView: View {
             Color(.secondarySystemGroupedBackground),
             in: RoundedRectangle(cornerRadius: 20)
         )
+    }
+
+    private var pitchControls: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("Pitch & Key", systemImage: "music.note")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Text(semitoneText(player.pitchSemitones))
+                    .font(.subheadline.monospacedDigit().weight(.semibold))
+            }
+            Slider(
+                value: Binding(
+                    get: { player.pitchSemitones },
+                    set: { player.setPitchSemitones($0.rounded()) }
+                ),
+                in: PlaybackState.supportedPitchRange,
+                step: 1
+            )
+            .accessibilityLabel("Pitch transpose")
+            .accessibilityValue(semitoneText(player.pitchSemitones))
+            HStack {
+                Button("− Octave") { player.setPitchSemitones(-12) }
+                Button("Reset") { player.setPitchSemitones(0) }
+                Button("+ Octave") { player.setPitchSemitones(12) }
+            }
+            .buttonStyle(.bordered)
+            .frame(maxWidth: .infinity)
+            Text("Changes key without changing playback speed. The transformed backing is also used in recordings.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .disabled(player.isRecording)
+        .practiceSectionStyle()
+    }
+
+    private var metronomeControls: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("Manual Metronome", systemImage: "metronome")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Toggle(
+                    "Metronome",
+                    isOn: Binding(
+                        get: { player.practiceSettings.metronomeEnabled },
+                        set: { player.setMetronomeEnabled($0) }
+                    )
+                )
+                .labelsHidden()
+            }
+
+            HStack {
+                TextField(
+                    "BPM",
+                    value: Binding(
+                        get: { player.practiceSettings.metronomeBPM },
+                        set: { player.setMetronomeBPM($0) }
+                    ),
+                    format: .number
+                )
+                .keyboardType(.numberPad)
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 100)
+                Text("BPM")
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Tap Tempo") { player.tapTempo() }
+                    .buttonStyle(.borderedProminent)
+                    .frame(minHeight: 44)
+            }
+
+            Picker(
+                "Subdivision",
+                selection: Binding(
+                    get: { player.practiceSettings.metronomeSubdivision },
+                    set: { player.setMetronomeSubdivision($0) }
+                )
+            ) {
+                ForEach(MetronomeSubdivision.allCases) {
+                    Text($0.title).tag($0)
+                }
+            }
+            .pickerStyle(.menu)
+
+            Toggle(
+                "Accent every four beats",
+                isOn: Binding(
+                    get: { player.practiceSettings.metronomeAccentEnabled },
+                    set: { player.setMetronomeAccentEnabled($0) }
+                )
+            )
+            HStack {
+                Image(systemName: "speaker.wave.1")
+                Slider(
+                    value: Binding(
+                        get: { player.practiceSettings.metronomeLevel },
+                        set: { player.setMetronomeLevel($0) }
+                    ),
+                    in: 0...1
+                )
+                .accessibilityLabel("Metronome click level")
+            }
+            Toggle(
+                "Metronome only",
+                isOn: Binding(
+                    get: { player.practiceSettings.metronomeOnly },
+                    set: { player.setMetronomeOnly($0) }
+                )
+            )
+            Button("Align first downbeat here") {
+                player.alignMetronome()
+            }
+            .buttonStyle(.bordered)
+            .frame(minHeight: 44)
+            Text("Manually aligned at \(time(player.practiceSettings.metronomeAlignment)). Atarang does not automatically detect or track the song tempo.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .disabled(player.isRecording)
+        .practiceSectionStyle()
     }
 
     private var practiceTimeline: some View {
@@ -859,6 +1025,187 @@ struct ContentView: View {
         .practiceSectionStyle()
     }
 
+    private var savedSectionControls: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("Saved Sections", systemImage: "bookmark")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Button("Save Current") { player.saveCurrentSection() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(player.practiceSettings.loopRange == nil)
+            }
+            if player.practiceSettings.savedSections.isEmpty {
+                Text("Save the current A–B range to return to it quickly.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(player.practiceSettings.savedSections) { section in
+                    HStack {
+                        Button {
+                            player.loadSection(section.id)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(section.name)
+                                    .font(.subheadline.weight(.semibold))
+                                Text("\(time(section.start)) – \(time(section.end))")
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
+                            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        }
+                        .buttonStyle(.bordered)
+                        Menu {
+                            Button("Rename") {
+                                editingSectionID = section.id
+                                sectionNameDraft = section.name
+                            }
+                            Button("Delete", role: .destructive) {
+                                player.deleteSection(section.id)
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                                .frame(width: 44, height: 44)
+                        }
+                    }
+                }
+            }
+        }
+        .disabled(player.isRecording)
+        .practiceSectionStyle()
+        .alert(
+            "Rename Section",
+            isPresented: Binding(
+                get: { editingSectionID != nil },
+                set: { if !$0 { editingSectionID = nil } }
+            )
+        ) {
+            TextField("Section name", text: $sectionNameDraft)
+            Button("Save") {
+                if let editingSectionID {
+                    player.renameSection(editingSectionID, to: sectionNameDraft)
+                }
+                editingSectionID = nil
+            }
+            Button("Cancel", role: .cancel) { editingSectionID = nil }
+        }
+    }
+
+    private var repetitionControls: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("Repetitions & Tempo Ramp", systemImage: "chart.line.uptrend.xyaxis")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                if player.practiceSettings.repetitionTarget > 0 {
+                    Text("\(player.completedRepetitions) done · \(player.remainingRepetitions) left")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Stepper(
+                player.practiceSettings.repetitionTarget == 0
+                    ? "Repeat until stopped"
+                    : "\(player.practiceSettings.repetitionTarget) repetitions",
+                value: Binding(
+                    get: { player.practiceSettings.repetitionTarget },
+                    set: { player.setRepetitionTarget($0) }
+                ),
+                in: 0...99
+            )
+            Stepper(
+                player.practiceSettings.repetitionPause == 0
+                    ? "No pause between repetitions"
+                    : "\(player.practiceSettings.repetitionPause.formatted()) second pause",
+                value: Binding(
+                    get: { player.practiceSettings.repetitionPause },
+                    set: { player.setRepetitionPause($0) }
+                ),
+                in: 0...10,
+                step: 1
+            )
+            Toggle(
+                "Ramp tempo",
+                isOn: Binding(
+                    get: { player.practiceSettings.tempoRampEnabled },
+                    set: { player.configureTempoRamp(enabled: $0) }
+                )
+            )
+            if player.practiceSettings.tempoRampEnabled {
+                HStack {
+                    rampRateMenu(
+                        title: "Start",
+                        value: player.practiceSettings.tempoRampStart,
+                        set: { player.configureTempoRamp(start: $0) }
+                    )
+                    rampRateMenu(
+                        title: "Add",
+                        value: player.practiceSettings.tempoRampIncrement,
+                        isIncrement: true,
+                        set: { player.configureTempoRamp(increment: $0) }
+                    )
+                    rampRateMenu(
+                        title: "Target",
+                        value: player.practiceSettings.tempoRampTarget,
+                        set: { player.configureTempoRamp(target: $0) }
+                    )
+                }
+                Stepper(
+                    "Increase every \(player.practiceSettings.tempoRampEvery) repetition\(player.practiceSettings.tempoRampEvery == 1 ? "" : "s")",
+                    value: Binding(
+                        get: { player.practiceSettings.tempoRampEvery },
+                        set: { player.configureTempoRamp(every: $0) }
+                    ),
+                    in: 1...10
+                )
+                HStack {
+                    Button("Start Ramp") { player.beginTempoRamp() }
+                        .buttonStyle(.borderedProminent)
+                    Button(player.isTempoRampHeld ? "Resume Ramp" : "Hold Speed") {
+                        player.toggleTempoRampHold()
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+            Button("Stop Structured Practice", role: .destructive) {
+                player.stopStructuredPractice()
+            }
+            .buttonStyle(.bordered)
+            .disabled(!player.isPlaying && player.completedRepetitions == 0)
+            Text("Repetition and ramp controls apply to an enabled A–B loop.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .disabled(player.isRecording || player.practiceSettings.loopRange == nil)
+        .practiceSectionStyle()
+    }
+
+    private func rampRateMenu(
+        title: String,
+        value: Float,
+        isIncrement: Bool = false,
+        set: @escaping (Float) -> Void
+    ) -> some View {
+        Menu {
+            let values: [Float] = isIncrement
+                ? [0.01, 0.02, 0.05, 0.1]
+                : [0.5, 0.6, 0.75, 0.8, 0.9, 1]
+            ForEach(values, id: \.self) { rate in
+                Button("\(isIncrement ? "+" : "")\(Int(rate * 100))%") {
+                    set(rate)
+                }
+            }
+        } label: {
+            VStack(spacing: 2) {
+                Text(title).font(.caption2)
+                Text("\(isIncrement ? "+" : "")\(Int(value * 100))%")
+                    .font(.caption.weight(.semibold))
+            }
+            .frame(maxWidth: .infinity, minHeight: 44)
+        }
+        .buttonStyle(.bordered)
+    }
+
     private var mixerHeader: some View {
         HStack {
             Text("Atarang")
@@ -887,6 +1234,7 @@ struct ContentView: View {
     }
 
     private func chooseAnotherSong() {
+        takePreviewPlayer.stop(releaseSession: true)
         player.unload()
         youtubeURL = ""
     }
@@ -1190,6 +1538,12 @@ struct ContentView: View {
     private func time(_ seconds: TimeInterval) -> String {
         let value = max(0, Int(seconds.rounded()))
         return String(format: "%d:%02d", value / 60, value % 60)
+    }
+
+    private func semitoneText(_ semitones: Float) -> String {
+        let value = Int(semitones.rounded())
+        if value == 0 { return "Original key" }
+        return "\(value > 0 ? "+" : "")\(value) semitone\(abs(value) == 1 ? "" : "s")"
     }
 }
 
