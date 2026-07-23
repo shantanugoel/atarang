@@ -111,7 +111,11 @@ struct HistoryView: View {
             }
             .sheet(item: $separationRequest) { request in
                 SeparationChoiceSheet(request: request) { model in
-                    separateSource(request.source, model)
+                    separationRequest = nil
+                    Task { @MainActor in
+                        await Task.yield()
+                        separateSource(request.source, model)
+                    }
                 }
                 .presentationDetents([.medium])
             }
@@ -1111,7 +1115,6 @@ private struct SeparationChoiceSheet: View {
 
                 Section {
                     Button {
-                        dismiss()
                         onSeparate(model)
                     } label: {
                         Label(

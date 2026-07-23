@@ -139,6 +139,10 @@ struct ContentView: View {
             )
             .tabItem { Label("Library", systemImage: "music.note.house") }
             .tag(AppTab.history)
+
+            AboutView()
+                .tabItem { Label("Settings", systemImage: "gearshape") }
+                .tag(AppTab.settings)
         }
         .background(KeyboardDismissController())
         .tint(.indigo)
@@ -149,10 +153,11 @@ struct ContentView: View {
             history.refresh()
         }
         .onChange(of: selectedTab) { _, tab in
-            if tab == .history, !player.isRecording {
+            if tab != .studio, !player.isRecording {
                 player.suspend()
                 takePreviewPlayer.stop(releaseSession: true)
-            } else if tab == .studio {
+            }
+            if tab != .history {
                 historyAudioPlayer.stop()
             }
         }
@@ -1552,7 +1557,7 @@ struct ContentView: View {
 }
 
 private enum AppTab {
-    case studio, history
+    case studio, history, settings
 }
 
 private struct ModelDownloadRequest: Identifiable {
