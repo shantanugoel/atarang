@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Atarang — Your song. Your part.</title>
+<meta name="description" content="Turn a YouTube track into a private, on-device practice studio for iPhone. Separate up to six stems, mute the part you play, and practise it properly.">
+<meta name="theme-color" content="#08060F">
+<script>document.documentElement.className="js"</script>
+
+<meta property="og:type" content="website">
+<meta property="og:title" content="Atarang — Your song. Your part.">
+<meta property="og:description" content="Turn a YouTube track into a private, on-device practice studio for iPhone. Separate up to six stems, mute the part you play, and practise it properly.">
+<meta property="og:image" content="images/atarang-icon.png">
+<meta name="twitter:card" content="summary_large_image">
+
+<link rel="icon" href="images/atarang-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+
+<style>
+/* ─────────────────────────────────────────────────────────────
+   Atarang — single page. Studio-panel minimalism:
+   matte indigo-black, engraved hairlines, coloured channel strips.
+   Violet is the field; coral is the only signal colour.
+   ───────────────────────────────────────────────────────────── */
+
+:root{
+  --ink:#08060F;
+  --panel:#100C1E;
+  --panel-2:#15102A;
+  --rule:rgba(198,190,232,.13);
+  --rule-soft:rgba(198,190,232,.07);
+  --fg:#EFECF8;
+  --fg-dim:#A49DBE;
+  --fg-faint:#6E6789;
+
+  --coral:#FF6B52;
+  --violet:#7C5CFF;
+  --amber:#F5A623;
+  --blue:#4A8DFF;
+  --magenta:#D65CE0;
+  --teal:#2DD4BF;
+
+  --serif:"Instrument Serif",Georgia,serif;
+  --sans:"IBM Plex Sans",-apple-system,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,monospace;
+
+  --gut:clamp(20px,5vw,64px);
+  --maxw:1180px;
+}
+
+*,*::before,*::after{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%;scroll-behavior:smooth}
+body{
+  margin:0;
+  background:var(--ink);
+  color:var(--fg);
+  font-family:var(--sans);
+  font-size:16px;
+  line-height:1.6;
+  -webkit-font-smoothing:antialiased;
+  overflow-x:hidden;
+}
+img{max-width:100%;height:auto;display:block}
+a{color:inherit}
+
+/* atmosphere: violet bloom + film grain ───────────────────── */
+body::before{
+  content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+  background:
+    radial-gradient(120% 70% at 78% -10%, rgba(124,92,255,.20), transparent 62%),
+    radial-gradient(90% 60% at 6% 8%, rgba(74,141,255,.11), transparent 60%),
+    radial-gradient(70% 50% at 50% 108%, rgba(255,107,82,.07), transparent 65%);
+}
+body::after{
+  content:"";position:fixed;inset:-50%;pointer-events:none;z-index:1;opacity:.16;
+  mix-blend-mode:overlay;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='220' height='220' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* the rack rail — a hairline spine down the whole page ────── */
+.rail{
+  position:fixed;top:0;bottom:0;left:max(calc((100vw - var(--maxw))/2), var(--gut));
+  width:1px;background:var(--rule-soft);z-index:2;pointer-events:none;
+}
+@media(max-width:900px){.rail{display:none}}
+
+.wrap{position:relative;z-index:3;max-width:var(--maxw);margin:0 auto;padding:0 var(--gut)}
+
+/* type ────────────────────────────────────────────────────── */
+.mono{
+  font-family:var(--mono);font-size:11px;font-weight:500;
+  letter-spacing:.16em;text-transform:uppercase;color:var(--fg-faint);
+}
+h1,h2,h3{font-weight:400;margin:0;letter-spacing:-.02em;line-height:1.02}
+h1{font-family:var(--serif);font-size:clamp(3.4rem,9vw,6.9rem)}
+h2{font-family:var(--serif);font-size:clamp(2.3rem,5.6vw,4rem);line-height:1.05}
+h3{font-family:var(--sans);font-size:1.0625rem;font-weight:600;letter-spacing:-.005em;line-height:1.35}
+em{font-style:italic;color:#CFC4FF}
+p{margin:0}
+.lede{font-size:clamp(1.0625rem,1.9vw,1.3125rem);line-height:1.55;color:var(--fg-dim);max-width:34ch}
+
+/* section chrome ──────────────────────────────────────────── */
+section{position:relative;padding:clamp(76px,11vw,152px) 0}
+.sec-rule{border-top:1px solid var(--rule-soft)}
+.sec-head{display:flex;align-items:baseline;gap:16px;margin-bottom:clamp(34px,5vw,60px)}
+.sec-head .mono{flex:none;padding-top:.35em}
+.sec-head .mono::after{content:"";display:inline-block;width:clamp(18px,4vw,52px);height:1px;
+  background:var(--rule);vertical-align:.35em;margin-left:14px}
+/* stacked, so the heading gets the full column instead of a sliver */
+@media(max-width:760px){
+  .sec-head{flex-direction:column;align-items:flex-start;gap:18px}
+  .sec-head .mono{padding-top:0}
+}
+
+/* header ──────────────────────────────────────────────────── */
+header{position:relative;z-index:5;padding:26px 0}
+.bar{display:flex;align-items:center;justify-content:space-between;gap:20px}
+.mark{display:flex;align-items:center;gap:11px;text-decoration:none}
+.mark svg{width:29px;height:29px;flex:none}
+.mark span{font-family:var(--serif);font-size:1.375rem;letter-spacing:.005em}
+.bar nav{display:flex;align-items:center;gap:clamp(16px,2.6vw,30px)}
+.bar nav a{
+  font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--fg-faint);text-decoration:none;transition:color .2s;
+}
+.bar nav a:hover{color:var(--fg)}
+@media(max-width:640px){.bar nav a:not(.ghost-sm){display:none}}
+.ghost-sm{border:1px solid var(--rule);border-radius:999px;padding:7px 15px;color:var(--fg-dim)!important}
+.ghost-sm:hover{border-color:rgba(255,107,82,.6);color:var(--coral)!important}
+
+/* hero ────────────────────────────────────────────────────── */
+.hero{padding-top:clamp(40px,7vw,84px);padding-bottom:clamp(60px,8vw,110px)}
+.hero-grid{display:grid;grid-template-columns:minmax(0,1.02fr) minmax(0,.98fr);
+  gap:clamp(38px,6vw,80px);align-items:center}
+@media(max-width:940px){.hero-grid{grid-template-columns:1fr;gap:46px}}
+
+.hero h1{margin:22px 0 0}
+.hero h1 .l2{display:block;color:#B9AEEE;font-style:italic;padding-left:.09em}
+.hero .lede{margin-top:26px}
+.cta-row{display:flex;flex-wrap:wrap;gap:12px;margin-top:36px}
+
+.btn{
+  display:inline-flex;align-items:center;gap:10px;
+  font-family:var(--mono);font-size:11.5px;font-weight:500;letter-spacing:.14em;text-transform:uppercase;
+  padding:14px 22px;border-radius:2px;text-decoration:none;border:1px solid transparent;
+  transition:transform .18s cubic-bezier(.2,.8,.3,1),background .2s,border-color .2s,color .2s;
+}
+.btn svg{width:14px;height:14px}
+.btn-p{background:var(--coral);color:#170703;box-shadow:0 8px 30px -12px rgba(255,107,82,.85)}
+.btn-p:hover{transform:translateY(-2px);background:#FF7E68}
+.btn-s{border-color:var(--rule);color:var(--fg-dim)}
+.btn-s:hover{border-color:rgba(198,190,232,.36);color:var(--fg);transform:translateY(-2px)}
+
+/* ── the console: interactive stem strip (the centrepiece) ── */
+.console{
+  background:linear-gradient(168deg,var(--panel-2),var(--panel));
+  border:1px solid var(--rule);border-radius:6px;
+  padding:clamp(16px,2.4vw,22px);
+  box-shadow:0 40px 90px -50px #000, inset 0 1px 0 rgba(255,255,255,.05);
+}
+.console-top{display:flex;align-items:center;justify-content:space-between;gap:12px;
+  padding-bottom:14px;border-bottom:1px solid var(--rule-soft)}
+.console-top .mono{font-size:10px;letter-spacing:.15em}
+.preset{
+  font-family:var(--mono);font-size:10px;font-weight:500;letter-spacing:.14em;text-transform:uppercase;
+  background:transparent;color:var(--fg-dim);border:1px solid var(--rule);border-radius:999px;
+  padding:6px 13px;cursor:pointer;transition:.2s;
+}
+.preset:hover{border-color:rgba(198,190,232,.4);color:var(--fg)}
+.preset[data-on="true"]{background:rgba(255,107,82,.13);border-color:rgba(255,107,82,.55);color:var(--coral)}
+
+.strips{display:grid;grid-template-columns:repeat(6,1fr);gap:clamp(5px,1vw,11px);padding:20px 0 4px}
+
+.strip{
+  appearance:none;background:transparent;border:0;padding:0;cursor:pointer;
+  display:flex;flex-direction:column;align-items:center;gap:9px;
+  font-family:inherit;color:inherit;
+  --rest:.86;         /* per-stem resting level, set inline by JS */
+  --level:var(--rest);
+}
+.strip:focus-visible{outline:1px solid var(--coral);outline-offset:5px;border-radius:3px}
+
+.meter{
+  position:relative;width:100%;height:clamp(120px,20vw,178px);border-radius:2px;
+  background:rgba(0,0,0,.42);border:1px solid var(--rule-soft);overflow:hidden;
+}
+.meter-level{
+  position:absolute;left:0;right:0;bottom:0;height:calc(var(--level) * 100%);
+  transition:height .5s cubic-bezier(.3,.9,.3,1);
+}
+.meter-sig{
+  position:absolute;inset:0;transform-origin:bottom;
+  background:linear-gradient(to top,var(--c),color-mix(in srgb,var(--c) 55%,#fff));
+  animation:sig 2.6s ease-in-out infinite;
+  box-shadow:0 0 26px -4px var(--c);
+}
+.strip:nth-child(2) .meter-sig{animation-duration:3.1s;animation-delay:-.7s}
+.strip:nth-child(3) .meter-sig{animation-duration:2.2s;animation-delay:-1.3s}
+.strip:nth-child(4) .meter-sig{animation-duration:3.5s;animation-delay:-.4s}
+.strip:nth-child(5) .meter-sig{animation-duration:2.8s;animation-delay:-1.9s}
+.strip:nth-child(6) .meter-sig{animation-duration:3.3s;animation-delay:-2.4s}
+@keyframes sig{
+  0%{transform:scaleY(.34)}  14%{transform:scaleY(.88)} 27%{transform:scaleY(.52)}
+  41%{transform:scaleY(.97)} 55%{transform:scaleY(.44)} 68%{transform:scaleY(.8)}
+  84%{transform:scaleY(.38)} 100%{transform:scaleY(.34)}
+}
+/* LED segmentation, engraved over the signal */
+.meter::after{
+  content:"";position:absolute;inset:0;pointer-events:none;
+  background:repeating-linear-gradient(to bottom,rgba(8,6,15,0) 0 4px,rgba(8,6,15,.62) 4px 6px);
+}
+/* fader cap — the set level */
+.cap{
+  position:absolute;left:-1px;right:-1px;bottom:calc(var(--level) * 100%);
+  height:2px;background:var(--fg);border-radius:1px;z-index:2;
+  transition:bottom .5s cubic-bezier(.3,.9,.3,1),opacity .3s;
+  box-shadow:0 0 12px rgba(255,255,255,.4);
+}
+
+.strip-label{font-family:var(--mono);font-size:9.5px;font-weight:500;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--fg-dim);transition:color .25s}
+.led{width:5px;height:5px;border-radius:50%;background:rgba(198,190,232,.16);transition:.25s}
+
+.strip[aria-pressed="true"]{--level:0}
+.strip[aria-pressed="true"] .meter-sig{animation-play-state:paused}
+.strip[aria-pressed="true"] .cap{opacity:.24}
+.strip[aria-pressed="true"] .strip-label{color:var(--fg-faint)}
+.strip[aria-pressed="true"] .led{background:var(--coral);box-shadow:0 0 9px var(--coral)}
+.strip:hover:not([aria-pressed="true"]){--level:.97}
+
+.console-cap{
+  display:flex;align-items:center;gap:9px;margin-top:14px;padding-top:14px;
+  border-top:1px solid var(--rule-soft);
+  font-family:var(--mono);font-size:10.5px;letter-spacing:.09em;color:var(--fg-faint);
+}
+.console-cap b{color:var(--coral);font-weight:500}
+.hint{display:block;margin-top:13px;text-align:center;font-family:var(--mono);font-size:10px;
+  letter-spacing:.13em;text-transform:uppercase;color:rgba(110,103,137,.72)}
+
+/* workflow ────────────────────────────────────────────────── */
+.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:clamp(22px,3.4vw,46px)}
+@media(max-width:800px){.steps{grid-template-columns:1fr;gap:44px}}
+.step{display:flex;flex-direction:column}
+.step .num{font-family:var(--serif);font-size:2.5rem;color:var(--violet);line-height:1;opacity:.85}
+.step h3{margin:14px 0 8px}
+.step p{color:var(--fg-dim);font-size:.9375rem;max-width:32ch}
+.step code{font-family:var(--mono);font-size:.8125em;color:#C6BCF0;
+  background:rgba(124,92,255,.12);border-radius:2px;padding:.12em .38em}
+/* the shots are tall phone captures — show them through a fixed
+   window so all three align and none of them swallows the section */
+.shot{
+  position:relative;margin-top:auto;padding-top:26px;
+  transition:transform .4s cubic-bezier(.2,.8,.3,1);
+}
+.shot img{
+  height:clamp(280px,34vw,400px);object-fit:cover;object-position:50% var(--op,0%);
+  border:1px solid var(--rule);border-radius:14px;
+  background:var(--panel);box-shadow:0 30px 60px -40px #000;
+  transition:border-color .4s;
+}
+/* fade the hard bottom edge into the page */
+.shot::after{
+  content:"";position:absolute;left:0;right:0;bottom:0;height:78px;pointer-events:none;
+  border-radius:0 0 14px 14px;
+  background:linear-gradient(to top,var(--ink) 8%,rgba(8,6,15,0));
+}
+.step:hover .shot{transform:translateY(-6px)}
+.step:hover .shot img{border-color:rgba(124,92,255,.4)}
+@media(max-width:800px){.shot{max-width:320px}}
+
+/* practice ────────────────────────────────────────────────── */
+.practice{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,.85fr);
+  gap:clamp(36px,6vw,84px);align-items:center}
+@media(max-width:900px){.practice{grid-template-columns:1fr;gap:44px}}
+.practice h2 em{display:block}
+.plist{list-style:none;margin:clamp(30px,4vw,44px) 0 0;padding:0}
+.plist li{padding:20px 0;border-top:1px solid var(--rule-soft)}
+.plist li:last-child{border-bottom:1px solid var(--rule-soft)}
+.plist p{color:var(--fg-dim);font-size:.9375rem;margin-top:5px;max-width:46ch}
+.shot-lg{max-width:318px;margin:0 auto;border:1px solid var(--rule);border-radius:22px;
+  overflow:hidden;box-shadow:0 60px 110px -55px #000, 0 0 90px -50px var(--violet)}
+
+/* privacy band ────────────────────────────────────────────── */
+.band{position:relative;text-align:center;overflow:hidden}
+.band .glow{position:absolute;left:50%;top:52%;translate:-50% -50%;width:min(820px,125%);
+  aspect-ratio:1;pointer-events:none;opacity:.055;filter:blur(3px)}
+.band h2{max-width:26ch;margin:0 auto}
+.band h2 em{display:block}
+.band p{color:var(--fg-dim);max-width:56ch;margin:26px auto 0;font-size:1.0625rem}
+.specs{display:flex;flex-wrap:wrap;justify-content:center;gap:0;margin-top:clamp(36px,5vw,54px);
+  border:1px solid var(--rule-soft);border-radius:3px}
+.specs div{flex:1 1 168px;padding:20px 16px}
+.specs div + div{border-left:1px solid var(--rule-soft)}
+@media(max-width:700px){.specs div + div{border-left:0;border-top:1px solid var(--rule-soft)}}
+.specs b{display:block;font-family:var(--serif);font-size:1.75rem;font-weight:400;color:var(--fg);line-height:1.1}
+.specs span{display:block;margin-top:6px}
+
+/* get it ──────────────────────────────────────────────────── */
+.get{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:clamp(32px,5vw,72px)}
+@media(max-width:800px){.get{grid-template-columns:1fr;gap:38px}}
+.get p{color:var(--fg-dim);margin-top:22px;max-width:40ch}
+.reqs{list-style:none;margin:0;padding:0;border-top:1px solid var(--rule-soft)}
+.reqs li{display:flex;gap:14px;padding:14px 0;border-bottom:1px solid var(--rule-soft);
+  font-family:var(--mono);font-size:12px;letter-spacing:.02em;color:var(--fg-dim)}
+.reqs li::before{content:"—";color:var(--violet);flex:none}
+.note{margin-top:26px;padding-left:16px;border-left:2px solid rgba(255,107,82,.5);
+  font-size:.875rem;color:var(--fg-faint);max-width:44ch}
+
+/* footer ──────────────────────────────────────────────────── */
+footer{border-top:1px solid var(--rule-soft);padding:44px 0 56px}
+.foot{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:20px}
+.foot-l{display:flex;align-items:center;gap:13px}
+.foot-l svg{width:26px;height:26px}
+.foot-l i{font-family:var(--serif);font-style:italic;font-size:1.0625rem;color:var(--fg-dim)}
+.foot nav{display:flex;flex-wrap:wrap;gap:24px}
+.foot nav a{text-decoration:none;transition:color .2s}
+.foot nav a:hover{color:var(--fg)}
+
+/* reveal — gated on .js so the page is fully legible without it ── */
+.js .rv{opacity:0;transform:translateY(22px);transition:opacity .85s cubic-bezier(.2,.8,.3,1),transform .85s cubic-bezier(.2,.8,.3,1)}
+.rv.in{opacity:1;transform:none}
+.rv[data-d="1"]{transition-delay:.09s}.rv[data-d="2"]{transition-delay:.18s}
+.rv[data-d="3"]{transition-delay:.27s}.rv[data-d="4"]{transition-delay:.36s}
+
+@media(prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  *,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;
+    transition-duration:.001ms!important}
+  .js .rv{opacity:1;transform:none}
+  .meter-sig{transform:scaleY(.72)}
+}
+</style>
+</head>
+<body>
+
+<div class="rail"></div>
+
+<!-- the Atarang mark: nested waves over a struck note -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="ag" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#5B7BFF"/><stop offset="1" stop-color="#9B6BFF"/>
+    </linearGradient>
+    <g id="arcs">
+      <path d="M8 80C8 44 26 20 50 20s42 24 42 60" fill="none" stroke="url(#ag)" stroke-width="8.5" stroke-linecap="round"/>
+      <path d="M23 80c0-27 12-46 27-46s27 19 27 46" fill="none" stroke="url(#ag)" stroke-width="8" stroke-linecap="round"/>
+      <path d="M37 81c0-19 6-33 13-33s13 14 13 33" fill="none" stroke="url(#ag)" stroke-width="7.5" stroke-linecap="round"/>
+      <circle cx="50" cy="70" r="8" fill="#FF6B52"/>
+    </g>
+  </defs>
+</svg>
+
+<div class="wrap">
+  <header>
+    <div class="bar">
+      <a class="mark" href="#top" aria-label="Atarang, home">
+        <svg viewBox="0 0 100 100" aria-hidden="true"><use href="#arcs"/></svg>
+        <span>Atarang</span>
+      </a>
+      <nav>
+        <a href="#workflow">Workflow</a>
+        <a href="#practice">Practice</a>
+        <a href="#private">On device</a>
+        <a class="ghost-sm" href="https://github.com/shantanugoel/atarang">GitHub ↗</a>
+      </nav>
+    </div>
+  </header>
+</div>
+
+<main id="top">
+
+  <!-- ── HERO ──────────────────────────────────────────────── -->
+  <section class="hero">
+    <div class="wrap hero-grid">
+      <div>
+        <span class="mono rv">iPhone · On-device · No account</span>
+        <h1 class="rv" data-d="1">Your song.<span class="l2">Your part.</span></h1>
+        <p class="lede rv" data-d="2">
+          Paste a YouTube link. Atarang splits the track into as many as six
+          stems, right on your phone — then mutes the one you play.
+        </p>
+        <div class="cta-row rv" data-d="3">
+          <a class="btn btn-p" href="https://github.com/shantanugoel/atarang">
+            View on GitHub
+            <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0a8 8 0 0 0-2.53 15.59c.4.07.55-.17.55-.38l-.01-1.34c-2.23.48-2.7-1.07-2.7-1.07-.36-.93-.89-1.18-.89-1.18-.73-.5.05-.49.05-.49.8.06 1.23.83 1.23.83.72 1.23 1.88.87 2.34.67.07-.52.28-.87.5-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.01.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 4 0c1.53-1.03 2.2-.82 2.2-.82.44 1.11.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48l-.01 2.19c0 .21.15.46.55.38A8 8 0 0 0 8 0Z"/></svg>
+          </a>
+          <a class="btn btn-s" href="#workflow">See how it works</a>
+        </div>
+      </div>
+
+      <div class="rv" data-d="2">
+        <div class="console" id="console">
+          <div class="console-top">
+            <span class="mono">HTDemucs · 6-stem</span>
+            <button class="preset" id="preset" data-on="false" type="button">Play along</button>
+          </div>
+
+          <div class="strips" id="strips" role="group" aria-label="Stem mixer demonstration"></div>
+
+          <div class="console-cap"><span id="cap">Six stems. Every one under your control.</span></div>
+        </div>
+        <span class="hint">Tap a stem to mute it</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── WORKFLOW ──────────────────────────────────────────── -->
+  <section id="workflow" class="sec-rule">
+    <div class="wrap">
+      <div class="sec-head rv"><span class="mono">01 — Workflow</span><h2>Three taps to<br><em>a backing track.</em></h2></div>
+
+      <div class="steps">
+        <div class="step rv" data-d="1">
+          <div class="num">1</div>
+          <h3>Paste a link</h3>
+          <p>Any <code>youtube.com</code> or <code>youtu.be</code> URL. Atarang pulls the audio down and keeps it.</p>
+          <div class="shot"><img src="images/studio.jpg" alt="The Atarang studio screen with a field for a YouTube link and a choice of separation styles" loading="lazy" width="589" height="1280"></div>
+        </div>
+        <div class="step rv" data-d="2">
+          <div class="num">2</div>
+          <h3>Choose a split</h3>
+          <p>Two, four, or six stems across four models. The separation runs on the phone's Neural Engine.</p>
+          <div class="shot"><img src="images/mixer.jpg" alt="The Atarang stem mixer with level sliders for vocals, drums, bass and other parts" loading="lazy" width="589" height="1280"></div>
+        </div>
+        <div class="step rv" data-d="3">
+          <div class="num">3</div>
+          <h3>Take a part</h3>
+          <p>Mute your stem, count yourself in, and record your take against the rest of the band.</p>
+          <!-- --op skips a scrolled-card fragment baked into the top of this capture -->
+          <div class="shot" style="--op:6%"><img src="images/practice-metronome-and-target.jpg" alt="The Atarang practice screen with a metronome, practice target presets and count-in controls" loading="lazy" width="589" height="1280"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── PRACTICE ──────────────────────────────────────────── -->
+  <section id="practice" class="sec-rule">
+    <div class="wrap">
+      <div class="sec-head rv"><span class="mono">02 — Practice</span></div>
+
+      <div class="practice">
+        <div>
+          <h2 class="rv">Most tools stop<br>at separation.<em>Atarang starts there.</em></h2>
+
+          <ul class="plist">
+            <li class="rv" data-d="1">
+              <h3>Loop one phrase until it's yours</h3>
+              <p>Mark an A–B loop, nudge the edges, and save named sections you can drop back into next session.</p>
+            </li>
+            <li class="rv" data-d="2">
+              <h3>Slow it down. Change the key.</h3>
+              <p>Adjust speed without touching pitch, or transpose the backing by semitones without touching tempo.</p>
+            </li>
+            <li class="rv" data-d="3">
+              <h3>Count it in</h3>
+              <p>Tap the tempo, pick a subdivision, accent the downbeat, and align the click to the song by hand.</p>
+            </li>
+            <li class="rv" data-d="4">
+              <h3>Build to performance speed</h3>
+              <p>Set a repetition target, add a breath between passes, and ramp from comfortable to full tempo automatically.</p>
+            </li>
+          </ul>
+        </div>
+
+        <div class="rv" data-d="2">
+          <div class="shot-lg"><img src="images/practice-loop-and-pitch.jpg" alt="The Atarang practice workspace showing rewind, speed, pitch, A to B loop and saved section controls" loading="lazy" width="589" height="1280"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── ON DEVICE ─────────────────────────────────────────── -->
+  <section id="private" class="band sec-rule">
+    <svg class="glow" viewBox="0 0 100 100" aria-hidden="true"><use href="#arcs"/></svg>
+    <div class="wrap">
+      <span class="mono rv">03 — On device</span>
+      <h2 class="rv" data-d="1" style="margin-top:22px">No backend. No account.<em>Nothing uploaded.</em></h2>
+      <p class="rv" data-d="2">
+        Separation, mixing, playback and recording all happen on your iPhone. Atarang
+        touches the network for exactly two things: fetching the track you asked for,
+        and downloading an optional model the first time you pick it.
+      </p>
+
+      <div class="specs rv" data-d="3">
+        <div><b>6</b><span class="mono">Stems, maximum</span></div>
+        <div><b>4</b><span class="mono">Separation models</span></div>
+        <div><b>0</b><span class="mono">Servers involved</span></div>
+        <div><b>iOS 17</b><span class="mono">And later</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── GET IT ────────────────────────────────────────────── -->
+  <section id="get" class="sec-rule">
+    <div class="wrap">
+      <div class="sec-head rv"><span class="mono">04 — Get it</span></div>
+
+      <div class="get">
+        <div class="rv">
+          <h2>Build it<br><em>yourself.</em></h2>
+          <p>
+            Atarang is a personal, sideloaded project rather than an App Store release.
+            Clone the repository, sign it with your own Apple Developer team, and run it
+            on your phone.
+          </p>
+          <div class="cta-row">
+            <a class="btn btn-p" href="https://github.com/shantanugoel/atarang">
+              View on GitHub
+              <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0a8 8 0 0 0-2.53 15.59c.4.07.55-.17.55-.38l-.01-1.34c-2.23.48-2.7-1.07-2.7-1.07-.36-.93-.89-1.18-.89-1.18-.73-.5.05-.49.05-.49.8.06 1.23.83 1.23.83.72 1.23 1.88.87 2.34.67.07-.52.28-.87.5-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.01.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 4 0c1.53-1.03 2.2-.82 2.2-.82.44 1.11.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48l-.01 2.19c0 .21.15.46.55.38A8 8 0 0 0 8 0Z"/></svg>
+            </a>
+            <a class="btn btn-s" href="https://github.com/shantanugoel/atarang#install-on-your-iphone">Setup guide</a>
+          </div>
+        </div>
+
+        <div class="rv" data-d="1">
+          <span class="mono" style="display:block;margin-bottom:18px">You will need</span>
+          <ul class="reqs">
+            <li>A Mac with Xcode and the iOS 17 SDK</li>
+            <li>Git LFS, installed before you clone</li>
+            <li>An Apple Developer account for signing</li>
+            <li>An iPhone or iPad running iOS 17 or later</li>
+          </ul>
+          <p class="note">
+            Only download audio you have permission to use, and follow YouTube's terms.
+            This build is not designed or suitable for App Store distribution.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap foot">
+    <div class="foot-l">
+      <svg viewBox="0 0 100 100" aria-hidden="true"><use href="#arcs"/></svg>
+      <i>Your song. Your part.</i>
+    </div>
+    <nav class="mono">
+      <a href="https://github.com/shantanugoel/atarang">Repository</a>
+      <a href="https://github.com/shantanugoel/atarang#readme">Readme</a>
+      <a href="https://github.com/shantanugoel/atarang/blob/main/THIRD_PARTY_LICENSES.md">Licences</a>
+    </nav>
+  </div>
+</footer>
+
+<script>
+(() => {
+  "use strict";
+
+  /* ── the console ─────────────────────────────────────────
+     Six channel strips. Each one is a real toggle: muting drops
+     the fader, freezes the meter and lights the coral LED. The
+     caption underneath narrates whatever the visitor just did. */
+
+  const STEMS = [
+    { id:"vocals", name:"Vocals", c:"var(--coral)",   level:.9  },
+    { id:"drums",  name:"Drums",  c:"var(--amber)",   level:.78 },
+    { id:"bass",   name:"Bass",   c:"var(--blue)",    level:.84 },
+    { id:"guitar", name:"Guitar", c:"var(--teal)",    level:.7  },
+    { id:"piano",  name:"Piano",  c:"var(--magenta)", level:.66 },
+    { id:"other",  name:"Other",  c:"var(--violet)",  level:.74 }
+  ];
+
+  const strips = document.getElementById("strips");
+  const cap    = document.getElementById("cap");
+  const preset = document.getElementById("preset");
+  if (!strips || !cap || !preset) return;
+
+  STEMS.forEach(s => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "strip";
+    b.dataset.stem = s.name;
+    b.setAttribute("aria-pressed", "false");
+    b.setAttribute("aria-label", s.name + " stem, playing. Activate to mute.");
+    b.style.setProperty("--rest", String(s.level));
+    b.style.setProperty("--c", s.c);
+    b.innerHTML =
+      '<span class="meter"><span class="meter-level"><span class="meter-sig"></span></span>' +
+      '<span class="cap"></span></span>' +
+      '<span class="strip-label">' + s.name + '</span><span class="led"></span>';
+    strips.appendChild(b);
+  });
+
+  const all = [...strips.querySelectorAll(".strip")];
+
+  const setMuted = (el, muted) => {
+    el.setAttribute("aria-pressed", String(muted));
+    el.setAttribute("aria-label", el.dataset.stem + " stem, " +
+      (muted ? "muted. Activate to unmute." : "playing. Activate to mute."));
+  };
+
+  const refresh = () => {
+    const out = all.filter(el => el.getAttribute("aria-pressed") === "true");
+    if (out.length === 0) {
+      cap.textContent = "Six stems. Every one under your control.";
+    } else if (out.length === 1) {
+      cap.innerHTML = "<b>" + out[0].dataset.stem + "</b> is out. That part is yours now.";
+    } else {
+      cap.innerHTML = "<b>" + out.length + " stems</b> out. That much more room for you.";
+    }
+    const playAlong = out.length === 1 && out[0].dataset.stem === "Vocals";
+    preset.dataset.on = String(playAlong);
+    preset.textContent = playAlong ? "Full mix" : "Play along";
+  };
+
+  strips.addEventListener("click", e => {
+    const el = e.target.closest(".strip");
+    if (!el) return;
+    setMuted(el, el.getAttribute("aria-pressed") !== "true");
+    refresh();
+  });
+
+  preset.addEventListener("click", () => {
+    const toPlayAlong = preset.dataset.on !== "true";
+    all.forEach(el => setMuted(el, toPlayAlong && el.dataset.stem === "Vocals"));
+    refresh();
+  });
+
+  /* ── scroll reveals ──────────────────────────────────────── */
+  const items = document.querySelectorAll(".rv");
+  if (!window.IntersectionObserver ||
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    items.forEach(el => el.classList.add("in"));
+    return;
+  }
+  /* A fixed pixel margin, not a percentage: on a very tall viewport a
+     percentage carves a dead zone the last section can never scroll past. */
+  const io = new IntersectionObserver((entries, obs) => {
+    entries.forEach(en => {
+      if (!en.isIntersecting) return;
+      en.target.classList.add("in");
+      obs.unobserve(en.target);
+    });
+  }, { rootMargin: "0px 0px -80px 0px", threshold: .01 });
+  items.forEach(el => io.observe(el));
+
+  /* failsafe — nothing stays invisible just because an observer misfired */
+  setTimeout(() => items.forEach(el => el.classList.add("in")), 4000);
+})();
+</script>
+</body>
+</html>
