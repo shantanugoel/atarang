@@ -209,14 +209,15 @@ was never released.
 - [x] No `@unchecked Sendable` remains without a written invariant.
 - [x] No hand-written `Codable` conformance remains whose only purpose is
       tolerating a pre-release format.
-- [!] Playback, recording, separation, export, and Library behaviour are
-      unchanged. **This was false as written.** The device pass deferred here was
-      finally run during Phase 1 and found that this phase's `SWIFT_VERSION` flip
-      broke recording completely — see the Outcome below. Playback, looping,
-      recording, export, take playback, Library browsing, route changes,
-      interruption, lock, and background are now all confirmed on an iPhone 16
-      Pro Max. **Separation was never exercised on device** and remains
-      unverified for this phase.
+- [~] Playback, recording, separation, export, and Library behaviour are
+      unchanged. Confirmed on an iPhone 16 Pro Max: playback, looping, recording,
+      export, take playback, Library browsing, route changes, interruption, lock,
+      and background. **Separation is the one item never exercised on device**;
+      it is the only thing keeping this from `[x]`, and nothing is blocked on it.
+      Note that this criterion was previously signed off at `[~]` on unit tests
+      and a simulator launch alone, and was false at the time — the device pass
+      found that this phase's `SWIFT_VERSION` flip broke recording entirely. See
+      the Outcome below.
 
 ### Outcome
 
