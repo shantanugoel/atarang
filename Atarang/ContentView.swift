@@ -168,6 +168,10 @@ struct ContentView: View {
             UIApplication.shared.isIdleTimerDisabled = keepAwake
         }
         .onChange(of: scenePhase) { _, phase in
+            player.logDiagnosticEvent(
+                "scenePhase",
+                detail: "phase=\(phase) isPlaying=\(player.isPlaying)"
+            )
             // The throttled practice writes must land before the app can be
             // suspended or killed in the background.
             if phase != .active { player.flushPracticeSettings() }

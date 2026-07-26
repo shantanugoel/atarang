@@ -138,7 +138,7 @@ final class StemPlayer {
     /// also where the next pass's metronome clicks begin.
     @ObservationIgnored private var scheduledRenderDuration: TimeInterval = 0
 
-    @ObservationIgnored private var microphoneFile: AVAudioFile?
+    @ObservationIgnored private var microphoneWriter: AudioTapFileWriter?
     @ObservationIgnored private var backingWriter: AudioTapFileWriter?
     @ObservationIgnored private var microphoneURL: URL?
     @ObservationIgnored private var backingURL: URL?
@@ -164,6 +164,9 @@ final class StemPlayer {
         subsystem: "com.shantanugoel.atarang.Atarang",
         category: "Audio"
     )
+    #if DEBUG
+    @ObservationIgnored private let diagnostics = PlaybackDiagnostics()
+    #endif
     private static let microphoneLevelDefaultsKey = "recordingMicrophoneLevel"
     private static let backingLevelDefaultsKey = "recordingBackingLevel"
     private static let stemLevelDefaultsPrefix = "stemLevels."
@@ -442,6 +445,7 @@ final class StemPlayer {
         isPlaying = true
         beginTimer()
         publishNowPlaying()
+        logDiagnosticEvent("play", detail: "position=\(String(format: "%.3f", position))")
     }
 
     /// The audio the engine is rendering now reaches the speaker one output
@@ -483,6 +487,7 @@ final class StemPlayer {
         playbackState.seek(to: newPosition)
         persistPracticeSettings()
         publishNowPlaying()
+        logDiagnosticEvent("seek", detail: "to=\(String(format: "%.3f", position))")
         if shouldResume { requestPlayback() }
     }
 
@@ -970,10 +975,17 @@ final class StemPlayer {
             throw PlayerError.noMicrophone
         }
 
-        let micFile: AVAudioFile
+        // Both taps must hold their file behind a `Sendable` type. A bare
+        // `AVAudioFile` capture makes Swift infer the tap closure as
+        // main-actor isolated — because the closure is written inside a
+        // `@MainActor` method and a non-`Sendable` capture cannot cross actors
+        // — and the runtime then traps the moment AVFAudio calls it on the
+        // render thread. Marking the closures `@Sendable` keeps that inference
+        // from happening at all.
+        let micWriter: AudioTapFileWriter
         do {
-            micFile = try AVAudioFile(
-                forWriting: micURL,
+            micWriter = try AudioTapFileWriter(
+                url: micURL,
                 settings: microphoneFormat.settings,
                 commonFormat: .pcmFormatFloat32,
                 interleaved: false
@@ -984,8 +996,12 @@ final class StemPlayer {
         let mixWriter = AudioTapFileWriter(url: mixURL)
 
         let takeID = recording.id
-        inputNode.installTap(onBus: 0, bufferSize: 4_096, format: microphoneFormat) { [weak self] buffer, _ in
-            do { try micFile.write(from: buffer) }
+        inputNode.installTap(
+            onBus: 0,
+            bufferSize: 4_096,
+            format: microphoneFormat
+        ) { @Sendable [weak self] buffer, _ in
+            do { try micWriter.write(buffer) }
             catch { print("Atarang microphone write failed: \(error)") }
             let level = Self.meterLevel(for: buffer)
             Task { @MainActor [weak self] in
@@ -996,12 +1012,16 @@ final class StemPlayer {
         // The mixer format reported before engine.start() can still describe
         // the old A2DP route. A nil tap format follows the actual render
         // format, and the writer creates the CAF from the first real buffer.
-        engine.mainMixerNode.installTap(onBus: 0, bufferSize: 4_096, format: nil) { buffer, _ in
+        engine.mainMixerNode.installTap(
+            onBus: 0,
+            bufferSize: 4_096,
+            format: nil
+        ) { @Sendable buffer, _ in
             do { try mixWriter.write(buffer) }
             catch { print("Atarang backing write failed: \(error)") }
         }
 
-        microphoneFile = micFile
+        microphoneWriter = micWriter
         backingWriter = mixWriter
         microphoneURL = micURL
         backingURL = mixURL
@@ -1137,7 +1157,8 @@ final class StemPlayer {
     private func removeRecordingTaps() {
         engine.inputNode.removeTap(onBus: 0)
         engine.mainMixerNode.removeTap(onBus: 0)
-        microphoneFile = nil
+        microphoneWriter?.finish()
+        microphoneWriter = nil
         backingWriter?.finish()
         backingWriter = nil
         recordingStartedAt = nil
@@ -1317,6 +1338,7 @@ final class StemPlayer {
         isPlaying = false
         persistPracticeSettings()
         publishNowPlaying()
+        logDiagnosticEvent("pause", detail: "position=\(String(format: "%.3f", position))")
     }
 
     private func stop(resetPosition: Bool, releaseSession: Bool = false) {
@@ -1353,6 +1375,30 @@ final class StemPlayer {
     @objc private func timerFired() {
         updatePosition()
         refillMetronomeClicks()
+        #if DEBUG
+        diagnostics.tick(
+            activeStems: activeStems,
+            nodes: nodes,
+            position: position,
+            isPlaying: isPlaying,
+            outputLatency: outputLatency
+        )
+        #endif
+    }
+
+    /// Records a labelled point in the device verification sequence.
+    /// Compiles out of Release builds.
+    func logDiagnosticEvent(_ name: String, detail: String = "") {
+        #if DEBUG
+        diagnostics.event(name, detail: detail)
+        #endif
+    }
+
+    /// Prints and resets the running worst-case drift and tick-gap figures.
+    func summarizeDiagnostics(_ label: String) {
+        #if DEBUG
+        diagnostics.summarize(label)
+        #endif
     }
 
     private func applyPlaybackTransform() {
@@ -1456,6 +1502,7 @@ final class StemPlayer {
               generation == playbackState.playbackGeneration,
               playbackState.loopRange != nil else { return }
         completedRepetitions += 1
+        logDiagnosticEvent("loopWrap", detail: "repetition=\(completedRepetitions)")
         if practiceSettings.repetitionTarget > 0,
            completedRepetitions >= practiceSettings.repetitionTarget {
             playbackState.seek(to: playbackState.loopRange?.end ?? position)
@@ -1864,6 +1911,10 @@ final class StemPlayer {
 
     private func processInterruption(type rawType: UInt, options rawOptions: UInt) {
         guard let type = AVAudioSession.InterruptionType(rawValue: rawType) else { return }
+        logDiagnosticEvent(
+            "interruption",
+            detail: "type=\(type == .began ? "began" : "ended") wasPlaying=\(isPlaying)"
+        )
         switch type {
         case .began:
             interruptionShouldResume = isPlaying && !isRecording
@@ -1890,6 +1941,10 @@ final class StemPlayer {
     }
 
     private func processRouteChange(reason rawReason: UInt) {
+        logDiagnosticEvent(
+            "routeChange",
+            detail: "reason=\(rawReason) isPlaying=\(isPlaying)"
+        )
         // Any route change can move output latency by more than 100 ms —
         // AirPods against the built-in speaker is the usual jump — so refresh
         // the compensation even for changes that do not stop playback.
@@ -1909,6 +1964,10 @@ final class StemPlayer {
     }
 
     private func processEngineConfigurationChange() {
+        logDiagnosticEvent(
+            "engineConfigChange",
+            detail: "isPlaying=\(isPlaying) isRecording=\(isRecording) engineRunning=\(engine.isRunning)"
+        )
         if isRecording {
             // AVFAudio can deliver the configuration notification produced by
             // the A2DP-to-HFP handoff after engine.start() has already rebuilt
@@ -1942,6 +2001,24 @@ private final class AudioTapFileWriter: @unchecked Sendable {
 
     init(url: URL) {
         self.url = url
+    }
+
+    /// Creates the destination immediately, for callers that already know the
+    /// format and want a write failure surfaced before the take starts rather
+    /// than from inside a render callback.
+    init(
+        url: URL,
+        settings: [String: Any],
+        commonFormat: AVAudioCommonFormat,
+        interleaved: Bool
+    ) throws {
+        self.url = url
+        file = try AVAudioFile(
+            forWriting: url,
+            settings: settings,
+            commonFormat: commonFormat,
+            interleaved: interleaved
+        )
     }
 
     func write(_ buffer: AVAudioPCMBuffer) throws {
