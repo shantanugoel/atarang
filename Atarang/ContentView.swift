@@ -516,7 +516,16 @@ struct ContentView: View {
             }
 
             VStack(spacing: 3) {
-                Slider(value: Binding(get: { player.position }, set: { player.seek(to: $0) }), in: 0...max(player.duration, 0.01))
+                Slider(
+                    value: Binding(
+                        get: { player.position },
+                        set: { player.updateScrubPosition($0) }
+                    ),
+                    in: 0...max(player.duration, 0.01),
+                    onEditingChanged: { isEditing in
+                        if isEditing { player.beginScrubbing() } else { player.endScrubbing() }
+                    }
+                )
                     .accessibilityLabel("Playback position")
                     .accessibilityValue("\(time(player.position)) of \(time(player.duration))")
                 PlayheadView(player: player) { position in
@@ -866,9 +875,12 @@ struct ContentView: View {
                 Slider(
                     value: Binding(
                         get: { player.position },
-                        set: { player.seek(to: $0) }
+                        set: { player.updateScrubPosition($0) }
                     ),
-                    in: 0...max(player.duration, 0.01)
+                    in: 0...max(player.duration, 0.01),
+                    onEditingChanged: { isEditing in
+                        if isEditing { player.beginScrubbing() } else { player.endScrubbing() }
+                    }
                 )
                 GeometryReader { proxy in
                     let width = max(0, proxy.size.width - 28)
@@ -1019,7 +1031,13 @@ struct ContentView: View {
                     get: { value },
                     set: { newValue in MainActor.assumeIsolated { setValue(newValue) } }
                 ),
-                in: range
+                in: range,
+                // An enabled loop makes every boundary change restart
+                // playback; scrubbing collapses that to one stop and one
+                // resume per gesture.
+                onEditingChanged: { isEditing in
+                    if isEditing { player.beginScrubbing() } else { player.endScrubbing() }
+                }
             )
             .tint(color)
             .accessibilityLabel("Loop boundary \(title)")

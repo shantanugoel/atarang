@@ -137,6 +137,10 @@ final class StemPlayer {
     /// Render seconds queued onto the stems since the last `play()`, which is
     /// also where the next pass's metronome clicks begin.
     @ObservationIgnored private var scheduledRenderDuration: TimeInterval = 0
+    @ObservationIgnored private var scrubShouldResume = false
+    /// Who asked for the most recent transport change, so a stray pause can be
+    /// traced to its origin instead of guessed at.
+    @ObservationIgnored private var transportSource = TransportSource.internalLogic
 
     @ObservationIgnored private var microphoneWriter: AudioTapFileWriter?
     @ObservationIgnored private var backingWriter: AudioTapFileWriter?
@@ -231,11 +235,11 @@ final class StemPlayer {
     private func configureRemoteCommands() {
         nowPlaying.onPlay = { [weak self] in
             guard let self, self.isLoaded, !self.isRecording, !self.isPlaying else { return }
-            self.togglePlayback()
+            self.togglePlayback(source: .remote)
         }
         nowPlaying.onPause = { [weak self] in
             guard let self, self.isPlaying || self.isCountingIn else { return }
-            self.pause()
+            self.pause(source: .remote)
         }
         nowPlaying.onSeek = { [weak self] position in
             self?.seek(to: position)
@@ -319,10 +323,11 @@ final class StemPlayer {
         publishNowPlaying()
     }
 
-    func togglePlayback() {
+    func togglePlayback(source: TransportSource = .ui) {
         guard !isRecording else { return }
+        transportSource = source
         if isPlaying || isCountingIn {
-            pause()
+            pause(source: source)
         } else {
             startPlaybackWithCountIn()
         }
@@ -345,7 +350,8 @@ final class StemPlayer {
     /// Starts normal playback and retries once after a transient Core Audio I/O
     /// startup failure. Session category changes can briefly leave the hardware
     /// route unavailable even though activation itself succeeded.
-    func requestPlayback() {
+    func requestPlayback(source: TransportSource = .ui) {
+        transportSource = source
         playbackRequestID += 1
         let requestID = playbackRequestID
         alertMessage = nil
@@ -445,7 +451,10 @@ final class StemPlayer {
         isPlaying = true
         beginTimer()
         publishNowPlaying()
-        logDiagnosticEvent("play", detail: "position=\(String(format: "%.3f", position))")
+        logDiagnosticEvent(
+            "play",
+            detail: String(format: "position=%.3f source=%@", position, transportSource.rawValue)
+        )
     }
 
     /// The audio the engine is rendering now reaches the speaker one output
@@ -457,11 +466,11 @@ final class StemPlayer {
         outputLatency = latency.isFinite ? max(0, latency) : 0
     }
 
-    func pause() {
+    func pause(source: TransportSource = .ui) {
         guard !isRecording else { return }
         cancelPendingPlaybackRequest()
         cancelCountIn()
-        pausePlayback()
+        pausePlayback(source: source)
     }
 
     /// Releases the audio engine while preserving the current playhead.
@@ -476,6 +485,51 @@ final class StemPlayer {
         updatePosition()
         stop(resetPosition: false, releaseSession: true)
         flushPracticeSettings()
+    }
+
+    /// Whether a continuous drag — of the playhead or a loop boundary — is in
+    /// progress.
+    private(set) var isScrubbing = false
+
+    /// Begins a drag: stops the engine **once** and remembers whether to
+    /// resume when the finger lifts.
+    ///
+    /// Without this, every value a `Slider` emits during a drag reached
+    /// `seek`, and each one paused, rescheduled, and restarted the whole
+    /// engine — around thirty stop/start cycles for one gesture, which is
+    /// silent while dragging and clicks audibly on release.
+    func beginScrubbing() {
+        guard !isRecording, !isScrubbing else { return }
+        isScrubbing = true
+        scrubShouldResume = isPlaying
+        cancelPendingPlaybackRequest()
+        cancelCountIn()
+        if isPlaying { pausePlayback(source: .scrub) }
+    }
+
+    /// Moves the playhead during a drag. Touches media state only — no
+    /// scheduling, no engine work.
+    func updateScrubPosition(_ newPosition: TimeInterval) {
+        guard isScrubbing else {
+            seek(to: newPosition)
+            return
+        }
+        playbackState.seek(to: newPosition)
+    }
+
+    /// Ends a drag: persists once, republishes once, and resumes once.
+    func endScrubbing() {
+        guard isScrubbing else { return }
+        isScrubbing = false
+        let shouldResume = scrubShouldResume
+        scrubShouldResume = false
+        persistPracticeSettings()
+        publishNowPlaying()
+        logDiagnosticEvent(
+            "scrubEnd",
+            detail: String(format: "position=%.3f resume=%@", position, shouldResume ? "yes" : "no")
+        )
+        if shouldResume { requestPlayback() }
     }
 
     func seek(to newPosition: TimeInterval) {
@@ -1328,7 +1382,8 @@ final class StemPlayer {
         return Double(file.length) / file.processingFormat.sampleRate
     }
 
-    private func pausePlayback() {
+    private func pausePlayback(source: TransportSource = .internalLogic) {
+        transportSource = source
         updatePosition()
         playbackState.beginNewGeneration()
         for node in nodes.values { node.stop() }
@@ -1338,7 +1393,11 @@ final class StemPlayer {
         isPlaying = false
         persistPracticeSettings()
         publishNowPlaying()
-        logDiagnosticEvent("pause", detail: "position=\(String(format: "%.3f", position))")
+        logDiagnosticEvent(
+            "pause",
+            detail: String(format: "position=%.3f source=%@", position, transportSource.rawValue)
+        )
+        transportSource = .internalLogic
     }
 
     private func stop(resetPosition: Bool, releaseSession: Bool = false) {
@@ -1919,7 +1978,7 @@ final class StemPlayer {
         case .began:
             interruptionShouldResume = isPlaying && !isRecording
             if isRecording { stopRecording() }
-            pausePlayback()
+            pausePlayback(source: .interruption)
         case .ended:
             let options = AVAudioSession.InterruptionOptions(rawValue: rawOptions)
             if interruptionShouldResume, options.contains(.shouldResume) {
@@ -1954,7 +2013,7 @@ final class StemPlayer {
             return
         }
         if isRecording { stopRecording() }
-        pausePlayback()
+        pausePlayback(source: .routeChange)
     }
 
     @objc nonisolated private func handleEngineConfigurationChange() {
@@ -2040,6 +2099,17 @@ private final class AudioTapFileWriter: @unchecked Sendable {
         file = nil
         lock.unlock()
     }
+}
+
+/// Where a transport change came from. Diagnostic only, but it is the
+/// difference between "something paused us" and a fixable bug.
+enum TransportSource: String, Sendable {
+    case ui
+    case remote
+    case scrub
+    case interruption
+    case routeChange
+    case internalLogic = "internal"
 }
 
 enum PracticeMixPreset {
