@@ -55,8 +55,12 @@ final class NowPlayingController {
         lastSnapshot = snapshot
         var info: [String: Any] = [
             MPMediaItemPropertyTitle: snapshot.title.isEmpty ? "Atarang" : snapshot.title,
-            MPMediaItemPropertyPlaybackDuration: snapshot.duration,
-            MPNowPlayingInfoPropertyElapsedPlaybackTime: snapshot.position,
+            // The simulator's lock screen renders the scrubber with both times
+            // as "--:--" with or without this, but an explicit media type is
+            // what the API expects for audio. Confirm the times on a device.
+            MPNowPlayingInfoPropertyMediaType: MPNowPlayingInfoMediaType.audio.rawValue,
+            MPMediaItemPropertyPlaybackDuration: NSNumber(value: snapshot.duration),
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: NSNumber(value: snapshot.position),
             // Position is in source seconds, which advance at `rate` against
             // the wall clock, so the practice rate is also the rate the system
             // should extrapolate the lock-screen timer with.
