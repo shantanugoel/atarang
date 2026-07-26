@@ -5,10 +5,11 @@ import UIKit
 struct ContentView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.scenePhase) private var scenePhase
     @AppStorage("didExplainRecording") private var didExplainRecording = false
     @AppStorage("hasUsedStudio") private var hasUsedStudio = false
     @StateObject private var model = SeparationModel()
-    @StateObject private var player = StemPlayer()
+    @State private var player = StemPlayer()
     @StateObject private var history = HistoryStore()
     @StateObject private var historyAudioPlayer = HistoryAudioPlayer()
     @StateObject private var takePreviewPlayer = RecordingMixPreviewPlayer()
@@ -163,6 +164,16 @@ struct ContentView: View {
         }
         .onChange(of: youtubeURL) { refreshExistingSeparation() }
         .onChange(of: model.selectedModel) { refreshExistingSeparation() }
+        .onChange(of: shouldKeepScreenAwake, initial: true) { _, keepAwake in
+            UIApplication.shared.isIdleTimerDisabled = keepAwake
+        }
+        .onChange(of: scenePhase) { _, phase in
+            // The throttled practice writes must land before the app can be
+            // suspended or killed in the background.
+            if phase != .active { player.flushPracticeSettings() }
+            if phase == .background { UIApplication.shared.isIdleTimerDisabled = false }
+        }
+        .onDisappear { UIApplication.shared.isIdleTimerDisabled = false }
         .onOpenURL(perform: handleIncomingURL)
         .onReceive(
             NotificationCenter.default.publisher(
@@ -177,6 +188,18 @@ struct ContentView: View {
             didRunDebugURL = true
             await separate(debugURL, force: false)
         }
+    }
+
+    /// Playing along with an instrument means long stretches without touching
+    /// the screen, and the auto-lock cutting the song off mid-practice is the
+    /// worst moment for it to happen. Scoped to Studio actually running
+    /// something, so a paused song or another tab still lets the screen sleep.
+    /// Phase 6's full-screen sing-along mode extends this rather than
+    /// replacing it.
+    private var shouldKeepScreenAwake: Bool {
+        selectedTab == .studio
+            && player.isLoaded
+            && (player.isPlaying || player.isRecording || player.isCountingIn)
     }
 
     @MainActor
@@ -492,10 +515,12 @@ struct ContentView: View {
                 Slider(value: Binding(get: { player.position }, set: { player.seek(to: $0) }), in: 0...max(player.duration, 0.01))
                     .accessibilityLabel("Playback position")
                     .accessibilityValue("\(time(player.position)) of \(time(player.duration))")
-                HStack {
-                    Text(time(player.position))
-                    Spacer()
-                    Text("−\(time(max(0, player.duration - player.position)))")
+                PlayheadView(player: player) { position in
+                    HStack {
+                        Text(time(position))
+                        Spacer()
+                        Text("−\(time(max(0, player.duration - position)))")
+                    }
                 }
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
@@ -842,9 +867,9 @@ struct ContentView: View {
                     in: 0...max(player.duration, 0.01)
                 )
                 GeometryReader { proxy in
+                    let width = max(0, proxy.size.width - 28)
                     if let loop = player.practiceSettings.loopRange,
                        player.duration > 0 {
-                        let width = max(0, proxy.size.width - 28)
                         let aX = 14 + width * loop.start / player.duration
                         let bX = 14 + width * loop.end / player.duration
                         Rectangle()
@@ -856,6 +881,17 @@ struct ContentView: View {
                             .frame(width: 3, height: 20)
                             .position(x: bX, y: proxy.size.height / 2)
                     }
+                    if player.duration > 0 {
+                        PlayheadView(player: player) { position in
+                            Rectangle()
+                                .fill(Color.primary.opacity(0.55))
+                                .frame(width: 1.5, height: 26)
+                                .position(
+                                    x: 14 + width * position / player.duration,
+                                    y: proxy.size.height / 2
+                                )
+                        }
+                    }
                 }
                 .allowsHitTesting(false)
             }
@@ -864,17 +900,19 @@ struct ContentView: View {
             .accessibilityLabel("Practice timeline")
             .accessibilityValue("\(time(player.position)) of \(time(player.duration))")
 
-            HStack {
-                Text(time(player.position))
-                Spacer()
-                if let loop = player.practiceSettings.loopRange {
-                    Text("A \(time(loop.start))")
-                        .foregroundStyle(.green)
-                    Text("B \(time(loop.end))")
-                        .foregroundStyle(.orange)
+            PlayheadView(player: player) { position in
+                HStack {
+                    Text(time(position))
+                    Spacer()
+                    if let loop = player.practiceSettings.loopRange {
+                        Text("A \(time(loop.start))")
+                            .foregroundStyle(.green)
+                        Text("B \(time(loop.end))")
+                            .foregroundStyle(.orange)
+                    }
+                    Spacer()
+                    Text("−\(time(max(0, player.duration - position)))")
                 }
-                Spacer()
-                Text("−\(time(max(0, player.duration - player.position)))")
             }
             .font(.caption.monospacedDigit())
             .foregroundStyle(.secondary)
@@ -1306,15 +1344,17 @@ struct ContentView: View {
                 )
                     .font(.caption.weight(.semibold))
                     .lineLimit(1)
-                Text(
-                    player.isRecording
-                        ? time(player.recordingDuration)
-                        : (
-                            player.isCountingIn
-                                ? "\(player.countInRemaining)"
-                                : "\(time(player.position)) / \(time(player.duration))"
-                        )
-                )
+                PlayheadView(player: player) { position in
+                    Text(
+                        player.isRecording
+                            ? time(player.recordingDuration)
+                            : (
+                                player.isCountingIn
+                                    ? "\(player.countInRemaining)"
+                                    : "\(time(position)) / \(time(player.duration))"
+                            )
+                    )
+                }
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(player.isRecording ? .red : .secondary)
             }

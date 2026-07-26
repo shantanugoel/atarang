@@ -40,6 +40,75 @@ final class PlaybackStateTests: XCTestCase {
         XCTAssertEqual(position, 3, accuracy: 0.000_001)
     }
 
+    func testOutputLatencyIsSubtractedFromTheReportedPosition() {
+        var state = PlaybackState()
+        state.load(duration: 100)
+
+        let uncompensated = state.calculatedPosition(
+            renderSampleTime: 48_000,
+            sampleRate: 48_000,
+            anchorPosition: 10
+        )
+        let compensated = state.calculatedPosition(
+            renderSampleTime: 48_000,
+            sampleRate: 48_000,
+            anchorPosition: 10,
+            outputLatency: 0.15
+        )
+
+        XCTAssertEqual(uncompensated, 11, accuracy: 0.000_001)
+        XCTAssertEqual(compensated, 10.85, accuracy: 0.000_001)
+    }
+
+    func testLatencyCompensationIsExpressedInSourceSeconds() {
+        // At half speed a 200 ms output delay is only 100 ms of song.
+        var state = PlaybackState()
+        state.load(duration: 100)
+        state.setRate(0.5)
+
+        let position = state.calculatedPosition(
+            renderSampleTime: 96_000,
+            sampleRate: 48_000,
+            anchorPosition: 10,
+            outputLatency: 0.2
+        )
+
+        XCTAssertEqual(position, 10.9, accuracy: 0.000_001)
+    }
+
+    func testLatencyCompensationNeverRunsThePositionBackwards() {
+        var state = PlaybackState()
+        state.load(duration: 100)
+        state.seek(to: 10)
+
+        let position = state.calculatedPosition(
+            renderSampleTime: 480,
+            sampleRate: 48_000,
+            anchorPosition: 10,
+            outputLatency: 0.25
+        )
+
+        XCTAssertEqual(position, 10, accuracy: 0.000_001)
+    }
+
+    func testInvalidLatencyIsIgnored() {
+        var state = PlaybackState()
+        state.load(duration: 100)
+
+        for latency in [TimeInterval.nan, -1, .infinity] {
+            XCTAssertEqual(
+                state.calculatedPosition(
+                    renderSampleTime: 48_000,
+                    sampleRate: 48_000,
+                    anchorPosition: 10,
+                    outputLatency: latency
+                ),
+                11,
+                accuracy: 0.000_001
+            )
+        }
+    }
+
     func testChangingLoopStartsANewPlaybackGeneration() {
         var state = PlaybackState()
         state.load(duration: 20)

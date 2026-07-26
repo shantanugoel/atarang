@@ -99,24 +99,40 @@ struct PlaybackState: Equatable, Sendable {
     mutating func updatePosition(
         renderSampleTime: Int64,
         sampleRate: Double,
-        anchorPosition: TimeInterval
+        anchorPosition: TimeInterval,
+        outputLatency: TimeInterval = 0
     ) {
         position = calculatedPosition(
             renderSampleTime: renderSampleTime,
             sampleRate: sampleRate,
-            anchorPosition: anchorPosition
+            anchorPosition: anchorPosition,
+            outputLatency: outputLatency
         )
     }
 
+    /// The playhead implied by the render clock, in source-song seconds.
+    ///
+    /// `outputLatency` is how far ahead of the speaker the engine renders —
+    /// the audio session's output latency plus its I/O buffer. Subtracting it
+    /// makes the reported position describe what the user is *hearing* rather
+    /// than what has been handed to the hardware, which on Bluetooth routes
+    /// differ by well over 100 ms. It is given in render seconds and scaled by
+    /// `rate` into source seconds, like the rest of the elapsed time.
     func calculatedPosition(
         renderSampleTime: Int64,
         sampleRate: Double,
-        anchorPosition: TimeInterval
+        anchorPosition: TimeInterval,
+        outputLatency: TimeInterval = 0
     ) -> TimeInterval {
         guard sampleRate.isFinite, sampleRate > 0, anchorPosition.isFinite else {
             return position
         }
-        let elapsedMediaTime = max(0, Double(renderSampleTime) / sampleRate) * Double(rate)
+        let latency = outputLatency.isFinite ? max(0, outputLatency) : 0
+        let elapsedRenderTime = max(
+            0,
+            Double(renderSampleTime) / sampleRate - latency
+        )
+        let elapsedMediaTime = elapsedRenderTime * Double(rate)
         let unwrappedPosition = anchorPosition + elapsedMediaTime
         if let loopRange, unwrappedPosition >= loopRange.end {
             let offset = (unwrappedPosition - loopRange.start)

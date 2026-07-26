@@ -1,48 +1,68 @@
+import Accelerate
 import AVFoundation
 import AudioToolbox
-import Combine
 import Foundation
+import Observation
 import OSLog
 
 @MainActor
-final class StemPlayer: ObservableObject {
-    @Published private(set) var isLoaded = false
-    @Published private(set) var isPlaying = false
-    @Published private(set) var isRecording = false
-    @Published private(set) var isExporting = false
-    @Published private(set) var playbackState = PlaybackState()
-    @Published private(set) var recordingDuration: TimeInterval = 0
-    @Published private(set) var title = ""
-    @Published private(set) var separationModel: SeparationModelKind = .htdemucs
-    @Published private(set) var activeStems: [StemKind] = []
-    @Published private(set) var recordedTake: RecordedTake?
-    @Published private(set) var shareURL: URL?
-    @Published private(set) var practiceSettings = SongPracticeSettings()
-    @Published private(set) var countInRemaining = 0
-    @Published private(set) var completedRepetitions = 0
-    @Published private(set) var isTempoRampHeld = false
-    @Published private(set) var isLoopTakeRecording = false
-    @Published var recordingMicrophoneLevel: Float {
-        didSet {
-            UserDefaults.standard.set(
-                recordingMicrophoneLevel,
-                forKey: Self.microphoneLevelDefaultsKey
-            )
+@Observable
+final class StemPlayer {
+    private(set) var isLoaded = false
+    private(set) var isPlaying = false
+    private(set) var isRecording = false
+    private(set) var isExporting = false
+    private(set) var playbackState = PlaybackState()
+    private(set) var recordingDuration: TimeInterval = 0
+    private(set) var title = ""
+    private(set) var separationModel: SeparationModelKind = .htdemucs
+    private(set) var activeStems: [StemKind] = []
+    private(set) var recordedTake: RecordedTake?
+    private(set) var shareURL: URL?
+    private(set) var practiceSettings = SongPracticeSettings()
+    private(set) var countInRemaining = 0
+    private(set) var completedRepetitions = 0
+    private(set) var isTempoRampHeld = false
+    private(set) var isLoopTakeRecording = false
+
+    /// Computed rather than stored so the `UserDefaults` write happens on
+    /// assignment. `@Observable` rewrites stored properties into accessors, so
+    /// a `didSet` cannot be used; `access` and `withMutation` reproduce the
+    /// tracking the macro would otherwise generate.
+    var recordingMicrophoneLevel: Float {
+        get {
+            access(keyPath: \.recordingMicrophoneLevel)
+            return storedRecordingMicrophoneLevel
+        }
+        set {
+            withMutation(keyPath: \.recordingMicrophoneLevel) {
+                storedRecordingMicrophoneLevel = newValue
+            }
+            UserDefaults.standard.set(newValue, forKey: Self.microphoneLevelDefaultsKey)
         }
     }
-    @Published var recordingBackingLevel: Float {
-        didSet {
-            UserDefaults.standard.set(
-                recordingBackingLevel,
-                forKey: Self.backingLevelDefaultsKey
-            )
+
+    var recordingBackingLevel: Float {
+        get {
+            access(keyPath: \.recordingBackingLevel)
+            return storedRecordingBackingLevel
+        }
+        set {
+            withMutation(keyPath: \.recordingBackingLevel) {
+                storedRecordingBackingLevel = newValue
+            }
+            UserDefaults.standard.set(newValue, forKey: Self.backingLevelDefaultsKey)
         }
     }
-    @Published private(set) var microphoneMeterLevel: Float = 0
-    @Published private(set) var isEchoCancellationActive = false
-    @Published private(set) var soloedStem: StemKind?
-    @Published private(set) var microphonePermissionDenied = false
-    @Published var alertMessage: String?
+
+    private(set) var microphoneMeterLevel: Float = 0
+    private(set) var isEchoCancellationActive = false
+    private(set) var soloedStem: StemKind?
+    private(set) var microphonePermissionDenied = false
+    var alertMessage: String?
+
+    @ObservationIgnored private var storedRecordingMicrophoneLevel: Float
+    @ObservationIgnored private var storedRecordingBackingLevel: Float
 
     var position: TimeInterval { playbackState.position }
     var duration: TimeInterval { playbackState.duration }
@@ -55,47 +75,111 @@ final class StemPlayer: ObservableObject {
         return max(0, practiceSettings.repetitionTarget - completedRepetitions)
     }
 
-    private var engine = AVAudioEngine()
-    private var metronomeNode = AVAudioPlayerNode()
-    private var nodes: [StemKind: AVAudioPlayerNode] = [:]
-    private var timePitchNodes: [StemKind: AVAudioUnitTimePitch] = [:]
-    private var files: [StemKind: AVAudioFile] = [:]
+    /// The playhead, computed from the render clock at the moment it is asked
+    /// for rather than at the last timer tick.
+    ///
+    /// This is the display-rate path: a `TimelineView(.animation)` or a
+    /// `CADisplayLink` can call it every frame and get a fresh, latency-
+    /// compensated value without the player having to publish one. Keep the
+    /// callers small — reading it observes `isPlaying` and `playbackState`, so
+    /// the view that calls it should be a leaf rather than a whole screen.
+    /// `position` remains the timer-rate value for everything else.
+    func currentPosition() -> TimeInterval {
+        guard isPlaying,
+              let node = timingNode(),
+              let renderTime = node.lastRenderTime,
+              let playerTime = node.playerTime(forNodeTime: renderTime) else {
+            return playbackState.position
+        }
+        return playbackState.calculatedPosition(
+            renderSampleTime: playerTime.sampleTime,
+            sampleRate: playerTime.sampleRate,
+            anchorPosition: renderAnchorPosition,
+            outputLatency: outputLatency
+        )
+    }
+
+    private func timingNode() -> AVAudioPlayerNode? {
+        guard let stem = activeTimingStem ?? activeStems.first else { return nil }
+        return nodes[stem]
+    }
+
+    /// Render seconds elapsed since the current `play()` started, taken from
+    /// the timing stem so the metronome shares one clock with the stems.
+    private func currentRenderElapsed() -> TimeInterval? {
+        guard let node = timingNode(),
+              let renderTime = node.lastRenderTime,
+              let playerTime = node.playerTime(forNodeTime: renderTime),
+              playerTime.sampleRate > 0 else { return nil }
+        return max(0, Double(playerTime.sampleTime) / playerTime.sampleRate)
+    }
+
+    // Audio plumbing and bookkeeping are deliberately untracked: SwiftUI has
+    // no business redrawing because a tap-tempo date or a file handle changed.
+    @ObservationIgnored private var engine = AVAudioEngine()
+    @ObservationIgnored private var metronomeNode = AVAudioPlayerNode()
+    @ObservationIgnored private var nodes: [StemKind: AVAudioPlayerNode] = [:]
+    @ObservationIgnored private var timePitchNodes: [StemKind: AVAudioUnitTimePitch] = [:]
+    @ObservationIgnored private var files: [StemKind: AVAudioFile] = [:]
     private var volumes = Dictionary(uniqueKeysWithValues: StemKind.allCases.map { ($0, Float(1)) })
-    private var lastAudibleVolumes = Dictionary(
+    @ObservationIgnored private var lastAudibleVolumes = Dictionary(
         uniqueKeysWithValues: StemKind.allCases.map { ($0, Float(1)) }
     )
-    private var timer: Timer?
-    private var renderAnchorPosition: TimeInterval = 0
+    @ObservationIgnored private var timer: Timer?
+    @ObservationIgnored private var renderAnchorPosition: TimeInterval = 0
+    /// The stem that owns position updates and completions for the pass that
+    /// is currently scheduled. See `StemScheduling.timingStem`.
+    @ObservationIgnored private var activeTimingStem: StemKind?
+    /// Cached because `AVAudioSession` is consulted at display rate.
+    @ObservationIgnored private var outputLatency: TimeInterval = 0
+    @ObservationIgnored private var clickBuffers: [Bool: AVAudioPCMBuffer] = [:]
+    @ObservationIgnored private var metronomePlan = MetronomeClickPlan()
+    /// Render seconds queued onto the stems since the last `play()`, which is
+    /// also where the next pass's metronome clicks begin.
+    @ObservationIgnored private var scheduledRenderDuration: TimeInterval = 0
 
-    private var microphoneFile: AVAudioFile?
-    private var backingWriter: AudioTapFileWriter?
-    private var microphoneURL: URL?
-    private var backingURL: URL?
-    private var recordingID: UUID?
-    private var currentTrackID: UUID?
-    private var recordingStartedAt: Date?
-    private var activeRecordingMicrophoneLevel: Float = 1
-    private var activeRecordingBackingLevel: Float = 0.7
-    private var interruptionShouldResume = false
-    private var countInTask: Task<Void, Never>?
-    private var countInGeneration = 0
-    private var lastPracticePersistenceDate = Date.distantPast
-    private var tapTempoDates: [Date] = []
-    private var loopResumeTask: Task<Void, Never>?
-    private var playbackRequestID = 0
-    private var recordingRouteTransitionDeadline = Date.distantPast
-    private let practiceSettingsStore = PracticeSettingsStore()
-    private let logger = Logger(subsystem: "com.shantanugoel.atarang.Atarang", category: "Audio")
+    @ObservationIgnored private var microphoneFile: AVAudioFile?
+    @ObservationIgnored private var backingWriter: AudioTapFileWriter?
+    @ObservationIgnored private var microphoneURL: URL?
+    @ObservationIgnored private var backingURL: URL?
+    @ObservationIgnored private var recordingID: UUID?
+    @ObservationIgnored private var currentTrackID: UUID?
+    @ObservationIgnored private var recordingStartedAt: Date?
+    @ObservationIgnored private var activeRecordingMicrophoneLevel: Float = 1
+    @ObservationIgnored private var activeRecordingBackingLevel: Float = 0.7
+    @ObservationIgnored private var interruptionShouldResume = false
+    @ObservationIgnored private var countInTask: Task<Void, Never>?
+    @ObservationIgnored private var countInGeneration = 0
+    @ObservationIgnored private var practiceThrottle = WriteThrottle(
+        interval: StemPlayer.practicePersistenceInterval
+    )
+    @ObservationIgnored private var practiceFlushTask: Task<Void, Never>?
+    @ObservationIgnored private var tapTempoDates: [Date] = []
+    @ObservationIgnored private var loopResumeTask: Task<Void, Never>?
+    @ObservationIgnored private var playbackRequestID = 0
+    @ObservationIgnored private var recordingRouteTransitionDeadline = Date.distantPast
+    @ObservationIgnored private let practiceSettingsStore = PracticeSettingsStore()
+    @ObservationIgnored private let nowPlaying = NowPlayingController()
+    @ObservationIgnored private let logger = Logger(
+        subsystem: "com.shantanugoel.atarang.Atarang",
+        category: "Audio"
+    )
     private static let microphoneLevelDefaultsKey = "recordingMicrophoneLevel"
     private static let backingLevelDefaultsKey = "recordingBackingLevel"
     private static let stemLevelDefaultsPrefix = "stemLevels."
+    private static let practicePersistenceInterval: TimeInterval = 2
+    nonisolated static let metronomeSampleRate = 8_000.0
+    /// How far ahead of the render clock metronome clicks are queued. Long
+    /// enough that a 30 BPM click never runs the queue dry between timer
+    /// ticks, short enough that a setting change is heard promptly.
+    private static let metronomeScheduleWindow: TimeInterval = 3
 
     init() {
         let defaults = UserDefaults.standard
-        recordingMicrophoneLevel = defaults.object(
+        storedRecordingMicrophoneLevel = defaults.object(
             forKey: Self.microphoneLevelDefaultsKey
         ) == nil ? 1 : defaults.float(forKey: Self.microphoneLevelDefaultsKey)
-        recordingBackingLevel = defaults.object(
+        storedRecordingBackingLevel = defaults.object(
             forKey: Self.backingLevelDefaultsKey
         ) == nil ? 0.7 : defaults.float(forKey: Self.backingLevelDefaultsKey)
         for stem in StemKind.allCases {
@@ -112,7 +196,7 @@ final class StemPlayer: ObservableObject {
             to: engine.mainMixerNode,
             format: AVAudioFormat(
                 commonFormat: .pcmFormatFloat32,
-                sampleRate: 8_000,
+                sampleRate: Self.metronomeSampleRate,
                 channels: 1,
                 interleaved: false
             )
@@ -135,9 +219,48 @@ final class StemPlayer: ObservableObject {
             name: .AVAudioEngineConfigurationChange,
             object: engine
         )
+        clickBuffers = Self.makeClickBuffers()
+        configureRemoteCommands()
     }
 
     deinit { NotificationCenter.default.removeObserver(self) }
+
+    private func configureRemoteCommands() {
+        nowPlaying.onPlay = { [weak self] in
+            guard let self, self.isLoaded, !self.isRecording, !self.isPlaying else { return }
+            self.togglePlayback()
+        }
+        nowPlaying.onPause = { [weak self] in
+            guard let self, self.isPlaying || self.isCountingIn else { return }
+            self.pause()
+        }
+        nowPlaying.onSeek = { [weak self] position in
+            self?.seek(to: position)
+        }
+        nowPlaying.onSkipBackward = { [weak self] interval in
+            self?.skipBackward(seconds: interval)
+        }
+    }
+
+    /// Republishes what the lock screen and Control Center show. Cheap enough
+    /// to call from every transport entry point; the controller drops
+    /// duplicates.
+    private func publishNowPlaying() {
+        guard isLoaded else {
+            nowPlaying.clear()
+            return
+        }
+        nowPlaying.setCommandsEnabled(!isRecording)
+        nowPlaying.update(
+            NowPlayingController.Snapshot(
+                title: title,
+                duration: duration,
+                position: position,
+                rate: playbackState.rate,
+                isPlaying: isPlaying || isRecording
+            )
+        )
+    }
 
     func load(track: LocalTrack) throws {
         cancelPendingPlaybackRequest()
@@ -181,12 +304,16 @@ final class StemPlayer: ObservableObject {
         }
         soloedStem = nil
         applyStemVolumes()
+        applyMetronomeLevel()
         isLoaded = playbackState.duration > 0
         recordedTake = nil
         shareURL = nil
         completedRepetitions = 0
         isTempoRampHeld = false
         isLoopTakeRecording = false
+        activeTimingStem = activeStems.first
+        practiceThrottle.reset()
+        publishNowPlaying()
     }
 
     func togglePlayback() {
@@ -299,10 +426,13 @@ final class StemPlayer: ObservableObject {
         }
 
         applyPlaybackTransform()
+        applyMetronomeLevel()
+        refreshOutputLatency()
         let leadTime = 0.08
         let startHostTime = mach_absolute_time() + AVAudioTime.hostTime(forSeconds: leadTime)
         let startTime = AVAudioTime(hostTime: startHostTime)
         renderAnchorPosition = position
+        scheduledRenderDuration = 0
         schedulePass(from: position, generation: generation)
         for stem in activeStems {
             nodes[stem]?.volume = effectiveVolume(for: stem)
@@ -311,6 +441,16 @@ final class StemPlayer: ObservableObject {
         metronomeNode.play(at: startTime)
         isPlaying = true
         beginTimer()
+        publishNowPlaying()
+    }
+
+    /// The audio the engine is rendering now reaches the speaker one output
+    /// latency plus one I/O buffer later. Cached rather than read per frame:
+    /// it only changes when the route does.
+    private func refreshOutputLatency() {
+        let session = AVAudioSession.sharedInstance()
+        let latency = session.outputLatency + session.ioBufferDuration
+        outputLatency = latency.isFinite ? max(0, latency) : 0
     }
 
     func pause() {
@@ -331,6 +471,7 @@ final class StemPlayer: ObservableObject {
         cancelCountIn()
         updatePosition()
         stop(resetPosition: false, releaseSession: true)
+        flushPracticeSettings()
     }
 
     func seek(to newPosition: TimeInterval) {
@@ -341,6 +482,7 @@ final class StemPlayer: ObservableObject {
         pausePlayback()
         playbackState.seek(to: newPosition)
         persistPracticeSettings()
+        publishNowPlaying()
         if shouldResume { requestPlayback() }
     }
 
@@ -502,7 +644,10 @@ final class StemPlayer: ObservableObject {
     func setMetronomeLevel(_ level: Float) {
         guard !isRecording else { return }
         practiceSettings.metronomeLevel = min(max(level, 0), 1)
-        persistAndRestartIfPlaying()
+        // A node gain, so unlike the other metronome settings this one applies
+        // live rather than restarting playback to re-render the click track.
+        applyMetronomeLevel()
+        persistPracticeSettings()
     }
 
     func alignMetronome(at position: TimeInterval? = nil) {
@@ -653,7 +798,6 @@ final class StemPlayer: ObservableObject {
         applyStemVolumes()
         persistStemLevels()
         persistPracticeSettings()
-        objectWillChange.send()
     }
 
     func resetPracticeSettings() {
@@ -661,6 +805,9 @@ final class StemPlayer: ObservableObject {
         cancelCountIn()
         let shouldResume = isPlaying
         if shouldResume { pausePlayback() }
+        practiceFlushTask?.cancel()
+        practiceFlushTask = nil
+        practiceThrottle.reset()
         practiceSettingsStore.reset(for: currentTrackID)
         practiceSettings = SongPracticeSettings()
         practiceSettings.validate(duration: duration, availableStems: activeStems)
@@ -700,7 +847,6 @@ final class StemPlayer: ObservableObject {
         if value > 0 { lastAudibleVolumes[stem] = value }
         applyStemVolumes()
         persistStemLevels()
-        objectWillChange.send()
     }
 
     func volume(for stem: StemKind) -> Float { volumes[stem] ?? 1 }
@@ -721,7 +867,6 @@ final class StemPlayer: ObservableObject {
     func toggleSolo(for stem: StemKind) {
         soloedStem = soloedStem == stem ? nil : stem
         applyStemVolumes()
-        objectWillChange.send()
     }
 
     func resetMix() {
@@ -732,7 +877,6 @@ final class StemPlayer: ObservableObject {
         }
         applyStemVolumes()
         persistStemLevels()
-        objectWillChange.send()
     }
 
     func applyPracticePreset(_ preset: PracticeMixPreset) {
@@ -749,15 +893,17 @@ final class StemPlayer: ObservableObject {
         }
         applyStemVolumes()
         persistStemLevels()
-        objectWillChange.send()
     }
 
     func unload() {
         cancelPendingPlaybackRequest()
         if isRecording { stopRecording() }
+        // Persist before stopping: `stop(resetPosition:)` rewinds to zero, and
+        // saving after it would replace the resume point with the start of the
+        // song every time the user closes a track.
+        persistPracticeSettings(immediately: true)
         stop(resetPosition: true, releaseSession: true)
         files.removeAll()
-        persistPracticeSettings()
         cancelCountIn()
         loopResumeTask?.cancel()
         playbackState.unload()
@@ -770,6 +916,8 @@ final class StemPlayer: ObservableObject {
         isLoaded = false
         recordedTake = nil
         shareURL = nil
+        activeTimingStem = nil
+        nowPlaying.clear()
     }
 
     private func startRecording() async throws {
@@ -867,6 +1015,7 @@ final class StemPlayer: ObservableObject {
         shareURL = nil
         isRecording = true
         recordingRouteTransitionDeadline = Date().addingTimeInterval(2)
+        publishNowPlaying()
 
         do { try play() }
         catch {
@@ -882,24 +1031,33 @@ final class StemPlayer: ObservableObject {
         logger.info("Performance recording started")
     }
 
+    /// Runs on the microphone tap's render thread for every 4096-frame buffer,
+    /// so the per-sample Swift loop it replaces was real work in the audio
+    /// path. `vDSP_rmsqv` gives the same value vectorized.
     private nonisolated static func meterLevel(for buffer: AVAudioPCMBuffer) -> Float {
         guard buffer.format.commonFormat == .pcmFormatFloat32,
               let channels = buffer.floatChannelData,
               buffer.frameLength > 0 else { return 0 }
         let frameCount = Int(buffer.frameLength)
         let channelCount = Int(buffer.format.channelCount)
+        guard channelCount > 0 else { return 0 }
         var sumOfSquares: Float = 0
         for channelIndex in 0..<channelCount {
-            let samples = channels[channelIndex]
-            for frameIndex in 0..<frameCount {
-                let sample = samples[frameIndex]
-                sumOfSquares += sample * sample
-            }
+            var channelRMS: Float = 0
+            vDSP_rmsqv(channels[channelIndex], 1, &channelRMS, vDSP_Length(frameCount))
+            sumOfSquares += channelRMS * channelRMS * Float(frameCount)
         }
         let sampleCount = Float(frameCount * channelCount)
         let rms = sqrt(sumOfSquares / sampleCount)
         let decibels = 20 * log10(max(rms, 0.000_001))
         return min(1, max(0, (decibels + 60) / 60))
+    }
+
+    private nonisolated static func geometry(of file: AVAudioFile) -> StemFileGeometry {
+        StemFileGeometry(
+            length: file.length,
+            sampleRate: file.processingFormat.sampleRate
+        )
     }
 
     private func stopRecording() {
@@ -927,6 +1085,7 @@ final class StemPlayer: ObservableObject {
         deactivateAudioSession()
         microphoneMeterLevel = 0
         isEchoCancellationActive = false
+        publishNowPlaying()
 
         guard let microphoneURL, let backingURL, let recordingID else { return }
         let measuredDuration = min(
@@ -971,6 +1130,7 @@ final class StemPlayer: ObservableObject {
             logger.error("Could not save recording metadata: \(error.localizedDescription, privacy: .public)")
         }
         logger.info("Performance recording stopped after \(measuredDuration, privacy: .public) seconds")
+        flushPracticeSettings()
         export(take, sourceTrackID: currentTrackID)
     }
 
@@ -1014,7 +1174,7 @@ final class StemPlayer: ObservableObject {
             to: replacement.mainMixerNode,
             format: AVAudioFormat(
                 commonFormat: .pcmFormatFloat32,
-                sampleRate: 8_000,
+                sampleRate: Self.metronomeSampleRate,
                 channels: 1,
                 interleaved: false
             )
@@ -1037,6 +1197,7 @@ final class StemPlayer: ObservableObject {
         timePitchNodes = replacementTimePitchNodes
         applyPlaybackTransform()
         applyStemVolumes()
+        applyMetronomeLevel()
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleEngineConfigurationChange),
@@ -1155,6 +1316,7 @@ final class StemPlayer: ObservableObject {
         timer = nil
         isPlaying = false
         persistPracticeSettings()
+        publishNowPlaying()
     }
 
     private func stop(resetPosition: Bool, releaseSession: Bool = false) {
@@ -1168,20 +1330,30 @@ final class StemPlayer: ObservableObject {
         isPlaying = false
         if resetPosition { playbackState.seek(to: 0) }
         if releaseSession { deactivateAudioSession() }
+        publishNowPlaying()
     }
 
     private func beginTimer() {
         timer?.invalidate()
-        timer = Timer.scheduledTimer(
+        // `Timer.scheduledTimer` installs into `.default`, which the run loop
+        // leaves while a scroll is tracking — the playhead used to freeze for
+        // as long as the user kept a finger down. `.common` keeps it firing,
+        // and keeps loop bookkeeping and metronome refills running with it.
+        let timer = Timer(
             timeInterval: 0.1,
             target: self,
             selector: #selector(timerFired),
             userInfo: nil,
             repeats: true
         )
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
     }
 
-    @objc private func timerFired() { updatePosition() }
+    @objc private func timerFired() {
+        updatePosition()
+        refillMetronomeClicks()
+    }
 
     private func applyPlaybackTransform() {
         for stem in activeStems {
@@ -1194,24 +1366,38 @@ final class StemPlayer: ObservableObject {
     /// owns completions, preventing N callbacks from starting N loop passes.
     private func schedulePass(from start: TimeInterval, generation: Int) {
         let end = playbackState.loopRange?.end ?? playbackState.duration
-        guard end > start, let timingStem = activeStems.first else {
+        // The timing stem must be one that actually has frames in this range.
+        // Taking `activeStems.first` unconditionally meant a short or
+        // truncated first stem silently killed position updates and loop
+        // completions for the whole track.
+        guard end > start,
+              let timingStem = StemScheduling.timingStem(
+                among: activeStems,
+                geometry: { stem in self.files[stem].map { Self.geometry(of: $0) } },
+                from: start,
+                to: end
+              ) else {
             playbackCompleted(generation: generation)
             return
         }
+        if timingStem != activeStems.first, timingStem != activeTimingStem {
+            logger.warning(
+                "Timing stem fell back to \(timingStem.rawValue, privacy: .public); the first stem scheduled no frames"
+            )
+        }
+        activeTimingStem = timingStem
 
-        scheduleMetronomePass(from: start, to: end)
+        beginMetronomePass(from: start, to: end)
+        scheduledRenderDuration += (end - start) / Double(max(0.01, playbackState.rate))
         for stem in activeStems {
             guard let file = files[stem], let node = nodes[stem] else { continue }
-            let sampleRate = file.processingFormat.sampleRate
-            let startingFrame = min(
-                file.length,
-                AVAudioFramePosition(max(0, start) * sampleRate)
+            let segment = StemScheduling.segment(
+                for: Self.geometry(of: file),
+                from: start,
+                to: end
             )
-            let endingFrame = min(
-                file.length,
-                AVAudioFramePosition(max(start, end) * sampleRate)
-            )
-            let frameCount = AVAudioFrameCount(max(0, endingFrame - startingFrame))
+            let startingFrame = segment.startingFrame
+            let frameCount = segment.frameCount
             guard frameCount > 0 else { continue }
 
             if stem == timingStem {
@@ -1311,18 +1497,16 @@ final class StemPlayer: ObservableObject {
             recordingDuration = max(0, Date().timeIntervalSince(recordingStartedAt))
         }
         guard isPlaying,
-              let timingStem = activeStems.first,
-              let node = nodes[timingStem],
+              let node = timingNode(),
               let renderTime = node.lastRenderTime,
               let playerTime = node.playerTime(forNodeTime: renderTime) else { return }
         playbackState.updatePosition(
             renderSampleTime: playerTime.sampleTime,
             sampleRate: playerTime.sampleRate,
-            anchorPosition: renderAnchorPosition
+            anchorPosition: renderAnchorPosition,
+            outputLatency: outputLatency
         )
-        if Date().timeIntervalSince(lastPracticePersistenceDate) >= 2 {
-            persistPracticeSettings()
-        }
+        persistPracticeSettings()
         if position >= duration {
             if isRecording {
                 stopRecording()
@@ -1402,13 +1586,50 @@ final class StemPlayer: ObservableObject {
         persistPracticeSettings()
     }
 
-    private func persistPracticeSettings() {
+    /// Saves practice state, at most once every
+    /// `practicePersistenceInterval` seconds.
+    ///
+    /// Every mutating entry point calls this, and several call it twice for
+    /// one user action — a single seek used to pause (one write) and then
+    /// persist (another), encoding the whole settings blob into `UserDefaults`
+    /// twice per tap. Suppressed writes are not dropped: the last one is
+    /// scheduled so the state still lands once the interval elapses.
+    private func persistPracticeSettings(immediately: Bool = false) {
         guard let currentTrackID else { return }
         practiceSettings.lastPosition = position
         practiceSettings.playbackRate = playbackState.rate
         practiceSettings.pitchSemitones = playbackState.pitchSemitones
+        guard practiceThrottle.shouldWrite(force: immediately) else {
+            schedulePracticeSettingsFlush()
+            return
+        }
+        practiceFlushTask?.cancel()
+        practiceFlushTask = nil
         practiceSettingsStore.save(practiceSettings, for: currentTrackID)
-        lastPracticePersistenceDate = Date()
+    }
+
+    private func schedulePracticeSettingsFlush() {
+        // While the position timer runs it retries every 100 ms, so the
+        // suppressed write already lands within the interval. Scheduling a
+        // second one would just race it at the boundary and double the writes.
+        guard !isPlaying, practiceFlushTask == nil else { return }
+        let delay = practiceThrottle.delayUntilNextWrite()
+        practiceFlushTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard let self, !Task.isCancelled else { return }
+            self.practiceFlushTask = nil
+            guard self.practiceThrottle.hasPendingWrite else { return }
+            self.persistPracticeSettings(immediately: true)
+        }
+    }
+
+    /// Writes any suppressed practice state straight away.
+    ///
+    /// Call this whenever the state could stop existing before the throttle
+    /// expires — leaving the song, or the app going to the background.
+    func flushPracticeSettings() {
+        guard practiceThrottle.hasPendingWrite else { return }
+        persistPracticeSettings(immediately: true)
     }
 
     private func cancelCountIn() {
@@ -1501,67 +1722,96 @@ final class StemPlayer: ObservableObject {
         for node in nodes.values { body(node) }
     }
 
-    /// Builds one lightweight click track for the currently scheduled source
-    /// range. It is queued alongside the stems, so it shares their loop and
-    /// recording boundaries and is captured by the backing-mix tap.
-    private func scheduleMetronomePass(from start: TimeInterval, to end: TimeInterval) {
-        guard practiceSettings.metronomeEnabled,
-              end > start,
-              playbackState.rate > 0 else { return }
-        let sampleRate = 8_000.0
-        let renderDuration = (end - start) / Double(playbackState.rate)
-        let frameCapacity = AVAudioFrameCount(max(1, (renderDuration * sampleRate).rounded(.up)))
+    // MARK: - Metronome
+
+    /// Pre-renders the two click voices once.
+    ///
+    /// The old implementation synthesized a click track covering the whole
+    /// remaining song on the main actor inside `play()` — a nine-minute track
+    /// meant allocating and filling a ~4.3 million sample buffer on every
+    /// press of play. Two ~18 ms buffers are enough; scheduling places them.
+    private nonisolated static func makeClickBuffers() -> [Bool: AVAudioPCMBuffer] {
         guard let format = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
-            sampleRate: sampleRate,
+            sampleRate: metronomeSampleRate,
             channels: 1,
             interleaved: false
-        ),
-        let buffer = AVAudioPCMBuffer(
-            pcmFormat: format,
-            frameCapacity: frameCapacity
-        ),
-        let samples = buffer.floatChannelData?[0] else { return }
-        buffer.frameLength = frameCapacity
-        samples.initialize(repeating: 0, count: Int(frameCapacity))
-
-        let bpm = Double(practiceSettings.metronomeBPM)
-        let clicksPerBeat = practiceSettings.metronomeSubdivision.clicksPerBeat
-        let clickInterval = 60 / bpm / Double(clicksPerBeat)
-        let alignment = practiceSettings.metronomeAlignment
-        let firstIndex = Int(ceil((start - alignment) / clickInterval))
-        var clickIndex = firstIndex
-        let clickLength = max(1, Int(sampleRate * 0.018))
-        while true {
-            let sourceTime = alignment + Double(clickIndex) * clickInterval
-            if sourceTime >= end { break }
-            if sourceTime >= start {
-                let renderTime = (sourceTime - start) / Double(playbackState.rate)
-                let frame = Int((renderTime * sampleRate).rounded())
-                let subdivisionIndex = ((clickIndex % clicksPerBeat) + clicksPerBeat)
-                    % clicksPerBeat
-                let beatIndex = Int(
-                    floor((sourceTime - alignment) / (60 / bpm))
-                )
-                let isDownbeat = subdivisionIndex == 0
-                    && ((beatIndex % 4) + 4) % 4 == 0
-                let frequency = isDownbeat && practiceSettings.metronomeAccentEnabled
-                    ? 1_600.0
-                    : 1_050.0
-                let accentGain: Float = isDownbeat
-                    && practiceSettings.metronomeAccentEnabled ? 1 : 0.72
-                for offset in 0..<clickLength where frame + offset < Int(frameCapacity) {
-                    let envelope = Float(clickLength - offset) / Float(clickLength)
-                    let phase = 2 * Double.pi * frequency * Double(offset) / sampleRate
-                    samples[frame + offset] += Float(sin(phase))
-                        * envelope
-                        * accentGain
-                        * practiceSettings.metronomeLevel
-                }
+        ) else { return [:] }
+        var buffers: [Bool: AVAudioPCMBuffer] = [:]
+        for isAccented in [false, true] {
+            let frequency = isAccented ? 1_600.0 : 1_050.0
+            let gain: Float = isAccented ? 1 : 0.72
+            let frameCount = AVAudioFrameCount(max(1, metronomeSampleRate * 0.018))
+            guard let buffer = AVAudioPCMBuffer(
+                pcmFormat: format,
+                frameCapacity: frameCount
+            ), let samples = buffer.floatChannelData?[0] else { continue }
+            buffer.frameLength = frameCount
+            for offset in 0..<Int(frameCount) {
+                let envelope = Float(Int(frameCount) - offset) / Float(frameCount)
+                let phase = 2 * Double.pi * frequency * Double(offset) / metronomeSampleRate
+                samples[offset] = Float(sin(phase)) * envelope * gain
             }
-            clickIndex += 1
+            buffers[isAccented] = buffer
         }
-        metronomeNode.scheduleBuffer(buffer)
+        return buffers
+    }
+
+    /// Click level is a node gain, not something baked into the buffers, so
+    /// changing it does not require re-rendering or restarting playback.
+    private func applyMetronomeLevel() {
+        metronomeNode.volume = min(max(practiceSettings.metronomeLevel, 0), 1)
+    }
+
+    /// Starts a click grid for the source range a playback pass just queued.
+    ///
+    /// Clicks are placed on the metronome node's own timeline, which shares
+    /// its origin with the stems because both nodes are started at the same
+    /// host time. That keeps the clicks inside the pass's loop and recording
+    /// boundaries, and captured by the backing-mix tap, exactly as before.
+    private func beginMetronomePass(from start: TimeInterval, to end: TimeInterval) {
+        metronomePlan = MetronomeClickPlan(
+            sourceStart: start,
+            sourceEnd: end,
+            renderOrigin: scheduledRenderDuration,
+            bpm: Double(practiceSettings.metronomeBPM),
+            clicksPerBeat: practiceSettings.metronomeSubdivision.clicksPerBeat,
+            alignment: practiceSettings.metronomeAlignment,
+            accentsEnabled: practiceSettings.metronomeAccentEnabled,
+            rate: Double(playbackState.rate)
+        )
+        metronomePlan.reset()
+        guard practiceSettings.metronomeEnabled else { return }
+        scheduleMetronomeClicks(
+            through: metronomePlan.renderOrigin + Self.metronomeScheduleWindow
+        )
+    }
+
+    /// Tops the click queue back up to the rolling window. Driven by the
+    /// position timer, so it also keeps running while the user scrolls.
+    private func refillMetronomeClicks() {
+        guard practiceSettings.metronomeEnabled, isPlaying else { return }
+        let elapsed = currentRenderElapsed() ?? metronomePlan.renderOrigin
+        scheduleMetronomeClicks(through: elapsed + Self.metronomeScheduleWindow)
+    }
+
+    private func scheduleMetronomeClicks(through renderDeadline: TimeInterval) {
+        guard let normal = clickBuffers[false], let accented = clickBuffers[true] else {
+            return
+        }
+        for click in metronomePlan.clicks(through: renderDeadline) {
+            let time = AVAudioTime(
+                sampleTime: AVAudioFramePosition(
+                    (click.renderTime * Self.metronomeSampleRate).rounded()
+                ),
+                atRate: Self.metronomeSampleRate
+            )
+            metronomeNode.scheduleBuffer(
+                click.isAccented ? accented : normal,
+                at: time,
+                options: []
+            )
+        }
     }
 
     private func configurePlaybackSession() throws {
@@ -1640,6 +1890,10 @@ final class StemPlayer: ObservableObject {
     }
 
     private func processRouteChange(reason rawReason: UInt) {
+        // Any route change can move output latency by more than 100 ms —
+        // AirPods against the built-in speaker is the usual jump — so refresh
+        // the compensation even for changes that do not stop playback.
+        refreshOutputLatency()
         guard AVAudioSession.RouteChangeReason(rawValue: rawReason) ==
                 .oldDeviceUnavailable else {
             return

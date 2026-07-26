@@ -75,7 +75,9 @@ up where the last one ended.
   together, with independent microphone and backing levels; an active loop
   records one predictable pass from A to B.
 - **Background-friendly sessions** — playback and recording continue when the
-  app is backgrounded or the screen is locked.
+  app is backgrounded or the screen is locked, the lock screen and Control
+  Centre show the loaded song, and headphone-remote play, pause, and skip-back
+  work. The screen stays awake while a song is actually playing or recording.
 - **A personal music library** — browse originals, separations, and
   performances; search, filter, inspect storage use, and reopen any mix.
 - **Repeat without redownloading** — reuse a saved separation or run another

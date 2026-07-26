@@ -259,52 +259,95 @@ against known-good behaviour.
 
 ### Work
 
-- [ ] Add `StemPlayer.currentPosition() -> TimeInterval` computed on demand from
+- [x] Add `StemPlayer.currentPosition() -> TimeInterval` computed on demand from
       `lastRenderTime`, falling back to `playbackState.position` when paused.
-- [ ] Subtract `AVAudioSession.outputLatency + ioBufferDuration` from the
+- [x] Subtract `AVAudioSession.outputLatency + ioBufferDuration` from the
       computed position so visuals match what is heard on Bluetooth routes.
-- [ ] Stop driving UI from the 10 Hz `Timer` alone; expose a display-rate path
+- [x] Stop driving UI from the 10 Hz `Timer` alone; expose a display-rate path
       suitable for `CADisplayLink` or `TimelineView(.animation)`.
-- [ ] Fix the existing run-loop-mode defect: the position timer must continue
+- [x] Fix the existing run-loop-mode defect: the position timer must continue
       firing during scroll tracking.
-- [ ] Apply the existing 2-second persistence throttle to every
+- [x] Apply the existing 2-second persistence throttle to every
       `persistPracticeSettings()` path; `seek` must not perform two
       `UserDefaults` JSON encodes per tap.
-- [ ] Pre-render a single metronome click buffer at load and schedule it per
+- [x] Pre-render a single metronome click buffer at load and schedule it per
       click in a rolling window, instead of synthesizing the whole remaining
       song's click track on the main actor inside `play()`.
-- [ ] Migrate `StemPlayer` to `@Observable` so SwiftUI tracks per-property
+- [x] Migrate `StemPlayer` to `@Observable` so SwiftUI tracks per-property
       instead of invalidating on every published change.
-- [ ] Replace the per-sample RMS loop in `meterLevel` with `vDSP_rmsqv`.
-- [ ] Guard the timing-stem path: if the first active stem schedules zero
+- [x] Replace the per-sample RMS loop in `meterLevel` with `vDSP_rmsqv`.
+- [x] Guard the timing-stem path: if the first active stem schedules zero
       frames, fall back to another stem rather than silently losing position
       updates and loop completions.
-- [ ] Add `MPNowPlayingInfoCenter` and `MPRemoteCommandCenter` support for lock
+- [x] Add `MPNowPlayingInfoCenter` and `MPRemoteCommandCenter` support for lock
       screen and headphone-remote play/pause/seek. This is the cheapest useful
       form of the parked "Bluetooth pedal, headphone remote" idea.
-- [ ] Close the stem-synchronization verification left unfinished by the former
+- [~] Close the stem-synchronization verification left unfinished by the former
       practice plan: confirm all stems stay synchronized across seeking,
       pausing, route changes, interruptions, and repeated playback. This is an
       unverified assumption underneath everything else in this phase.
-- [ ] Add `isIdleTimerDisabled` handling, scoped to full-screen practice modes.
-- [ ] Extend unit coverage: latency-compensated position, throttled persistence,
+      Scheduling is now unit-tested to request the identical source-second
+      range from every stem regardless of sample rate, which is the part that
+      can be checked without hardware. The device pass over route changes and
+      interruptions is still outstanding.
+- [x] Add `isIdleTimerDisabled` handling, scoped to full-screen practice modes.
+- [x] Extend unit coverage: latency-compensated position, throttled persistence,
       click scheduling, timing-stem fallback.
 
 ### Acceptance criteria
 
-- [ ] The playhead continues updating while the user scrolls.
-- [ ] Visual position matches audible position within 30 ms on wired output and
-      within 50 ms on Bluetooth.
-- [ ] Ten consecutive seeks produce no audible hitch and no more than one
+- [x] The playhead continues updating while the user scrolls.
+- [~] Visual position matches audible position within 30 ms on wired output and
+      within 50 ms on Bluetooth. Compensation is implemented and unit-tested;
+      the measurement itself needs a device.
+- [x] Ten consecutive seeks produce no audible hitch and no more than one
       settings write per second.
-- [ ] Lock screen shows the current song; headphone play/pause works.
-- [ ] No regression in playback, looping, recording, export, or route handling
-      on the physical-device matrix.
+- [~] Lock screen shows the current song; headphone play/pause works. Implemented
+      but not yet exercised on hardware.
+- [~] No regression in playback, looping, recording, export, or route handling
+      on the physical-device matrix. Unit tests, a clean Swift 6 build with zero
+      app-owned warnings, and a simulator launch pass; the device matrix is
+      outstanding, together with Phase 0's.
 
 ### Open decision
 
 - [x] `supportedRateRange` stays `0.5...1.0`. Practising above original tempo is
       out of scope for now.
+
+### Outcome
+
+**New files.** `AudioTiming.swift` holds the pure pieces — `StemScheduling`,
+`MetronomeClickPlan`, `WriteThrottle` — so the parts of playback that are easy
+to get wrong are testable without an audio engine. `NowPlayingController.swift`
+owns the lock screen and remote commands. `PlayheadView.swift` is the
+display-rate wrapper.
+
+**Notable changes.**
+
+- The metronome no longer synthesizes a click track for the whole remaining
+  song inside `play()`. Two ~18 ms buffers are rendered once at init and
+  scheduled at absolute node times in a 3-second rolling window refilled by the
+  position timer. Click level became a node gain, so changing it no longer
+  restarts playback.
+- `persistPracticeSettings()` is throttled on every path rather than only in
+  `updatePosition`. Suppressed writes are not dropped: a flush task lands the
+  last one, and `flushPracticeSettings()` is called on suspend, unload, take
+  end, and scene deactivation. `unload()` now persists *before* rewinding,
+  which also fixes closing a song resetting its resume point to zero.
+- The timing stem is chosen per pass from the stems that actually schedule
+  frames, instead of always `activeStems.first`.
+- `@Observable` required replacing the two `didSet` recording-level properties
+  with computed ones over `access`/`withMutation`, because the macro rewrites
+  stored properties into accessors. All audio plumbing is `@ObservationIgnored`.
+
+**Idle timer scope.** There is no full-screen practice mode yet, so the hold is
+scoped to the Studio tab with a song playing, recording, or counting in. Phase 6
+extends it rather than replacing it.
+
+**Deferred.** The stem-scheduling helper preserves the existing render-time
+convention in `PlaybackState.calculatedPosition` — elapsed player-node time
+multiplied by `rate` — rather than re-deriving it. Verifying that convention
+against real output at 0.5× is part of the outstanding device pass.
 
 ---
 
