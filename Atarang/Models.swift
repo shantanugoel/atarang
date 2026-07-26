@@ -75,6 +75,49 @@ enum SeparationModelKind: String, CaseIterable, Identifiable, Codable, Sendable 
 
     var stemSummary: String { stems.map(\.title).joined(separator: ", ") }
 
+    /// What the user gets, named as an outcome. The architecture name is still
+    /// available as `title`, but it is secondary detail now: "MDX23C InstVoc HQ"
+    /// tells someone deciding what to separate almost nothing.
+    var outcomeTitle: String {
+        switch self {
+        case .htdemucs: "Balanced 4-stem"
+        case .htdemucs6s: "Detailed 6-stem"
+        case .mdx23cInstVocHQ: "Vocals + Backing"
+        case .kimVocals: "Vocals + Backing, vocal-focused"
+        }
+    }
+
+    var outcomeDetail: String {
+        switch self {
+        case .htdemucs: "Vocals, drums, bass, and everything else. The right default for playing along."
+        case .htdemucs6s: "Adds separate guitar and piano, so you can mute exactly your part."
+        case .mdx23cInstVocHQ: "The cleanest vocal split, when all you need is the singer removed."
+        case .kimVocals: "A second opinion on the vocal split; try it when the first leaves artefacts."
+        }
+    }
+
+    /// How long it takes relative to the others, in words rather than numbers:
+    /// the real figure depends entirely on the device.
+    var speedClass: String {
+        switch self {
+        case .htdemucs: "Moderate"
+        case .htdemucs6s: "Slowest"
+        case .mdx23cInstVocHQ, .kimVocals: "Fastest"
+        }
+    }
+
+    /// Badged, not enforced. The recommendation exists to make the first choice
+    /// easy, not to hide the others.
+    static var recommendedForCurrentDevice: SeparationModelKind {
+        htdemucs.isAvailableOnCurrentDevice ? .htdemucs : .mdx23cInstVocHQ
+    }
+
+    /// What to pick instead when this one cannot run here.
+    var suggestedAlternative: SeparationModelKind? {
+        guard !isAvailableOnCurrentDevice else { return nil }
+        return Self.recommendedForCurrentDevice
+    }
+
     var choiceTitle: String {
         switch self {
         case .htdemucs: "4 stems — Recommended"

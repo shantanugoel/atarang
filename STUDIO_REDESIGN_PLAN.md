@@ -753,59 +753,61 @@ structure, creating the space lyrics and chords need. No new analysis.
 
 ### 1. Persistent transport
 
-- [ ] Build a two-row transport pinned via `safeAreaInset`.
-- [ ] Row 1: scrubbable timeline with playhead, A/B markers, shaded loop region,
+- [x] Build a two-row transport pinned via `safeAreaInset`.
+- [x] Row 1: scrubbable timeline with playhead, A/B markers, shaded loop region,
       and saved-section ticks.
-- [ ] Render a static waveform overview once at load from the summed stems;
+- [x] Render a static waveform overview once at load from the summed stems;
       cache it beside the track.
-- [ ] Row 2: back-5, play/pause, record, loop toggle, speed chip, key chip.
-- [ ] Delete the two in-scroll position sliders; the transport is the single
+- [x] Row 2: back-5, play/pause, record, loop toggle, speed chip, key chip.
+- [x] Delete the two in-scroll position sliders; the transport is the single
       source of truth for seeking.
 
 ### 2. Stage container
 
-- [ ] Add a Stage area with a segmented and swipeable selector.
-- [ ] Move the existing stem mixer into the **Mixer** stage unchanged.
-- [ ] Add placeholder **Lyrics** and **Chords** stages with their empty states.
-- [ ] Replace `StudioWorkspace` with `{lyrics, chords, sheet, mixer}`. No
+- [x] Add a Stage area with a segmented and swipeable selector.
+- [x] Move the existing stem mixer into the **Mixer** stage unchanged.
+- [x] Add placeholder **Lyrics** and **Chords** stages with their empty states.
+      Sheet ships with one too, so the selector never changes shape later.
+- [x] Replace `StudioWorkspace` with `{lyrics, chords, sheet, mixer}`. No
       migration: pre-release, so change the enum and let the schema follow.
 
 ### 3. Practice tools as chips
 
-- [ ] Build a horizontally scrolling chip row that displays each tool's current
+- [x] Build a horizontally scrolling chip row that displays each tool's current
       value.
-- [ ] Chips: Loop, Speed, Key, Target, Click, Reps, Sections, Count-in.
-- [ ] Each chip opens a medium-detent sheet containing only that tool.
-- [ ] Remove `practiceWorkspace` and its always-expanded sections.
+- [x] Chips: Loop, Speed, Key, Target, Click, Reps, Sections, Count-in.
+- [x] Each chip opens a medium-detent sheet containing only that tool.
+- [x] Remove `practiceWorkspace` and its always-expanded sections.
 
 ### 4. Recording as a mode
 
-- [ ] Consolidate mic level, backing level, live meter, and echo-cancellation
-      status into the transport during recording.
-- [ ] Replace scattered disabled states with one clear mode explanation.
-- [ ] Surface loop-take comparison (Reference / Latest Take) in the same place.
+- [x] Consolidate mic level, backing level, live meter, and echo-cancellation
+      status into the transport during recording. The two levels are shown, not
+      adjustable — see the outcome.
+- [x] Replace scattered disabled states with one clear mode explanation.
+- [x] Surface loop-take comparison (Reference / Latest Take) in the same place.
 
 ### 5. Chrome and navigation
 
-- [ ] Restore the system navigation bar; delete the hand-drawn `mixerHeader`.
-- [ ] Move New Song, Share, Separate Again, Reset Practice Settings, and future
+- [x] Restore the system navigation bar; delete the hand-drawn `mixerHeader`.
+- [x] Move New Song, Share, Separate Again, Reset Practice Settings, and future
       analysis actions into a toolbar menu.
-- [ ] Add haptics on A/B set, loop wraparound, count-in ticks, and repetition
+- [x] Add haptics on A/B set, loop wraparound, count-in ticks, and repetition
       target reached.
-- [ ] Auto-dismiss the notice banner.
+- [x] Auto-dismiss the notice banner.
 
 ### 6. Import screen by outcome (item 18)
 
 Cheap to fold in while this screen is being rebuilt anyway.
 
-- [ ] Lead with outcome names — Balanced 4-stem, Detailed 6-stem, Vocals +
+- [x] Lead with outcome names — Balanced 4-stem, Detailed 6-stem, Vocals +
       Backing — and demote architecture names to secondary detail.
-- [ ] Show speed class, stem list, device compatibility, download size, and
+- [x] Show speed class, stem list, device compatibility, download size, and
       installed status before confirmation.
-- [ ] Badge a recommended default for the current device without preventing
+- [x] Badge a recommended default for the current device without preventing
       manual selection.
-- [ ] Explain why a model is unavailable and what to choose instead.
-- [ ] Separate `Separate Again` visually from the primary action so an expensive
+- [x] Explain why a model is unavailable and what to choose instead.
+- [x] Separate `Separate Again` visually from the primary action so an expensive
       re-run is not a mis-tap.
 
 ### 7. Settings tab skeleton
@@ -814,40 +816,143 @@ The tab currently says "Settings" and contains version, author, and a GitHub
 link. Give it the structure the later phases need, and move the preferences that
 already exist but live in the wrong place.
 
-- [ ] Build a sectioned Settings screen; keep **About** as a section within it.
-- [ ] Move recording defaults — microphone and backing level — out of the Mix
+- [x] Build a sectioned Settings screen; keep **About** as a section within it.
+- [x] Move recording defaults — microphone and backing level — out of the Mix
       card. They are global defaults for new takes, not part of a song's mix.
-      Live adjustment stays in the transport during recording.
-- [ ] Add a **default separation model** preference and persist it.
+      ~~Live adjustment stays in the transport during recording.~~ Reversed: the
+      levels are metadata captured once per take, so there is nothing live to
+      adjust. See the outcome.
+- [x] Add a **default separation model** preference and persist it.
       `SeparationModel.selectedModel` currently resets to `.htdemucs` on every
       launch, which is an existing annoyance rather than a design choice.
-- [ ] Surface `THIRD_PARTY_LICENSES.md` in-app under About. The project bundles
+- [x] Surface `THIRD_PARTY_LICENSES.md` in-app under About. The project bundles
       MIT-licensed work — Demucs weights, ONNX Runtime, ZIPFoundation,
       PythonKit, YoutubeDL-iOS, yt-dlp — and the notices are currently not
       reachable from the app at all.
-- [ ] Leave placeholders out: sections appear when the phase that needs them
+- [x] Leave placeholders out: sections appear when the phase that needs them
       lands, not before.
 
 ### 8. Adaptive layout
 
-- [ ] Regular width: Stage left, tool inspector right, transport full width.
-- [ ] Landscape iPhone: same split with the chip row folded into the transport.
+- [x] Regular width: Stage left, tool inspector right, transport full width.
+- [x] Landscape iPhone: same split with the chip row folded into the transport.
 
 ### 9. Decomposition
 
-- [ ] Split `ContentView.swift` into `TransportBar`, `StageContainer`,
+- [x] Split `ContentView.swift` into `TransportBar`, `StageContainer`,
       `ToolChipRow`, `ImportView`, and `RecordingMode`.
 
 ### Acceptance criteria
 
-- [ ] A first-time user can set an A–B loop, slow it down, and repeat it without
-      opening more than one sheet.
-- [ ] Every capability previously in Mix or Practice is reachable within one
-      additional interaction.
-- [ ] The playhead and transport are visible at all times when a song is loaded.
-- [ ] Dynamic Type at accessibility sizes, VoiceOver reading order, and 44pt
-      targets are preserved throughout.
-- [ ] Existing per-song persisted state loads correctly after the schema bump.
+- [x] A first-time user can set an A–B loop, slow it down, and repeat it without
+      opening more than one sheet. Measured in the simulator: A–B is two taps of
+      the transport's A–B button (no sheet), speed is a two-tap menu (no sheet),
+      repetitions is the one sheet.
+- [x] Every capability previously in Mix or Practice is reachable within one
+      additional interaction. Everything in the old Practice stack is one chip
+      tap away; the Mix card's stem rows are the Mixer stage; its recording
+      levels moved to Settings and its position slider became the transport.
+- [x] The playhead and transport are visible at all times when a song is loaded.
+      Nothing about the Studio screen scrolls except inside a Stage.
+- [~] Dynamic Type at accessibility sizes, VoiceOver reading order, and 44pt
+      targets are preserved throughout. **Dynamic Type verified** at
+      accessibility-extra-large — it found two defects, both fixed. Touch targets
+      are 44pt by construction. **VoiceOver reading order was not tested**; it
+      needs a device pass and is the reason this is not `[x]`.
+- [~] Existing per-song persisted state loads correctly after the schema bump.
+      New state round-trips, and the app opens songs written by earlier builds.
+      But `workspace` became `stage` under synthesized `Codable`, so settings
+      written before this phase do **not** decode and the song opens with
+      defaults. That is the pre-release behaviour the plan asked for; it is
+      recorded as `[~]` rather than `[x]` because "loads correctly" is not what
+      happens to those files.
+
+### Outcome
+
+**New files.** `TransportBar.swift` (transport, timeline, speed and key menus,
+waveform shape), `StageContainer.swift` (stage selector, Mixer stage,
+placeholders, `StemRow`), `ToolChipRow.swift` (the eight chips and their sheet
+contents), `ImportView.swift`, `RecordingMode.swift`, `SettingsView.swift`,
+`WaveformOverview.swift`, `Haptics.swift`, `StudioFormatting.swift`.
+`ContentView.swift` went from 1,895 lines to about 700 and is now a coordinator:
+objects, navigation, and the wiring between them. `AboutView.swift` is gone.
+
+**The A–B button is why setting a loop needs no sheet.** Row 2's loop control is
+the one practice hardware has used for decades: tap to drop A, tap again to drop
+B and start looping, tap again to switch looping off, long-press for Set A / Set
+B / Clear. The timeline's A and B handles then do the coarse adjustment by drag,
+and the Loop sheet keeps only the ±0.1 s nudges. That retires both problems
+Phase 1 recorded about the old boundary sliders — A's range deriving from B, and
+B spanning the whole song at ~0.7 s per point — without needing a better slider.
+
+**The waveform overview is RMS, not peaks, and stems combine as energy.** A peak
+overview of a drum stem is a solid block, which says nothing about song
+structure. Buckets hold mean square per stem and combine as the square root of
+the sum of squares — what uncorrelated sources actually do — then normalise.
+480 buckets, measured off the main actor at `.utility`, cached as `waveform.json`
+beside the stems so it dies with them rather than outliving a re-separation.
+
+**Recording levels are shown, not adjusted.** The plan expected live adjustment
+in the transport. There is nothing to adjust: the microphone and backing levels
+are one scalar each, snapshotted at take start and written into the recording's
+metadata, and the raw streams are balanced later by the Library's mix editor.
+A slider that moved during a take would either do nothing or silently rewrite
+what the take claims it was recorded at. The strip shows both values with the
+meter and the echo-cancellation state, and says where to change the balance.
+
+**One mode explanation replaced a dozen disabled controls.** The chip row is
+disabled and dimmed as a unit while recording, with the red strip above it
+saying what is locked and why — instead of eight tools that each quietly stopped
+responding.
+
+**Landscape needed the chips in the control row, not under it.** The first
+landscape build gave the Stage and the inspector about 90 points between them,
+because the transport had grown a fourth row. Folding the chips into the same
+`HStack` as the transport buttons, and shortening the timeline track from 56 to
+36 points when the vertical size class is compact, brings the split back to
+roughly half the screen.
+
+**Two defects came out of the accessibility-size pass**, both invisible at
+default sizes: a fixed 46×34 icon capsule squashed the play triangle into a
+wedge once the glyph scaled, and the timeline's time readout — positioned as an
+overlay with a hardcoded 18-point offset — grew tall enough to overlap the
+waveform. The capsule now grows with its glyph, and the readout is a sibling in
+a `VStack` rather than an offset overlay.
+
+**`ViewThatFits` decides how many rows the transport needs.** Six controls fit
+on one row at normal text sizes and do not at accessibility sizes, and a
+truncated "10 0%" speed readout is worse than a second line.
+
+**The last-used separation is the default now.** `SeparationModel.selectedModel`
+persists to `UserDefaults` and is validated against the device on launch, so a
+saved 6-stem preference on a device that cannot run it falls back rather than
+presenting an unusable default. Note the consequence: separating from the
+Library with a different model also changes the default, because it is genuinely
+the same preference.
+
+**Simulator verification.** Driven against a seeded synthetic 4-stem track with
+deliberate loud and quiet sections, on an iPhone 17 Pro. Confirmed: the waveform
+overview showing the seeded structure; A–B set from the transport in two taps
+with handles, shading, and readout; looping wrapping and the repetition target
+stopping playback at B; chips reporting live values ("1/2", then "2/2"); the
+Reps sheet at medium detent; swiping the Stage moving the segmented control; the
+recording strip with meter, levels, and one explanation while the chip row is
+disabled as a whole; a loop take stopping at B by itself and the Compare strip
+appearing; the toolbar menu carrying New Song, Share Performance, Separate
+Again, and Reset Practice Settings; Settings with recording defaults, the
+default separation, About, and the bundled third-party notices; and the
+landscape split with the chips folded into the transport.
+
+**Not verified on device.** Haptics have never fired on hardware — the simulator
+has no Taptic Engine — so A/B set, loop wrap, count-in ticks, and target reached
+are unexercised. VoiceOver reading order is untested. Neither is in the audio
+layer that Phase 1 declared device-blocking, but both are the obvious first
+items for the next device pass.
+
+**Deliberately not built.** The Stage's three empty states are empty on purpose;
+Milestones C and D fill them. Settings has three sections rather than eight —
+downloads, storage, privacy, and diagnostics arrive with Phase 10, and a
+placeholder that says "coming soon" is worse than no section.
 
 ---
 

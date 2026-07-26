@@ -4,13 +4,13 @@ import XCTest
 final class PracticeSettingsTests: XCTestCase {
     func testNewSettingsReceiveSafeDefaults() {
         var settings = SongPracticeSettings()
-        settings.workspace = .practice
+        settings.stage = .lyrics
         settings.playbackRate = 0.75
 
         settings.validate(duration: 120, availableStems: [.vocals, .instrumental])
 
         XCTAssertEqual(settings.schemaVersion, SongPracticeSettings.currentSchemaVersion)
-        XCTAssertEqual(settings.workspace, .practice)
+        XCTAssertEqual(settings.stage, .lyrics)
         XCTAssertEqual(settings.playbackRate, 0.75)
         XCTAssertEqual(settings.target, .vocals)
         XCTAssertEqual(settings.preset, .learn)
@@ -102,7 +102,7 @@ final class PracticeSettingsTests: XCTestCase {
         let firstID = UUID()
         let secondID = UUID()
         var settings = SongPracticeSettings()
-        settings.workspace = .practice
+        settings.stage = .lyrics
         settings.target = .bass
         settings.playbackRate = 0.5
 

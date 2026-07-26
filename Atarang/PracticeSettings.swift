@@ -1,11 +1,29 @@
 import Foundation
 
-enum StudioWorkspace: String, Codable, CaseIterable, Identifiable, Sendable {
-    case mix
-    case practice
+/// What the Stage is showing. Replaces the former Mix/Practice split: practice
+/// tools are chips now, so the Stage is free to be about the song itself.
+///
+/// Three of the four are placeholders until Milestones C and D fill them in.
+/// They ship visible and empty on purpose — the selector is the shape of the
+/// screen, and hiding stages until their phase lands would mean rebuilding it
+/// three more times.
+enum StudioStage: String, Codable, CaseIterable, Identifiable, Sendable {
+    case lyrics
+    case chords
+    case sheet
+    case mixer
 
     var id: String { rawValue }
     var title: String { rawValue.capitalized }
+
+    var icon: String {
+        switch self {
+        case .lyrics: "text.quote"
+        case .chords: "guitars"
+        case .sheet: "doc.text"
+        case .mixer: "slider.horizontal.3"
+        }
+    }
 }
 
 enum TargetMixPreset: String, Codable, CaseIterable, Identifiable, Sendable {
@@ -79,13 +97,16 @@ struct SavedPracticeSection: Codable, Equatable, Identifiable, Sendable {
 }
 
 struct SongPracticeSettings: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 1
+    /// Bumped to 2 by Phase 4: `workspace` became `stage`, with a different
+    /// case set. Pre-release, so there is no migration — settings written by an
+    /// earlier build no longer decode and the song starts from defaults.
+    static let currentSchemaVersion = 2
     static let supportedCountInClicks = [0, 2, 4]
     static let supportedBPMRange = 30...300
     static let supportedRepetitionPauseRange: ClosedRange<TimeInterval> = 0...10
 
     var schemaVersion = Self.currentSchemaVersion
-    var workspace: StudioWorkspace = .mix
+    var stage: StudioStage = .mixer
     var target: StemKind?
     var preset: TargetMixPreset = .learn
     var loopStart: TimeInterval?

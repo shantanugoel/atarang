@@ -670,8 +670,9 @@ final class StemPlayer {
         persistPracticeSettings()
     }
 
-    func setWorkspace(_ workspace: StudioWorkspace) {
-        practiceSettings.workspace = workspace
+    func setStage(_ stage: StudioStage) {
+        guard practiceSettings.stage != stage else { return }
+        practiceSettings.stage = stage
         persistPracticeSettings()
     }
 
@@ -1685,10 +1686,14 @@ final class StemPlayer {
         logDiagnosticEvent("loopWrap", detail: "repetition=\(completedRepetitions)")
         if practiceSettings.repetitionTarget > 0,
            completedRepetitions >= practiceSettings.repetitionTarget {
+            Haptics.targetReached()
             playbackState.seek(to: playbackState.loopRange?.end ?? position)
             stop(resetPosition: false, releaseSession: true)
             return
         }
+        // Felt rather than seen: the point of a practice loop is that the user
+        // is watching their hands, not the timeline.
+        Haptics.loopWrapped()
 
         let shouldRamp = practiceSettings.tempoRampEnabled
             && !isTempoRampHeld
@@ -1878,6 +1883,7 @@ final class StemPlayer {
             }
             countInRemaining = remaining
             AudioServicesPlaySystemSound(1104)
+            Haptics.countInTick()
             do {
                 try await Task.sleep(for: .seconds(1))
             } catch {

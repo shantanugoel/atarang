@@ -23,8 +23,36 @@ enum SeparationResult {
 @MainActor
 final class SeparationModel: ObservableObject {
     @Published var errorMessage: String?
-    @Published var selectedModel: SeparationModelKind = .htdemucs
+
+    /// The separation the import screen offers by default.
+    ///
+    /// This used to reset to `.htdemucs` on every launch, which meant anyone who
+    /// preferred the 6-stem or a vocals-only split re-chose it every session. It
+    /// is a real preference now, editable in Settings and saved here so both
+    /// screens read one value.
+    @Published var selectedModel: SeparationModelKind {
+        didSet {
+            guard selectedModel != oldValue else { return }
+            UserDefaults.standard.set(
+                selectedModel.rawValue,
+                forKey: Self.defaultModelDefaultsKey
+            )
+        }
+    }
+
+    static let defaultModelDefaultsKey = "defaultSeparationModel"
     private let logger = Logger(subsystem: "com.shantanugoel.atarang.Atarang", category: "Separation")
+
+    init() {
+        let saved = UserDefaults.standard.string(forKey: Self.defaultModelDefaultsKey)
+            .flatMap(SeparationModelKind.init(rawValue:))
+        // A saved choice the current device cannot run is not a choice.
+        if let saved, saved.isAvailableOnCurrentDevice {
+            selectedModel = saved
+        } else {
+            selectedModel = .recommendedForCurrentDevice
+        }
+    }
 
     func separate(
         youtubeURL: String,

@@ -27,6 +27,11 @@
 | <img src="docs/images/practice-loop-and-pitch.jpg" alt="Atarang Practice workspace with rewind, speed, pitch, A–B loop, and saved-section controls" width="320"> | <img src="docs/images/practice-metronome-and-target.jpg" alt="Atarang Practice workspace with manual metronome, practice-target presets, and count-in controls" width="320"> |
 | Isolate a phrase, change its key, and keep useful sections. | Align a click, choose your part, and move from learning to playing along. |
 
+> [!NOTE]
+> The Studio screenshots above show the layout before the Studio redesign, which
+> replaced the Mix and Practice pair with a persistent transport, a Stage, and
+> practice tool chips. They will be retaken for the first release.
+
 | Originals | Separated tracks | Performances |
 | :---: | :---: | :---: |
 | <img src="docs/images/library-originals.jpg" alt="Original songs in the Atarang Library" width="240"> | <img src="docs/images/library-separated.jpg" alt="Separated tracks in the Atarang Library" width="240"> | <img src="docs/images/library-performances.jpg" alt="Recorded performances in the Atarang Library" width="240"> |
@@ -41,13 +46,16 @@ and practise against the rest of the band.
 
 ## Practise with purpose
 
-Switch from **Mix** to **Practice** without interrupting playback. Atarang
-remembers the practice workspace, playhead, selected target, mix, loop, speed,
-pitch, count-in, and saved sections for each song, so the next session can pick
-up where the last one ended.
+Studio is one screen. A **transport** that never scrolls holds the timeline, the
+A–B loop, and the controls you reach for with an instrument in your hands; a
+**Stage** shows the song itself; and the practice tools are **chips** that state
+their current value and open only themselves. Atarang remembers the stage,
+playhead, selected target, mix, loop, speed, pitch, count-in, and saved sections
+for each song, so the next session can pick up where the last one ended.
 
-- **Master one phrase** — jump back five seconds, mark and fine-tune an A–B
-  loop, then save multiple named sections for quick recall.
+- **Master one phrase** — jump back five seconds, tap A then B on the transport
+  to loop it, drag the handles on the timeline to fine-tune, and save multiple
+  named sections for quick recall.
 - **Slow down or change key** — adjust speed without changing pitch, or
   transpose the backing by semitones without changing tempo.
 - **Build up repetitions** — choose a repetition target, add a pause between
@@ -66,6 +74,10 @@ up where the last one ended.
 
 - **Up to six synchronized stems** — isolate vocals, drums, bass, guitar,
   piano, instrumental, or other parts depending on the selected model.
+- **A persistent transport** — a waveform timeline with the playhead, the
+  shaded A–B loop, draggable boundary handles, and saved-section marks, above
+  play, record, back-five, A–B, speed, and key. It is always on screen while a
+  song is loaded, and it is the only place that seeks.
 - **A hands-on stem mixer** — set a level for every stem, mute or solo parts,
   and apply target-aware Learn, Guide, and Play Along presets.
 - **Structured song practice** — loop and save difficult sections, control
@@ -89,6 +101,9 @@ up where the last one ended.
 - **Nothing half-saved** — downloads, separations, and takes are written aside
   and only enter the Library once complete and readable, so an interrupted
   operation leaves the previous state rather than a broken entry.
+- **Settings that own app-level choices** — default microphone and backing
+  levels for new takes, a remembered default separation, the app's version and
+  source, and the bundled third-party notices.
 - **Private by design** — extraction, separation, mixing, playback, and
   recording happen on the iPhone. There is no Atarang backend or account.
 
@@ -99,19 +114,23 @@ up where the last one ended.
 ## How it works
 
 1. **Paste** a `youtube.com` or `youtu.be` link.
-2. **Choose** a 2-, 4-, or 6-stem separation style.
+2. **Choose** what you want out of it — Balanced 4-stem, Detailed 6-stem, or
+   Vocals + Backing.
 3. **Mix** the generated parts to make room for your voice or instrument.
 4. **Play, record, and share** — your tracks and takes remain available in the
    on-device Library.
 
 ## Separation models
 
-| Model | Output | Availability | Best for |
-| --- | --- | --- | --- |
-| **HTDemucs** | Vocals, drums, bass, other | Bundled | A balanced default with four-part control |
-| **HTDemucs 6-stem** | Vocals, drums, bass, other, guitar, piano | 136 MB first-use download | Detailed instrument control on newer, high-memory devices |
-| **MDX23C InstVoc HQ** | Vocals, instrumental | 40 MB first-use download | A high-quality general vocal split |
-| **Kim Vocals** | Vocals, instrumental | 67 MB first-use download | An alternative, vocal-focused separation |
+The app names these by outcome; the architecture behind each is secondary
+detail.
+
+| In the app | Model | Output | Availability | Best for |
+| --- | --- | --- | --- | --- |
+| **Balanced 4-stem** | HTDemucs | Vocals, drums, bass, other | Bundled | A balanced default with four-part control |
+| **Detailed 6-stem** | HTDemucs 6-stem | Vocals, drums, bass, other, guitar, piano | 136 MB first-use download | Detailed instrument control on newer, high-memory devices |
+| **Vocals + Backing** | MDX23C InstVoc HQ | Vocals, instrumental | 40 MB first-use download | A high-quality general vocal split |
+| **Vocals + Backing, vocal-focused** | Kim Vocals | Vocals, instrumental | 67 MB first-use download | An alternative, vocal-focused separation |
 
 Optional models are downloaded only when selected, verified against pinned
 SHA-256 checksums, stored in Application Support, and excluded from iCloud
@@ -211,3 +230,5 @@ originals, separations, and performances.
 - YoutubeDL-iOS, © 2020 Changbeom Ahn, MIT License.
 
 See [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md) for complete notices.
+The same file ships in the app and is readable under **Settings › About ›
+Third-Party Notices**.
