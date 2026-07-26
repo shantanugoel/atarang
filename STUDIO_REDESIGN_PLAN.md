@@ -340,6 +340,24 @@ display-rate wrapper.
   with computed ones over `access`/`withMutation`, because the macro rewrites
   stored properties into accessors. All audio plumbing is `@ObservationIgnored`.
 
+**Simulator verification.** Driven against a seeded synthetic 4-stem track
+(`Application Support/Tracks/<id>/`), since separating a real song is not
+feasible in the simulator. Confirmed: playback and the display-rate playhead;
+the new smooth playhead marker tracking the slider; A–B looping wrapping
+correctly rather than running to the end; the rewritten metronome surviving
+~30 s of rolling-window refills across a loop wrap without stalling the graph;
+practice state persisting through the throttle and restoring workspace, loop,
+and playhead across a relaunch; the lock screen showing the song title.
+Backgrounded playback continues while the app stays alive.
+
+Two things the simulator could **not** settle, both already on the device pass:
+the lock-screen scrubber shows `--:--` for elapsed and duration, and locking
+the screen gets the app jetsammed, so background and lock behaviour there says
+nothing about a device. Note also that the timing-stem fallback cannot be
+triggered through the UI — `duration` is the minimum across stems, so every
+stem always has frames in a scheduled range. It is defensive code covered by
+unit tests, not a fix for an observable bug.
+
 **Idle timer scope.** There is no full-screen practice mode yet, so the hold is
 scoped to the Studio tab with a song playing, recording, or counting in. Phase 6
 extends it rather than replacing it.
