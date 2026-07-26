@@ -2,12 +2,10 @@ import XCTest
 @testable import Atarang
 
 final class PracticeSettingsTests: XCTestCase {
-    func testLegacySettingsReceiveSafeDefaults() throws {
-        let legacyJSON = Data(#"{"workspace":"practice","playbackRate":0.75}"#.utf8)
-        var settings = try JSONDecoder().decode(
-            SongPracticeSettings.self,
-            from: legacyJSON
-        )
+    func testNewSettingsReceiveSafeDefaults() {
+        var settings = SongPracticeSettings()
+        settings.workspace = .practice
+        settings.playbackRate = 0.75
 
         settings.validate(duration: 120, availableStems: [.vocals, .instrumental])
 

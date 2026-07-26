@@ -5,7 +5,7 @@ import Foundation
 import OSLog
 
 @MainActor
-final class StemPlayer: ObservableObject, @unchecked Sendable {
+final class StemPlayer: ObservableObject {
     @Published private(set) var isLoaded = false
     @Published private(set) var isPlaying = false
     @Published private(set) var isRecording = false
@@ -1677,6 +1677,10 @@ final class StemPlayer: ObservableObject, @unchecked Sendable {
 
 /// Opens a tap destination lazily so its file header uses the format delivered
 /// by the running audio graph rather than a possibly stale pre-start format.
+///
+/// Synchronization invariant: `url` is immutable, and `file` — the only mutable
+/// state — is created, written, and released entirely under `lock`, so the
+/// render-thread tap callback and the main actor may both call in freely.
 private final class AudioTapFileWriter: @unchecked Sendable {
     private let url: URL
     private let lock = NSLock()

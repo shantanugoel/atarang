@@ -162,55 +162,92 @@ There are no users. Every tolerance below exists to read files written by
 earlier development builds, and each one is a permanent tax on a format that
 was never released.
 
-- [ ] Replace the hand-written `init(from:)` in `SongPracticeSettings` (25
+- [x] Replace the hand-written `init(from:)` in `SongPracticeSettings` (25
       `decodeIfPresent` calls) with synthesized `Codable`.
-- [ ] Replace the hand-written `init(from:)` in `TrackMetadata` (6
+- [x] Replace the hand-written `init(from:)` in `TrackMetadata` (6
       `decodeIfPresent` calls); make `separationModel` and `stems` required
       rather than defaulting to `.htdemucs`.
-- [ ] Delete `PlaybackState`'s `Codable` conformance, custom decoder, and
+- [x] Delete `PlaybackState`'s `Codable` conformance, custom decoder, and
       `schemaVersion` entirely — it is never persisted by the app, and its only
       exercise is two tests decoding a "legacy" format that never shipped.
       Delete those tests with it.
-- [ ] Reset `SongPracticeSettings.currentSchemaVersion` to 1 for the first
+- [x] Reset `SongPracticeSettings.currentSchemaVersion` to 1 for the first
       release.
-- [ ] Remove `HistoryStore`'s ad-hoc metadata fallbacks (`metadata?.createdAt ??
+- [x] Remove `HistoryStore`'s ad-hoc metadata fallbacks (`metadata?.createdAt ??
       fallbackDate` and similar). Missing or damaged metadata becomes a Phase 10
       integrity concern with one explicit model, not a silent guess in three
       places.
-- [ ] Remove the README claim that the Library "automatically discovers media
+- [x] Remove the README claim that the Library "automatically discovers media
       created by older builds".
-- [ ] Keep `separationCacheVersion` and the planned `analysisVersion` — those
+- [x] Keep `separationCacheVersion` and the planned `analysisVersion` — those
       invalidate caches when a *model or algorithm* changes, which stays useful
       after 1.0. Keep `schemaVersion` on persisted types as a forward-looking
       field, but with no branching on it until there is something to branch on.
 
 ### 2. Strict concurrency and Swift 6
 
-- [ ] Enable `SWIFT_STRICT_CONCURRENCY = complete` in Swift 5 mode and record
+- [x] Enable `SWIFT_STRICT_CONCURRENCY = complete` in Swift 5 mode and record
       the app-owned warning count as a baseline.
-- [ ] Separate app-owned warnings from generated Core ML and package warnings.
-- [ ] Remove concurrently mutated captured variables from `AVAudioConverter`
+- [x] Separate app-owned warnings from generated Core ML and package warnings.
+- [x] Remove concurrently mutated captured variables from `AVAudioConverter`
       input blocks.
-- [ ] Encapsulate non-`Sendable` AVFoundation objects behind actor or queue
+- [x] Encapsulate non-`Sendable` AVFoundation objects behind actor or queue
       ownership.
-- [ ] Audit every `@unchecked Sendable` conformance — `StemPlayer`,
+- [x] Audit every `@unchecked Sendable` conformance — `StemPlayer`,
       `StemSeparator`, `ONNXModelSession`, `MDXSpectralTransform`,
       `AudioTapFileWriter`, `CoreMLWaveformSeparator` — and either document the
       synchronization invariant in code or remove the conformance.
-- [ ] Isolate mutable state exposed by the YoutubeDL dependency.
-- [ ] Drive app-owned strict-concurrency warnings to zero.
-- [ ] Flip `SWIFT_VERSION` from 5.0 to 6.0 and resolve the resulting errors.
-- [ ] Document any remaining generated-code warning with a containment strategy.
+- [x] Isolate mutable state exposed by the YoutubeDL dependency.
+- [x] Drive app-owned strict-concurrency warnings to zero.
+- [x] Flip `SWIFT_VERSION` from 5.0 to 6.0 and resolve the resulting errors.
+- [x] Document any remaining generated-code warning with a containment strategy.
 
 ### Acceptance criteria
 
-- [ ] The project builds under Swift 6 language mode with zero app-owned
+- [x] The project builds under Swift 6 language mode with zero app-owned
       concurrency diagnostics.
-- [ ] No `@unchecked Sendable` remains without a written invariant.
-- [ ] No hand-written `Codable` conformance remains whose only purpose is
+- [x] No `@unchecked Sendable` remains without a written invariant.
+- [x] No hand-written `Codable` conformance remains whose only purpose is
       tolerating a pre-release format.
-- [ ] Playback, recording, separation, export, and Library behaviour are
-      unchanged.
+- [~] Playback, recording, separation, export, and Library behaviour are
+      unchanged. Unit tests, a clean Swift 6 build, and a simulator launch pass;
+      the interactive on-device pass over playback, recording, and export is
+      still outstanding.
+
+### Outcome
+
+**Baseline.** Turning on `SWIFT_STRICT_CONCURRENCY = complete` under Swift 5
+produced 15 app-owned warnings across five files — the three separators'
+`AVAudioConverter` input blocks (9), `BundledYTDLP` reading
+`YoutubeDL.pythonModuleURL` (1), `ContentView.loopBoundaryEditor` (1), and
+`RecordingMixPreviewPlayer.schedule` (1), plus three `@preconcurrency import`
+suggestions. Four further warnings came from generated Core ML sources and none
+from packages.
+
+**Notable changes.**
+
+- The three byte-identical `loadAndResample` implementations collapsed into
+  `AudioResampler.stereoFloat32(fileURL:sampleRate:)`. Its
+  `SingleBufferConverterInput` holds the buffer and the single-shot flag behind a
+  lock, so the `@Sendable` input block no longer captures mutable locals.
+- `StemPlayer`'s `@unchecked Sendable` was **removed**: the class is `@MainActor`,
+  which already implies `Sendable`. `YTDLPSelection`'s was removed as well — every
+  stored property is `Sendable`. The remaining six carry written invariants.
+- `BundledYTDLP` became an actor owning both installation and every `yt_dlp`
+  invocation, and is the only place that imports `YoutubeDL` as
+  `@preconcurrency`.
+
+**Generated Core ML warnings need no containment.** Xcode's model generator emits
+`@preconcurrency import CoreML` when the target is in Swift 6 mode, so all four
+warnings disappeared with the language-mode flip rather than needing suppression.
+
+**Known consequence.** `SongPracticeSettings`, `TrackMetadata`, and
+`RecordingMetadata` now use synthesized decoding, which requires every key. Files
+written by earlier development builds no longer decode: practice settings fall
+back to defaults, and library folders whose metadata predates the current shape
+are skipped by `HistoryStore` rather than reconstructed. This is the intended
+pre-release behaviour, and Phase 10 replaces the skipping with explicit
+recoverable/corrupt classification.
 
 ---
 

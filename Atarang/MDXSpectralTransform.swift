@@ -2,6 +2,11 @@ import Accelerate
 import Foundation
 
 /// Torch-compatible centered STFT layout used by MDX23C and classic MDX-Net ONNX models.
+///
+/// Synchronization invariant: every stored property is a `let` assigned during
+/// `init` and released in `deinit`. The `vDSP_DFT_Setup` handles are not safe
+/// for overlapping use, so an instance must be driven by one separation run at
+/// a time — which is how `MDXVocalSeparator`, its only owner, uses it.
 final class MDXSpectralTransform: @unchecked Sendable {
     let nFFT: Int
     let hopLength: Int

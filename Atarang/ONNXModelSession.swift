@@ -1,6 +1,10 @@
 import Foundation
 import OnnxRuntimeBindings
 
+/// Synchronization invariant: every stored property is a `let` assigned during
+/// `init` and never mutated afterwards. `ORTSession.run` is safe to call
+/// concurrently on one session, and the separation pipeline runs one inference
+/// at a time regardless.
 final class ONNXModelSession: @unchecked Sendable {
     enum ExecutionBackend: Equatable {
         case automatic

@@ -79,7 +79,7 @@ final class SeparationModel: ObservableObject {
                 progress = 0.17
             } else {
                 statusText = "Preparing bundled yt-dlp…"
-                try BundledYTDLP.install()
+                try await BundledYTDLP.shared.install()
                 progress = 0.09
                 logger.info("Starting extraction for \(url.absoluteString, privacy: .public) with bundled yt-dlp \(BundledYTDLP.version, privacy: .public)")
 
@@ -258,10 +258,6 @@ final class SeparationModel: ObservableObject {
     private func downloadAudio(from url: URL) async throws -> (url: URL, title: String) {
         statusText = "Reading YouTube video information…"
         progress = 0.11
-        let extractionLogger = Logger(
-            subsystem: "com.shantanugoel.atarang.Atarang",
-            category: "yt-dlp-download"
-        )
         let selection = try await Task.detached(priority: .userInitiated) {
             let folder = FileManager.default.temporaryDirectory
                 .appendingPathComponent("Atarang-\(UUID().uuidString)", isDirectory: true)
@@ -269,20 +265,15 @@ final class SeparationModel: ObservableObject {
             let metadataURL = folder.appendingPathComponent("selection.json")
             let printTemplate = "{\"title\":%(title)j,\"url\":%(url)j,\"headers\":%(http_headers)j,\"size\":%(filesize)j}"
 
-            try await yt_dlp(
-                argv: [
-                    "--no-playlist",
-                    "--no-check-certificates",
-                    "--no-warnings",
-                    "--skip-download",
-                    "--format", "bestaudio[ext=m4a]",
-                    "--print-to-file", printTemplate, metadataURL.path,
-                    url.absoluteString,
-                ],
-                log: { level, message in
-                    extractionLogger.debug("[\(level, privacy: .public)] \(message, privacy: .public)")
-                }
-            )
+            try await BundledYTDLP.shared.run(argv: [
+                "--no-playlist",
+                "--no-check-certificates",
+                "--no-warnings",
+                "--skip-download",
+                "--format", "bestaudio[ext=m4a]",
+                "--print-to-file", printTemplate, metadataURL.path,
+                url.absoluteString,
+            ])
             let data = try Data(contentsOf: metadataURL)
             var decoded = try JSONDecoder().decode(YTDLPSelection.self, from: data)
             decoded.temporaryFolder = folder
@@ -500,7 +491,7 @@ private struct SavedOriginal: Sendable {
     let audioURL: URL
 }
 
-private struct YTDLPSelection: Decodable, @unchecked Sendable {
+private struct YTDLPSelection: Decodable, Sendable {
     let title: String
     let url: String
     let headers: [String: String]

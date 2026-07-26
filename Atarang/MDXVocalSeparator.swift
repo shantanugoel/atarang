@@ -2,6 +2,10 @@ import AVFoundation
 import CoreML
 
 /// Native Swift STFT/iSTFT adapter for MDX23C InstVoc HQ and Kim Vocal 2.
+///
+/// Synchronization invariant: every stored property is a `let` assigned during
+/// `init` and never mutated afterwards, so the instance is only ever read from
+/// the detached task that runs the separation.
 final class MDXVocalSeparator: @unchecked Sendable {
     private enum Backend {
         case coreML(MLModel)
@@ -192,34 +196,7 @@ final class MDXVocalSeparator: @unchecked Sendable {
     }
 
     private func loadAndResample(fileURL: URL) throws -> AVAudioPCMBuffer {
-        let file = try AVAudioFile(forReading: fileURL)
-        guard let target = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: sampleRate,
-            channels: 2,
-            interleaved: false
-        ), let converter = AVAudioConverter(from: file.processingFormat, to: target) else {
-            throw StemSeparatorError.unsupportedFormat
-        }
-        let outputFrames = AVAudioFrameCount(ceil(Double(file.length) * sampleRate / file.processingFormat.sampleRate))
-        guard let output = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: outputFrames),
-              let input = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length)) else {
-            throw StemSeparatorError.unsupportedFormat
-        }
-        try file.read(into: input)
-        var suppliedInput = false
-        var conversionError: NSError?
-        converter.convert(to: output, error: &conversionError) { _, status in
-            if suppliedInput {
-                status.pointee = .endOfStream
-                return nil
-            }
-            suppliedInput = true
-            status.pointee = .haveData
-            return input
-        }
-        if let conversionError { throw StemSeparatorError.inferenceFailed(conversionError.localizedDescription) }
-        return output
+        try AudioResampler.stereoFloat32(fileURL: fileURL, sampleRate: sampleRate)
     }
 
     private func floatValues(from array: MLMultiArray) -> [Float] {

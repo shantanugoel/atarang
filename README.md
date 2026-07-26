@@ -184,8 +184,7 @@ checked-in version is `2026.07.04` and its SHA-256 checksum is verified before
 use.
 
 The Library is stored locally on the device. It can permanently delete
-originals, separations, and performances, and it automatically discovers media
-created by older builds when the files are still present.
+originals, separations, and performances.
 
 > [!IMPORTANT]
 > Only download audio you have permission to use and follow YouTube's terms.

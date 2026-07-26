@@ -53,24 +53,13 @@ final class PlaybackStateTests: XCTestCase {
         XCTAssertGreaterThan(state.playbackGeneration, loopGeneration)
     }
 
-    func testLegacyPersistedStateMigratesMissingTransformFields() throws {
-        let legacyJSON = Data(#"{"position":12,"duration":100}"#.utf8)
-        let state = try JSONDecoder().decode(PlaybackState.self, from: legacyJSON)
+    func testTransformsAreClampedToSupportedRanges() {
+        var state = PlaybackState()
+        state.load(duration: 100)
 
-        XCTAssertEqual(state.schemaVersion, PlaybackState.currentSchemaVersion)
-        XCTAssertEqual(state.position, 12)
-        XCTAssertEqual(state.duration, 100)
-        XCTAssertEqual(state.rate, 1)
-        XCTAssertEqual(state.pitchSemitones, 0)
-        XCTAssertNil(state.loopRange)
-        XCTAssertEqual(state.playbackGeneration, 0)
-    }
-
-    func testPersistedValuesAreClampedDuringMigration() throws {
-        let legacyJSON = Data(
-            #"{"position":120,"duration":100,"rate":2,"pitchSemitones":30}"#.utf8
-        )
-        let state = try JSONDecoder().decode(PlaybackState.self, from: legacyJSON)
+        state.seek(to: 120)
+        state.setRate(2)
+        state.setPitchSemitones(30)
 
         XCTAssertEqual(state.position, 100)
         XCTAssertEqual(state.rate, PlaybackState.supportedRateRange.upperBound)

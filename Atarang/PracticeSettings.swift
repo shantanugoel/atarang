@@ -79,7 +79,7 @@ struct SavedPracticeSection: Codable, Equatable, Identifiable, Sendable {
 }
 
 struct SongPracticeSettings: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 2
+    static let currentSchemaVersion = 1
     static let supportedCountInClicks = [0, 2, 4]
     static let supportedBPMRange = 30...300
     static let supportedRepetitionPauseRange: ClosedRange<TimeInterval> = 0...10
@@ -189,104 +189,7 @@ struct SongPracticeSettings: Codable, Equatable, Sendable {
         loopEnd = range.end
     }
 
-    private enum CodingKeys: String, CodingKey {
-        case schemaVersion, workspace, target, preset, loopStart, loopEnd
-        case isLoopEnabled, playbackRate, countInClicks, lastPosition
-        case pitchSemitones, metronomeEnabled, metronomeBPM
-        case metronomeSubdivision, metronomeAccentEnabled, metronomeLevel
-        case metronomeAlignment, metronomeOnly, repetitionTarget
-        case repetitionPause, tempoRampEnabled, tempoRampEvery
-        case tempoRampStart, tempoRampIncrement, tempoRampTarget, savedSections
-    }
-
     init() {}
-
-    init(from decoder: Decoder) throws {
-        let values = try decoder.container(keyedBy: CodingKeys.self)
-        schemaVersion = Self.currentSchemaVersion
-        workspace = try values.decodeIfPresent(
-            StudioWorkspace.self,
-            forKey: .workspace
-        ) ?? .mix
-        target = try values.decodeIfPresent(StemKind.self, forKey: .target)
-        preset = try values.decodeIfPresent(
-            TargetMixPreset.self,
-            forKey: .preset
-        ) ?? .learn
-        loopStart = try values.decodeIfPresent(TimeInterval.self, forKey: .loopStart)
-        loopEnd = try values.decodeIfPresent(TimeInterval.self, forKey: .loopEnd)
-        isLoopEnabled = try values.decodeIfPresent(
-            Bool.self,
-            forKey: .isLoopEnabled
-        ) ?? false
-        playbackRate = try values.decodeIfPresent(
-            Float.self,
-            forKey: .playbackRate
-        ) ?? 1
-        pitchSemitones = try values.decodeIfPresent(
-            Float.self,
-            forKey: .pitchSemitones
-        ) ?? 0
-        countInClicks = try values.decodeIfPresent(
-            Int.self,
-            forKey: .countInClicks
-        ) ?? 0
-        lastPosition = try values.decodeIfPresent(
-            TimeInterval.self,
-            forKey: .lastPosition
-        ) ?? 0
-        metronomeEnabled = try values.decodeIfPresent(
-            Bool.self,
-            forKey: .metronomeEnabled
-        ) ?? false
-        metronomeBPM = try values.decodeIfPresent(Int.self, forKey: .metronomeBPM) ?? 120
-        metronomeSubdivision = try values.decodeIfPresent(
-            MetronomeSubdivision.self,
-            forKey: .metronomeSubdivision
-        ) ?? .quarter
-        metronomeAccentEnabled = try values.decodeIfPresent(
-            Bool.self,
-            forKey: .metronomeAccentEnabled
-        ) ?? true
-        metronomeLevel = try values.decodeIfPresent(
-            Float.self,
-            forKey: .metronomeLevel
-        ) ?? 0.7
-        metronomeAlignment = try values.decodeIfPresent(
-            TimeInterval.self,
-            forKey: .metronomeAlignment
-        ) ?? 0
-        metronomeOnly = try values.decodeIfPresent(Bool.self, forKey: .metronomeOnly) ?? false
-        repetitionTarget = try values.decodeIfPresent(
-            Int.self,
-            forKey: .repetitionTarget
-        ) ?? 0
-        repetitionPause = try values.decodeIfPresent(
-            TimeInterval.self,
-            forKey: .repetitionPause
-        ) ?? 0
-        tempoRampEnabled = try values.decodeIfPresent(
-            Bool.self,
-            forKey: .tempoRampEnabled
-        ) ?? false
-        tempoRampEvery = try values.decodeIfPresent(Int.self, forKey: .tempoRampEvery) ?? 1
-        tempoRampStart = try values.decodeIfPresent(
-            Float.self,
-            forKey: .tempoRampStart
-        ) ?? 0.5
-        tempoRampIncrement = try values.decodeIfPresent(
-            Float.self,
-            forKey: .tempoRampIncrement
-        ) ?? 0.05
-        tempoRampTarget = try values.decodeIfPresent(
-            Float.self,
-            forKey: .tempoRampTarget
-        ) ?? 1
-        savedSections = try values.decodeIfPresent(
-            [SavedPracticeSection].self,
-            forKey: .savedSections
-        ) ?? []
-    }
 
     private static func validatedRate(_ value: Float) -> Float {
         guard value.isFinite else { return 1 }

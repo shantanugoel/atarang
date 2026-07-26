@@ -25,12 +25,10 @@ struct PlaybackLoopRange: Codable, Equatable, Sendable {
 /// `position` is always expressed in source-song seconds. Render time is
 /// converted to media time with `rate`, keeping UI and recording boundaries
 /// correct when playback is transformed.
-struct PlaybackState: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 1
+struct PlaybackState: Equatable, Sendable {
     static let supportedRateRange: ClosedRange<Float> = 0.5...1.0
     static let supportedPitchRange: ClosedRange<Float> = -12...12
 
-    private(set) var schemaVersion = Self.currentSchemaVersion
     private(set) var position: TimeInterval = 0
     private(set) var duration: TimeInterval = 0
     private(set) var rate: Float = 1
@@ -132,43 +130,5 @@ struct PlaybackState: Codable, Equatable, Sendable {
         duration.isFinite ? max(0, duration) : 0
     }
 
-    private static func validatedLoop(
-        _ range: PlaybackLoopRange?,
-        duration: TimeInterval
-    ) -> PlaybackLoopRange? {
-        guard let range else { return nil }
-        return PlaybackLoopRange(start: range.start, end: range.end, duration: duration)
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case schemaVersion, position, duration, rate, pitchSemitones, loopRange
-        case playbackGeneration
-    }
-
     init() {}
-
-    init(from decoder: Decoder) throws {
-        let values = try decoder.container(keyedBy: CodingKeys.self)
-        schemaVersion = Self.currentSchemaVersion
-        duration = Self.validDuration(
-            try values.decodeIfPresent(TimeInterval.self, forKey: .duration) ?? 0
-        )
-        let decodedPosition = try values.decodeIfPresent(
-            TimeInterval.self,
-            forKey: .position
-        ) ?? 0
-        position = decodedPosition.isFinite ? min(max(0, decodedPosition), duration) : 0
-        setRate(try values.decodeIfPresent(Float.self, forKey: .rate) ?? 1)
-        setPitchSemitones(
-            try values.decodeIfPresent(Float.self, forKey: .pitchSemitones) ?? 0
-        )
-        loopRange = Self.validatedLoop(
-            try values.decodeIfPresent(PlaybackLoopRange.self, forKey: .loopRange),
-            duration: duration
-        )
-        playbackGeneration = max(
-            0,
-            try values.decodeIfPresent(Int.self, forKey: .playbackGeneration) ?? 0
-        )
-    }
 }

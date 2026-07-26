@@ -217,26 +217,24 @@ final class HistoryStore: ObservableObject {
         let root = try libraryRoot(named: "Tracks", create: true)
         return try folders(in: root).compactMap { folder in
             let metadataURL = folder.appendingPathComponent(LibraryMetadata.trackFilename)
-            let metadata = try? LibraryMetadata.read(TrackMetadata.self, from: metadataURL)
-            let separationModel = metadata?.separationModel ?? .htdemucs
-            let expectedStems = metadata?.stems ?? separationModel.stems
-            let files = Dictionary(uniqueKeysWithValues: expectedStems.compactMap { stem in
+            guard let metadata = try? LibraryMetadata.read(
+                TrackMetadata.self,
+                from: metadataURL
+            ) else { return nil }
+            let files = Dictionary(uniqueKeysWithValues: metadata.stems.compactMap { stem in
                 let url = folder.appendingPathComponent(stem.rawValue).appendingPathExtension("wav")
                 return FileManager.default.fileExists(atPath: url.path) ? (stem, url) : nil
             })
-            guard files.count == expectedStems.count else { return nil }
-            let fallbackDate = createdAt(for: folder)
-            let id = metadata?.id ?? UUID(uuidString: folder.lastPathComponent) ?? UUID()
+            guard files.count == metadata.stems.count else { return nil }
             return HistoryTrack(
-                id: id,
-                title: metadata?.title ?? "Separated track",
-                createdAt: metadata?.createdAt ?? fallbackDate,
-                sourceURL: metadata?.sourceURL,
-                sourceKey: metadata?.sourceKey,
-                sourceOriginalID: metadata?.sourceOriginalID,
-                separationModel: separationModel,
-                separationCacheVersion: metadata?.separationCacheVersion
-                    ?? separationModel.separationCacheVersion,
+                id: metadata.id,
+                title: metadata.title,
+                createdAt: metadata.createdAt,
+                sourceURL: metadata.sourceURL,
+                sourceKey: metadata.sourceKey,
+                sourceOriginalID: metadata.sourceOriginalID,
+                separationModel: metadata.separationModel,
+                separationCacheVersion: metadata.separationCacheVersion,
                 folderURL: folder,
                 files: files,
                 duration: audioDuration(at: files[.vocals] ?? files.values.first),
@@ -273,26 +271,27 @@ final class HistoryStore: ObservableObject {
         let root = try libraryRoot(named: "Recordings", create: true)
         return try folders(in: root).compactMap { folder in
             let metadataURL = folder.appendingPathComponent(LibraryMetadata.recordingFilename)
-            let metadata = try? LibraryMetadata.read(RecordingMetadata.self, from: metadataURL)
-            let exported = exportedAudio(in: folder, preferredName: metadata?.exportedFilename)
+            guard let metadata = try? LibraryMetadata.read(
+                RecordingMetadata.self,
+                from: metadataURL
+            ) else { return nil }
+            let exported = exportedAudio(in: folder, preferredName: metadata.exportedFilename)
             let microphone = folder.appendingPathComponent("microphone.caf")
             let backing = folder.appendingPathComponent("backing.caf")
             let microphoneExists = FileManager.default.fileExists(atPath: microphone.path)
             let backingExists = FileManager.default.fileExists(atPath: backing.path)
             guard exported != nil || microphoneExists else { return nil }
-            let fallbackDate = createdAt(for: folder)
-            let id = metadata?.id ?? UUID(uuidString: folder.lastPathComponent) ?? UUID()
             return HistoryRecording(
-                id: id,
-                title: metadata?.title ?? "Recorded performance",
-                createdAt: metadata?.createdAt ?? fallbackDate,
-                duration: metadata?.duration ?? audioDuration(at: exported ?? microphone),
-                sourceTrackID: metadata?.sourceTrackID,
+                id: metadata.id,
+                title: metadata.title,
+                createdAt: metadata.createdAt,
+                duration: metadata.duration,
+                sourceTrackID: metadata.sourceTrackID,
                 folderURL: folder,
                 microphoneURL: microphoneExists ? microphone : nil,
                 backingURL: backingExists ? backing : nil,
-                microphoneLevel: metadata?.microphoneLevel ?? 1,
-                backingLevel: metadata?.backingLevel ?? 0.7,
+                microphoneLevel: metadata.microphoneLevel ?? 1,
+                backingLevel: metadata.backingLevel ?? 0.7,
                 playbackURL: exported,
                 byteCount: folderSize(folder)
             )
@@ -315,11 +314,6 @@ final class HistoryStore: ObservableObject {
             includingPropertiesForKeys: [.isDirectoryKey],
             options: [.skipsHiddenFiles]
         ).filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
-    }
-
-    private func createdAt(for url: URL) -> Date {
-        let values = try? url.resourceValues(forKeys: [.creationDateKey, .contentModificationDateKey])
-        return values?.creationDate ?? values?.contentModificationDate ?? .distantPast
     }
 
     private func exportedAudio(in folder: URL, preferredName: String?) -> URL? {

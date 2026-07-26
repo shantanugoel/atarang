@@ -950,7 +950,7 @@ struct ContentView: View {
         value: TimeInterval,
         range: ClosedRange<TimeInterval>,
         color: Color,
-        setValue: @escaping (TimeInterval) -> Void,
+        setValue: @escaping @MainActor (TimeInterval) -> Void,
         nudge: @escaping (TimeInterval) -> Void
     ) -> some View {
         VStack(spacing: 5) {
@@ -971,7 +971,12 @@ struct ContentView: View {
                 }
             }
             Slider(
-                value: Binding(get: { value }, set: setValue),
+                // SwiftUI types the setter `@Sendable` but only ever calls it
+                // while updating the view on the main actor.
+                value: Binding(
+                    get: { value },
+                    set: { newValue in MainActor.assumeIsolated { setValue(newValue) } }
+                ),
                 in: range
             )
             .tint(color)

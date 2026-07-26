@@ -216,31 +216,6 @@ struct TrackMetadata: Codable, Sendable {
             ?? separationModel.separationCacheVersion
         self.stems = stems
     }
-
-    private enum CodingKeys: String, CodingKey {
-        case id, title, createdAt, sourceURL, sourceKey, sourceOriginalID
-        case separationModel, separationCacheVersion, stems
-    }
-
-    init(from decoder: Decoder) throws {
-        let values = try decoder.container(keyedBy: CodingKeys.self)
-        id = try values.decode(UUID.self, forKey: .id)
-        title = try values.decode(String.self, forKey: .title)
-        createdAt = try values.decode(Date.self, forKey: .createdAt)
-        sourceURL = try values.decodeIfPresent(URL.self, forKey: .sourceURL)
-        sourceKey = try values.decodeIfPresent(String.self, forKey: .sourceKey)
-        sourceOriginalID = try values.decodeIfPresent(UUID.self, forKey: .sourceOriginalID)
-        separationModel = try values.decodeIfPresent(
-            SeparationModelKind.self,
-            forKey: .separationModel
-        ) ?? .htdemucs
-        separationCacheVersion = try values.decodeIfPresent(
-            Int.self,
-            forKey: .separationCacheVersion
-        ) ?? separationModel.separationCacheVersion
-        stems = try values.decodeIfPresent([StemKind].self, forKey: .stems)
-            ?? SeparationModelKind.htdemucs.stems
-    }
 }
 
 struct RecordingMetadata: Codable, Sendable {

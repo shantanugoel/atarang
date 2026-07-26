@@ -205,7 +205,7 @@ final class RecordingMixPreviewPlayer: ObservableObject {
         node: AVAudioPlayerNode,
         file: AVAudioFile,
         from seconds: TimeInterval,
-        completion: (() -> Void)? = nil
+        completion: (@Sendable () -> Void)? = nil
     ) {
         let sampleRate = file.processingFormat.sampleRate
         let startFrame = min(

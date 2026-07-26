@@ -1,19 +1,47 @@
 import CryptoKit
 import Foundation
 import OSLog
-import YoutubeDL
+// `YoutubeDL` predates Swift concurrency and exposes `pythonModuleURL` as a
+// mutable static. `BundledYTDLP` below is the only thing in the app that touches
+// it, so the import is marked pre-concurrency here rather than app-wide.
+@preconcurrency import YoutubeDL
 
-enum BundledYTDLP {
+/// The single owner of every interaction with the YoutubeDL dependency.
+///
+/// `YoutubeDL.pythonModuleURL` is a `public static var` in a package written
+/// before Swift concurrency, and the embedded Python interpreter it points at is
+/// not reentrant. Routing installation and every `yt_dlp` invocation through one
+/// actor gives that shared mutable state a single owner and serializes the calls
+/// that must not overlap.
+actor BundledYTDLP {
+    static let shared = BundledYTDLP()
     static let version = "2026.07.04"
     private static let expectedSHA256 = "495be29ff4d9d4e9be7eabdfef225221e5d5282e77f2f505abc6dca80349f3fd"
-    private static let logger = Logger(subsystem: "com.shantanugoel.atarang.Atarang", category: "yt-dlp")
 
-    static func install() throws {
+    private let logger = Logger(
+        subsystem: "com.shantanugoel.atarang.Atarang",
+        category: "yt-dlp"
+    )
+    private let extractionLogger = Logger(
+        subsystem: "com.shantanugoel.atarang.Atarang",
+        category: "yt-dlp-download"
+    )
+
+    /// Runs yt-dlp with `argv`, installing the bundled extractor first if needed.
+    func run(argv: [String]) async throws {
+        try install()
+        let extractionLogger = extractionLogger
+        try await yt_dlp(argv: argv, log: { level, message in
+            extractionLogger.debug("[\(level, privacy: .public)] \(message, privacy: .public)")
+        })
+    }
+
+    func install() throws {
         guard let bundledURL = Bundle.main.url(forResource: "yt-dlp", withExtension: nil)
             ?? Bundle.main.url(forResource: "yt-dlp", withExtension: nil, subdirectory: "Resources") else {
             throw BootstrapError.resourceMissing
         }
-        guard try sha256(of: bundledURL) == expectedSHA256 else {
+        guard try Self.sha256(of: bundledURL) == Self.expectedSHA256 else {
             throw BootstrapError.checksumMismatch
         }
 
@@ -23,8 +51,8 @@ enum BundledYTDLP {
             withIntermediateDirectories: true
         )
         if FileManager.default.fileExists(atPath: destination.path),
-           try sha256(of: destination) == expectedSHA256 {
-            logger.info("Using bundled yt-dlp \(version, privacy: .public) already installed at \(destination.path, privacy: .public)")
+           try Self.sha256(of: destination) == Self.expectedSHA256 {
+            logger.info("Using bundled yt-dlp \(Self.version, privacy: .public) already installed at \(destination.path, privacy: .public)")
             return
         }
 
@@ -36,7 +64,7 @@ enum BundledYTDLP {
             try FileManager.default.removeItem(at: destination)
         }
         try FileManager.default.moveItem(at: temporary, to: destination)
-        logger.info("Installed bundled yt-dlp \(version, privacy: .public) at \(destination.path, privacy: .public)")
+        logger.info("Installed bundled yt-dlp \(Self.version, privacy: .public) at \(destination.path, privacy: .public)")
     }
 
     private static func sha256(of url: URL) throws -> String {
