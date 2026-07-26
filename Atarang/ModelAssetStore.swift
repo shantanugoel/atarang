@@ -47,58 +47,90 @@ actor ModelAssetStore {
 
         let directory = try modelsDirectory().appendingPathComponent(model.rawValue, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let target = directory.appendingPathComponent(
+            Self.artifactName(for: model),
+            isDirectory: model == .mdx23cInstVocHQ
+        )
+        let installed = Self.isInstalled(model)
 
         switch model {
         case .htdemucs:
             fatalError("Handled above")
-        case .htdemucs6s:
-            let target = directory.appendingPathComponent("htdemucs_6s_fp16weights.onnx")
-            if !FileManager.default.fileExists(atPath: target.path) {
-                await progress("Downloading \(model.title) (136 MB)…", 0.04)
-                try await installFile(for: model, target: target)
-            }
-            return .onnx(target)
-        case .kimVocals:
-            let target = directory.appendingPathComponent("Kim_Vocal_2.onnx")
-            if !FileManager.default.fileExists(atPath: target.path) {
-                await progress("Downloading \(model.title) (67 MB)…", 0.04)
-                try await installFile(for: model, target: target)
+        case .htdemucs6s, .kimVocals:
+            if !installed {
+                await progress("Downloading \(model.title) (\(model.downloadSize ?? "large"))…", 0.04)
+                try await installFile(for: model, directory: directory, target: target)
             }
             return .onnx(target)
         case .mdx23cInstVocHQ:
-            let compiled = directory.appendingPathComponent("MDX23C_InstVoc_HQ.mlmodelc", isDirectory: true)
-            if !FileManager.default.fileExists(atPath: compiled.path) {
-                await progress("Downloading \(model.title) (40 MB)…", 0.04)
-                try await installAndCompileMDX(for: model, directory: directory, destination: compiled, progress: progress)
+            if !installed {
+                await progress("Downloading \(model.title) (\(model.downloadSize ?? "large"))…", 0.04)
+                try await installAndCompileMDX(
+                    for: model,
+                    directory: directory,
+                    destination: target,
+                    progress: progress
+                )
             }
-            return .coreML(compiled)
+            return .coreML(target)
         }
     }
 
+    /// An install is what the manifest says it is.
+    ///
+    /// A half-finished download or a partially extracted `.mlmodelc` both pass
+    /// a bare `fileExists` check and then fail at load time, so the manifest —
+    /// written last, after verification and commit — is the authority, and it
+    /// is only believed while it still agrees with the artifact on disk.
     nonisolated static func isInstalled(_ model: SeparationModelKind) -> Bool {
         if model == .htdemucs { return true }
         guard let root = try? modelsDirectory() else { return false }
         let directory = root.appendingPathComponent(model.rawValue, isDirectory: true)
-        let name: String
-        switch model {
-        case .htdemucs: return true
-        case .htdemucs6s: name = "htdemucs_6s_fp16weights.onnx"
-        case .kimVocals: name = "Kim_Vocal_2.onnx"
-        case .mdx23cInstVocHQ: name = "MDX23C_InstVoc_HQ.mlmodelc"
-        }
-        return FileManager.default.fileExists(atPath: directory.appendingPathComponent(name).path)
+        let name = artifactName(for: model)
+        guard let manifest = try? LibraryMetadata.read(
+            ModelInstallManifest.self,
+            from: directory.appendingPathComponent(ModelInstallManifest.filename)
+        ) else { return false }
+        return manifest.model == model
+            && manifest.matches(
+                artifactAt: directory.appendingPathComponent(name),
+                expectedName: name
+            )
     }
 
-    private func installFile(for model: SeparationModelKind, target: URL) async throws {
+    private nonisolated static func artifactName(for model: SeparationModelKind) -> String {
+        switch model {
+        case .htdemucs: "" // Bundled; never installed into Models.
+        case .htdemucs6s: "htdemucs_6s_fp16weights.onnx"
+        case .kimVocals: "Kim_Vocal_2.onnx"
+        case .mdx23cInstVocHQ: "MDX23C_InstVoc_HQ.mlmodelc"
+        }
+    }
+
+    private func installFile(
+        for model: SeparationModelKind,
+        directory: URL,
+        target: URL
+    ) async throws {
         let descriptor = try descriptor(for: model)
         let downloaded = try await download(descriptor.url, for: model)
         defer { try? FileManager.default.removeItem(at: downloaded) }
         try verify(downloaded, sha256: descriptor.sha256, model: model)
-        try FileManager.default.moveItem(at: downloaded, to: target)
-        var values = URLResourceValues()
-        values.isExcludedFromBackup = true
-        var mutableTarget = target
-        try? mutableTarget.setResourceValues(values)
+
+        // Staged beside the target, then committed by replacement: an existing
+        // known-good model is only unlinked once its replacement is in place.
+        let staging = try LibraryStaging.makeDirectory(in: directory)
+        defer { LibraryStaging.discard(staging) }
+        let staged = staging.appendingPathComponent(target.lastPathComponent)
+        try FileManager.default.moveItem(at: downloaded, to: staged)
+        try LibraryStaging.commit(staged, to: target)
+        excludeFromBackup(target)
+        writeManifest(
+            for: model,
+            directory: directory,
+            target: target,
+            sha256: descriptor.sha256
+        )
     }
 
     private func installAndCompileMDX(
@@ -113,9 +145,10 @@ actor ModelAssetStore {
         try verify(downloaded, sha256: descriptor.sha256, model: model)
 
         await progress("Installing \(model.title)…", 0.08)
-        let extraction = directory.appendingPathComponent("install-\(UUID().uuidString)", isDirectory: true)
+        let staging = try LibraryStaging.makeDirectory(in: directory)
+        defer { LibraryStaging.discard(staging) }
+        let extraction = staging.appendingPathComponent("archive", isDirectory: true)
         try FileManager.default.createDirectory(at: extraction, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: extraction) }
         try FileManager.default.unzipItem(at: downloaded, to: extraction)
 
         guard let package = try findFile(withExtension: "mlpackage", below: extraction) else {
@@ -124,11 +157,53 @@ actor ModelAssetStore {
         let compiled = try await Task.detached(priority: .userInitiated) {
             try MLModel.compileModel(at: package)
         }.value
-        try FileManager.default.copyItem(at: compiled, to: destination)
+        let staged = staging.appendingPathComponent(
+            destination.lastPathComponent,
+            isDirectory: true
+        )
+        try FileManager.default.copyItem(at: compiled, to: staged)
+        // Compilation output that does not load is not an install. Checking it
+        // here keeps a broken artifact out of the library entirely.
+        // The model itself stays inside the task; only the fact that it loaded
+        // crosses back, since `MLModel` is not `Sendable`.
+        try await Task.detached(priority: .userInitiated) {
+            _ = try MLModel(contentsOf: staged)
+        }.value
+        try LibraryStaging.commit(staged, to: destination)
+        excludeFromBackup(destination)
+        writeManifest(
+            for: model,
+            directory: directory,
+            target: destination,
+            sha256: nil
+        )
+    }
+
+    private func excludeFromBackup(_ url: URL) {
         var values = URLResourceValues()
         values.isExcludedFromBackup = true
-        var mutableDestination = destination
-        try? mutableDestination.setResourceValues(values)
+        var mutable = url
+        try? mutable.setResourceValues(values)
+    }
+
+    /// Written only after the artifact is committed, because its presence is
+    /// what makes the model count as installed.
+    private func writeManifest(
+        for model: SeparationModelKind,
+        directory: URL,
+        target: URL,
+        sha256: String?
+    ) {
+        let manifest = ModelInstallManifest(
+            model: model,
+            artifactName: target.lastPathComponent,
+            byteCount: LibraryStaging.byteCount(of: target),
+            sha256: sha256
+        )
+        try? LibraryMetadata.write(
+            manifest,
+            to: directory.appendingPathComponent(ModelInstallManifest.filename)
+        )
     }
 
     private func download(_ url: URL, for model: SeparationModelKind) async throws -> URL {

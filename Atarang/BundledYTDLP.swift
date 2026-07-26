@@ -56,14 +56,23 @@ actor BundledYTDLP {
             return
         }
 
+        // Copy first, then replace. Removing the installed extractor before the
+        // replacement is in place leaves the app with no yt-dlp at all if the
+        // copy fails or the process dies between the two steps.
         let temporary = destination
             .deletingLastPathComponent()
-            .appendingPathComponent("yt-dlp-\(UUID().uuidString)")
+            .appendingPathComponent(LibraryStaging.prefix + "yt-dlp-\(UUID().uuidString)")
         try FileManager.default.copyItem(at: bundledURL, to: temporary)
-        if FileManager.default.fileExists(atPath: destination.path) {
-            try FileManager.default.removeItem(at: destination)
+        do {
+            if FileManager.default.fileExists(atPath: destination.path) {
+                _ = try FileManager.default.replaceItemAt(destination, withItemAt: temporary)
+            } else {
+                try FileManager.default.moveItem(at: temporary, to: destination)
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: temporary)
+            throw error
         }
-        try FileManager.default.moveItem(at: temporary, to: destination)
         logger.info("Installed bundled yt-dlp \(Self.version, privacy: .public) at \(destination.path, privacy: .public)")
     }
 

@@ -442,17 +442,17 @@ Absorbs `IMPROVEMENTS_PLAN.md` items 3, 2, and 5.
 Today `micFile.write(from:)` and `mixWriter.write(_:)` failures are swallowed by
 a bare `print()` inside the tap callbacks, and the take is still committed.
 
-- [ ] Capture microphone and backing writer failures as state instead of
+- [x] Capture microphone and backing writer failures as state instead of
       printing and continuing.
-- [ ] Stop the recording safely when either writer fails, with an actionable
+- [x] Stop the recording safely when either writer fails, with an actionable
       reason surfaced to the user.
-- [ ] Write into a staging directory; commit only after both streams close and
+- [x] Write into a staging directory; commit only after both streams close and
       validate.
-- [ ] Verify both files are readable with a plausible duration before writing
+- [x] Verify both files are readable with a plausible duration before writing
       metadata.
-- [ ] Quarantine or remove failed staging directories.
-- [ ] Consider a bounded writer queue so file I/O cannot block the audio
-      callback.
+- [x] Remove failed staging directories, and sweep any survivors at launch.
+- [x] Add a bounded writer queue so file I/O cannot block the audio callback.
+      Overflow fails the take rather than dropping audio.
 
 ### 2. Isolate recording exports (item 2)
 
@@ -461,40 +461,119 @@ recorded should not lose its shareable file because they moved on, and once
 export state is keyed by recording rather than by player it is also the simpler
 implementation — `StemPlayer` stops owning `isExporting` and `shareURL` at all.
 
-- [ ] Key exports by recording ID and generation token, not by current player
+- [x] Key exports by recording ID and generation token, not by current player
       context.
-- [ ] Move `isExporting`, export errors, and `shareURL` off `StemPlayer` and
+- [x] Move `isExporting`, export errors, and `shareURL` off `StemPlayer` and
       onto the recording they belong to.
-- [ ] Let an in-flight export run to completion across song changes and unload;
+- [x] Let an in-flight export run to completion across song changes and unload;
       publish completion to the Library item.
-- [ ] Show export state in Studio only while the same recording is still loaded.
-- [ ] Give export its own serial lane rather than queueing it behind Phase 3's
+- [x] Show export state in Studio only while the same recording is still loaded.
+- [x] Give export its own serial lane rather than queueing it behind Phase 3's
       heavy analysis jobs — a few-second export must not wait on a multi-minute
       chord analysis. Same job-identity discipline, different lane.
-- [ ] Make completed exports discoverable from Library even when Studio has
+- [x] Make completed exports discoverable from Library even when Studio has
       moved on.
 
 ### 3. Atomic installs and library commits (item 5)
 
-- [ ] Download and generate into unique staging locations.
-- [ ] Validate checksums, expected files, audio readability, and metadata before
+- [x] Download and generate into unique staging locations.
+- [x] Validate checksums, expected files, audio readability, and metadata before
       publishing.
-- [ ] Commit by atomic replacement or final directory rename.
-- [ ] Never remove a known-good yt-dlp or model asset before its replacement is
+- [x] Commit by atomic replacement or final directory rename.
+- [x] Never remove a known-good yt-dlp or model asset before its replacement is
       ready.
-- [ ] Revalidate installed optional models against a manifest rather than mere
+- [x] Revalidate installed optional models against a manifest rather than mere
       file existence.
-- [ ] Sweep abandoned staging directories during startup maintenance.
+- [x] Sweep abandoned staging directories during startup maintenance.
 
 ### Acceptance criteria
 
-- [ ] Simulated write failures end recording cleanly, and no failed recording
-      appears as a valid Library performance.
-- [ ] Loading another song during export never shows the previous song's export
-      state or share URL.
-- [ ] Forced termination at any commit boundary leaves either the previous valid
-      asset or the new valid asset, never a partial one.
-- [ ] A completed separation is either fully discoverable or fully absent.
+- [x] Simulated write failures end recording cleanly, and no failed recording
+      appears as a valid Library performance. Writer failure, backlog overflow,
+      and unusable-audio validation are covered by unit tests; a storage failure
+      at take setup was exercised in the simulator by making `Recordings`
+      read-only, and produced an alert with no partial entry.
+- [x] Loading another song during export never shows the previous song's export
+      state or share URL. Studio reads export state through the loaded
+      `recordedTake`'s ID, so there is no per-player export state left to show.
+- [~] Forced termination at any commit boundary leaves either the previous valid
+      asset or the new valid asset, never a partial one. True by construction —
+      every publish is a rename or `replaceItemAt` — and the launch sweep was
+      verified against a seeded abandoned staging directory. **A real
+      kill-at-the-boundary test was not run**; it needs deterministic timing
+      the simulator UI does not give.
+- [x] A completed separation is either fully discoverable or fully absent. Stems
+      are generated into hidden staging, every promised stem is checked for
+      readability, `track.json` is written before the commit, and discovery
+      skips hidden entries.
+
+### Outcome
+
+**New files.** `LibraryStaging.swift` is the one staging and commit rule for the
+whole library. `AudioTapFileWriter.swift` lifts the writer out of `StemPlayer`
+and gives it fail-fast semantics. `RecordingExportCenter.swift` owns exports and
+the `SerialLane` they run on. `ModelInstallManifest.swift` defines what a
+finished optional-model install looks like.
+
+**One rule for every library write.** Staging directories are named
+`.staging-<uuid>` inside the destination's own root. Every discovery pass in the
+app already passed `.skipsHiddenFiles`, so a staged entry is unreachable by
+construction rather than by a new check, and publishing is one `moveItem` or
+`replaceItemAt` on the same volume. Recordings, originals, separations, new
+Library mixes, optional models, and the yt-dlp install all go through it.
+`sweepAbandonedStaging()` runs at launch, since nothing of ours can legitimately
+be staging then.
+
+**The writer no longer loses data in two different ways.**
+
+- A failed write used to be a `print()` inside the tap callback, and the take was
+  committed anyway. The first failure is now captured, reported once, and forces
+  the take to end with an actionable message; the staging folder is discarded.
+- File I/O left the render thread. Buffers are deep-copied and handed to a
+  serial queue bounded at 64 buffers (~6 s). Overflow fails the take rather than
+  quietly dropping audio, which is the only honest choice: a take with a silent
+  hole in it looks fine and is worthless.
+
+**Two bugs the new tests caught before the device ever saw them.** The first
+draft of `finish()` set one `isClosed` flag that both stopped new writes and
+made the queue skip pending ones, so the tail of every take was dropped — a
+1.0 s fixture came back as 0.9 s. The same flag also swallowed the failure in a
+take that ended promptly after a bad write, so `finish()` reported success on a
+recording that had never been written at all. Both are fixed by separating
+"closed to new buffers" from "drain what is queued"; `queue.sync` on the serial
+queue does the draining.
+
+**Exports belong to the recording now.** `StemPlayer` no longer has
+`isExporting` or `shareURL`. `RecordingExportCenter` keys state by recording ID
+with a generation token, runs work on a `SerialLane` — an actor is not enough,
+because awaiting inside one lets the next caller in — and writes
+`exportedFilename` into the recording's metadata on completion. Studio renders
+the state of `player.recordedTake?.id` and nothing else, so a different song
+simply has nothing to show. The Library's mix editor shares the lane so two
+encoders never run at once.
+
+**Model installs are what a manifest says they are.** `isInstalled` was
+`fileExists`, which is true of a half-finished download and of a partially
+extracted `.mlmodelc`. Installs now stage, verify SHA-256, load-test the
+compiled Core ML model before publishing it, commit atomically, and only then
+write `manifest.json`. Note the pre-release consequence: **models installed by
+earlier builds have no manifest and will be downloaded again once.**
+
+**Verified in the simulator against the Phase 1 synthetic track.** A loop take
+recorded to `.staging-…`, validated, committed as `Recordings/<uuid>` with
+metadata, exported to `Atarang Performance.m4a`, and appeared in the Library
+with its share action. A seeded abandoned staging directory and a leftover
+`.mix-*` file were both removed at the next launch. A read-only `Recordings`
+folder made recording fail before it started — which is also how the raw
+`NSFileManager` message ("You don't have permission to save the file
+'.staging-…'") was found and replaced with `PlayerError.noRecordingStorage`.
+
+**Not verified.** No device pass yet. Per Phase 1's process note, treat that as
+blocking for the recording layer before this phase is considered closed: the
+paths that only hardware exercises are a real microphone route under a genuine
+write failure, and the Bluetooth HFP handoff feeding a bounded queue. Also
+untested: killing the app exactly at a commit boundary, and re-downloading an
+optional model after the manifest change.
 
 ---
 

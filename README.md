@@ -83,7 +83,12 @@ up where the last one ended.
 - **Repeat without redownloading** — reuse a saved separation or run another
   model against an original already on the device.
 - **Easy exports** — create an AAC/M4A performance and share performances or
-  stems through AirDrop, Files, WhatsApp, and other compatible apps.
+  stems through AirDrop, Files, WhatsApp, and other compatible apps. An export
+  keeps running if you open another song, and appears on its Library
+  performance when it finishes.
+- **Nothing half-saved** — downloads, separations, and takes are written aside
+  and only enter the Library once complete and readable, so an interrupted
+  operation leaves the previous state rather than a broken entry.
 - **Private by design** — extraction, separation, mixing, playback, and
   recording happen on the iPhone. There is no Atarang backend or account.
 
@@ -110,8 +115,9 @@ up where the last one ended.
 
 Optional models are downloaded only when selected, verified against pinned
 SHA-256 checksums, stored in Application Support, and excluded from iCloud
-backup. After a model has been downloaded, its separation work remains
-on-device.
+backup. An install is published atomically and recorded in a manifest, so a
+download interrupted part way is re-fetched rather than reported as installed.
+After a model has been downloaded, its separation work remains on-device.
 
 ## Install on your iPhone
 

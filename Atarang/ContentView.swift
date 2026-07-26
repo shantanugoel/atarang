@@ -586,27 +586,51 @@ struct ContentView: View {
                 }
             }
 
-            if player.isExporting {
+            exportStatus
+        }
+        .padding(14)
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20))
+    }
+
+    /// The export belongs to the recording, not to this screen: it keeps
+    /// running if the user loads another song, and finishes into the Library.
+    /// Studio shows it only while that same take is still loaded here.
+    @ViewBuilder
+    private var exportStatus: some View {
+        if let take = player.recordedTake,
+           let status = RecordingExportCenter.shared.status(for: take.id) {
+            switch status {
+            case .running:
                 HStack(spacing: 10) {
                     ProgressView()
                     Text("Preparing shareable M4A…")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
-            } else if player.shareURL != nil {
+            case .finished(let url):
                 Button {
-                    if let url = player.shareURL {
-                        sharePayload = SharePayload(items: [url])
-                    }
+                    sharePayload = SharePayload(items: [url])
                 } label: {
                     Label("Share Performance", systemImage: "square.and.arrow.up")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
+            case .failed(let message):
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("The shareable mix could not be created", systemImage: "exclamationmark.triangle")
+                        .font(.subheadline.weight(.semibold))
+                    Text("\(message) The recording itself is safe in your Library.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button("Try Again") {
+                        RecordingExportCenter.shared.retry(take.id)
+                    }
+                    .buttonStyle(.bordered)
+                    .frame(minHeight: 44)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .padding(14)
-        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20))
     }
 
     private var studioWorkspaceSelector: some View {

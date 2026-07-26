@@ -122,6 +122,10 @@ final class HistoryStore: ObservableObject {
             throw HistoryStoreError.missingRawAudio
         }
 
+        // A new mix is built in a staging folder and renamed into place once
+        // its audio, export, and metadata are all present, so a failure part
+        // way through leaves no half-formed performance in the Library.
+        let workingFolder: URL
         let destinationFolder: URL
         let destinationMicrophoneURL: URL
         let destinationBackingURL: URL
@@ -131,25 +135,23 @@ final class HistoryStore: ObservableObject {
 
         if asNew {
             id = UUID()
-            destinationFolder = try libraryRoot(named: "Recordings", create: true)
-                .appendingPathComponent(id.uuidString, isDirectory: true)
-            try FileManager.default.createDirectory(
-                at: destinationFolder,
-                withIntermediateDirectories: true
-            )
-            destinationMicrophoneURL = destinationFolder.appendingPathComponent("microphone.caf")
-            destinationBackingURL = destinationFolder.appendingPathComponent("backing.caf")
+            let root = try LibraryStaging.libraryRoot(named: "Recordings")
+            workingFolder = try LibraryStaging.makeDirectory(in: root)
+            destinationFolder = root.appendingPathComponent(id.uuidString, isDirectory: true)
+            destinationMicrophoneURL = workingFolder.appendingPathComponent("microphone.caf")
+            destinationBackingURL = workingFolder.appendingPathComponent("backing.caf")
             do {
                 try FileManager.default.copyItem(at: sourceMicrophoneURL, to: destinationMicrophoneURL)
                 try FileManager.default.copyItem(at: sourceBackingURL, to: destinationBackingURL)
             } catch {
-                try? FileManager.default.removeItem(at: destinationFolder)
+                LibraryStaging.discard(workingFolder)
                 throw error
             }
             title = nextMixTitle(for: recording.title)
             createdAt = Date()
         } else {
             id = recording.id
+            workingFolder = recording.folderURL
             destinationFolder = recording.folderURL
             destinationMicrophoneURL = sourceMicrophoneURL
             destinationBackingURL = sourceBackingURL
@@ -169,7 +171,10 @@ final class HistoryStore: ObservableObject {
         )
 
         do {
-            let exportedURL = try await RecordingExporter.export(take: take)
+            // Same serial lane as Studio's exports, so re-mixing a take in the
+            // Library cannot run a second encoder alongside one that is still
+            // finishing.
+            let exportedURL = try await RecordingExportCenter.shared.exportSerially(take)
             let metadata = RecordingMetadata(
                 id: id,
                 title: title,
@@ -180,12 +185,18 @@ final class HistoryStore: ObservableObject {
                 backingLevel: take.backingLevel,
                 exportedFilename: exportedURL.lastPathComponent
             )
+            guard LibraryStaging.audioDuration(at: exportedURL) != nil else {
+                throw HistoryStoreError.unreadableExport
+            }
             try LibraryMetadata.write(
                 metadata,
-                to: destinationFolder.appendingPathComponent(LibraryMetadata.recordingFilename)
+                to: workingFolder.appendingPathComponent(LibraryMetadata.recordingFilename)
             )
+            if asNew {
+                try LibraryStaging.commit(workingFolder, to: destinationFolder)
+            }
         } catch {
-            if asNew { try? FileManager.default.removeItem(at: destinationFolder) }
+            if asNew { LibraryStaging.discard(workingFolder) }
             throw error
         }
 
@@ -365,8 +376,14 @@ final class HistoryStore: ObservableObject {
 
 private enum HistoryStoreError: LocalizedError {
     case missingRawAudio
+    case unreadableExport
 
     var errorDescription: String? {
-        "The original microphone and backing audio are needed to edit this mix."
+        switch self {
+        case .missingRawAudio:
+            "The original microphone and backing audio are needed to edit this mix."
+        case .unreadableExport:
+            "The new mix could not be read back after it was written, so it was discarded."
+        }
     }
 }

@@ -202,12 +202,15 @@ final class SeparationModel: ObservableObject {
             artifact: artifact
         )
         try Task.checkCancellation()
-        let output = try outputFolder()
-        let files: [StemKind: URL]
+        // Stems are generated into a hidden staging folder. `Tracks/<id>` only
+        // ever comes into existence complete: every expected stem present,
+        // readable, and described by a metadata file written before the commit.
+        let output = try makeTrackStaging()
+        let stagedFiles: [StemKind: URL]
         do {
-            files = try await separator.separate(
+            stagedFiles = try await separator.separate(
                 fileURL: original.audioURL,
-                outputFolder: output.folder
+                outputFolder: output.staging
             ) { value in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
@@ -220,13 +223,10 @@ final class SeparationModel: ObservableObject {
                 }
             }
         } catch {
-            try? FileManager.default.removeItem(at: output.folder)
+            LibraryStaging.discard(output.staging)
             throw error
         }
 
-        progress = 1
-        statusText = "Ready to mix"
-        estimatedRemainingText = nil
         let createdAt = Date()
         let metadata = TrackMetadata(
             id: output.id,
@@ -238,10 +238,25 @@ final class SeparationModel: ObservableObject {
             separationModel: separationModel,
             stems: separationModel.stems
         )
-        try LibraryMetadata.write(
-            metadata,
-            to: output.folder.appendingPathComponent(LibraryMetadata.trackFilename)
-        )
+        let files: [StemKind: URL]
+        do {
+            try validateStagedStems(stagedFiles, expecting: separationModel.stems)
+            try LibraryMetadata.write(
+                metadata,
+                to: output.staging.appendingPathComponent(LibraryMetadata.trackFilename)
+            )
+            try LibraryStaging.commit(output.staging, to: output.destination)
+            files = stagedFiles.mapValues {
+                output.destination.appendingPathComponent($0.lastPathComponent)
+            }
+        } catch {
+            LibraryStaging.discard(output.staging)
+            throw error
+        }
+
+        progress = 1
+        statusText = "Ready to mix"
+        estimatedRemainingText = nil
         NotificationCenter.default.post(name: .atarangLibraryDidChange, object: nil)
         logger.info("Separation completed successfully")
         return LocalTrack(
@@ -253,6 +268,22 @@ final class SeparationModel: ObservableObject {
             sourceOriginalID: original.id,
             separationModel: separationModel
         )
+    }
+
+    /// A separation is publishable only when every stem the model promises is
+    /// present, non-empty, and openable as audio.
+    private func validateStagedStems(
+        _ files: [StemKind: URL],
+        expecting stems: [StemKind]
+    ) throws {
+        for stem in stems {
+            guard let url = files[stem] else {
+                throw SeparationFailure.incompleteOutput(stem)
+            }
+            guard LibraryStaging.audioDuration(at: url) != nil else {
+                throw SeparationFailure.unreadableStem(stem)
+            }
+        }
     }
 
     private func downloadAudio(from url: URL) async throws -> (url: URL, title: String) {
@@ -301,17 +332,14 @@ final class SeparationModel: ObservableObject {
         return (destination, selection.title)
     }
 
-    private func outputFolder() throws -> (id: UUID, folder: URL) {
-        let root = try FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        ).appendingPathComponent("Tracks", isDirectory: true)
+    private func makeTrackStaging() throws -> (id: UUID, staging: URL, destination: URL) {
+        let root = try LibraryStaging.libraryRoot(named: "Tracks")
         let id = UUID()
-        let folder = root.appendingPathComponent(id.uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        return (id, folder)
+        return (
+            id,
+            try LibraryStaging.makeDirectory(in: root),
+            root.appendingPathComponent(id.uuidString, isDirectory: true)
+        )
     }
 
     private func persistOriginal(
@@ -319,16 +347,18 @@ final class SeparationModel: ObservableObject {
         title: String,
         sourceURL: URL
     ) throws -> SavedOriginal {
-        let root = try libraryRoot(named: "Originals")
+        let root = try LibraryStaging.libraryRoot(named: "Originals")
         let id = UUID()
+        let staging = try LibraryStaging.makeDirectory(in: root)
         let folder = root.appendingPathComponent(id.uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(
-            at: folder,
-            withIntermediateDirectories: true
-        )
-        let audioURL = folder.appendingPathComponent("source.m4a")
+        let stagedAudioURL = staging.appendingPathComponent("source.m4a")
         do {
-            try FileManager.default.moveItem(at: downloadedURL, to: audioURL)
+            try FileManager.default.moveItem(at: downloadedURL, to: stagedAudioURL)
+            // Audio that will not open is not an original, however successful
+            // the download looked.
+            guard LibraryStaging.audioDuration(at: stagedAudioURL) != nil else {
+                throw SeparationFailure.unreadableDownload
+            }
             try LibraryMetadata.write(
                 OriginalMetadata(
                     id: id,
@@ -336,12 +366,13 @@ final class SeparationModel: ObservableObject {
                     createdAt: Date(),
                     sourceURL: sourceURL,
                     sourceKey: YouTubeSource.canonicalKey(for: sourceURL),
-                    audioFilename: audioURL.lastPathComponent
+                    audioFilename: stagedAudioURL.lastPathComponent
                 ),
-                to: folder.appendingPathComponent(LibraryMetadata.originalFilename)
+                to: staging.appendingPathComponent(LibraryMetadata.originalFilename)
             )
+            try LibraryStaging.commit(staging, to: folder)
         } catch {
-            try? FileManager.default.removeItem(at: folder)
+            LibraryStaging.discard(staging)
             throw error
         }
         return SavedOriginal(
@@ -349,7 +380,7 @@ final class SeparationModel: ObservableObject {
             title: title,
             sourceURL: sourceURL,
             sourceKey: YouTubeSource.canonicalKey(for: sourceURL),
-            audioURL: audioURL
+            audioURL: folder.appendingPathComponent(stagedAudioURL.lastPathComponent)
         )
     }
 
@@ -440,17 +471,7 @@ final class SeparationModel: ObservableObject {
     }
 
     private func libraryRoot(named name: String) throws -> URL {
-        let root = try FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        ).appendingPathComponent(name, isDirectory: true)
-        try FileManager.default.createDirectory(
-            at: root,
-            withIntermediateDirectories: true
-        )
-        return root
+        try LibraryStaging.libraryRoot(named: name)
     }
 
     private func isYouTubeURL(_ url: URL) -> Bool {
@@ -506,11 +527,17 @@ private struct YTDLPSelection: Decodable, Sendable {
 private enum SeparationFailure: LocalizedError {
     case noCompatibleAudio
     case httpStatus(Int)
+    case unreadableDownload
+    case incompleteOutput(StemKind)
+    case unreadableStem(StemKind)
 
     var errorDescription: String? {
         switch self {
         case .noCompatibleAudio: "YouTube did not provide a compatible audio stream for this video."
         case .httpStatus(let code): "YouTube refused the audio download (HTTP \(code))."
+        case .unreadableDownload: "The downloaded audio could not be read back, so it was discarded."
+        case .incompleteOutput(let stem): "Separation did not produce the \(stem.title.lowercased()) stem."
+        case .unreadableStem(let stem): "The separated \(stem.title.lowercased()) stem could not be read back."
         }
     }
 }

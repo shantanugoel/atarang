@@ -12,6 +12,14 @@ struct AtarangApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .task {
+                    // Nothing of ours can legitimately be staging at launch, so
+                    // anything still there belongs to a run that was killed
+                    // mid-commit.
+                    await Task.detached(priority: .utility) {
+                        LibraryStaging.sweepAbandonedStaging()
+                    }.value
+                }
         }
     }
 }

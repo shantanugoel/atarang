@@ -11,14 +11,12 @@ final class StemPlayer {
     private(set) var isLoaded = false
     private(set) var isPlaying = false
     private(set) var isRecording = false
-    private(set) var isExporting = false
     private(set) var playbackState = PlaybackState()
     private(set) var recordingDuration: TimeInterval = 0
     private(set) var title = ""
     private(set) var separationModel: SeparationModelKind = .htdemucs
     private(set) var activeStems: [StemKind] = []
     private(set) var recordedTake: RecordedTake?
-    private(set) var shareURL: URL?
     private(set) var practiceSettings = SongPracticeSettings()
     private(set) var countInRemaining = 0
     private(set) var completedRepetitions = 0
@@ -146,6 +144,13 @@ final class StemPlayer {
     @ObservationIgnored private var backingWriter: AudioTapFileWriter?
     @ObservationIgnored private var microphoneURL: URL?
     @ObservationIgnored private var backingURL: URL?
+    /// Where the take being captured is written before it is published. Nothing
+    /// discovers a recording from here; `stopRecording` commits it or throws it
+    /// away.
+    @ObservationIgnored private var recordingStagingFolder: URL?
+    /// The first writer failure of the current take, if any. A take that hit
+    /// one is never committed.
+    @ObservationIgnored private var recordingWriteFailure: Error?
     @ObservationIgnored private var recordingID: UUID?
     @ObservationIgnored private var currentTrackID: UUID?
     @ObservationIgnored private var recordingStartedAt: Date?
@@ -314,7 +319,6 @@ final class StemPlayer {
         applyMetronomeLevel()
         isLoaded = playbackState.duration > 0
         recordedTake = nil
-        shareURL = nil
         completedRepetitions = 0
         isTempoRampHeld = false
         isLoopTakeRecording = false
@@ -974,7 +978,6 @@ final class StemPlayer {
         practiceSettings = SongPracticeSettings()
         isLoaded = false
         recordedTake = nil
-        shareURL = nil
         activeTimingStem = nil
         nowPlaying.clear()
     }
@@ -1020,12 +1023,24 @@ final class StemPlayer {
         // recording immediately after it starts.
         try await waitForRecordingRouteToSettle()
 
-        let recording = try recordingFolder()
-        let folder = recording.folder
+        // The take is captured into a hidden staging directory. Library
+        // discovery skips hidden entries, so an interrupted or failed take
+        // cannot be found as a performance; `stopRecording` renames the folder
+        // into place only once both files have been validated.
+        let recording: (id: UUID, staging: URL)
+        do { recording = try makeRecordingStagingFolder() }
+        catch {
+            logger.error(
+                "Could not create a recording staging folder: \(error.localizedDescription, privacy: .public)"
+            )
+            throw PlayerError.noRecordingStorage
+        }
+        let folder = recording.staging
         let micURL = folder.appendingPathComponent("microphone.caf")
         let mixURL = folder.appendingPathComponent("backing.caf")
         let microphoneFormat = inputNode.outputFormat(forBus: 0)
         guard microphoneFormat.sampleRate > 0 else {
+            LibraryStaging.discard(folder)
             throw PlayerError.noMicrophone
         }
 
@@ -1045,18 +1060,30 @@ final class StemPlayer {
                 interleaved: false
             )
         } catch {
+            LibraryStaging.discard(folder)
             throw PlayerError.audioSetup("Could not create recording files", error)
         }
         let mixWriter = AudioTapFileWriter(url: mixURL)
 
         let takeID = recording.id
+        // A write failure ends the take rather than being printed and ignored.
+        // Both writers report at most once, and the first one to report wins.
+        micWriter.setFailureHandler { [weak self] error in
+            Task { @MainActor [weak self] in
+                self?.recordingWriterFailed(error, stage: "microphone", takeID: takeID)
+            }
+        }
+        mixWriter.setFailureHandler { [weak self] error in
+            Task { @MainActor [weak self] in
+                self?.recordingWriterFailed(error, stage: "backing", takeID: takeID)
+            }
+        }
         inputNode.installTap(
             onBus: 0,
             bufferSize: 4_096,
             format: microphoneFormat
         ) { @Sendable [weak self] buffer, _ in
-            do { try micWriter.write(buffer) }
-            catch { print("Atarang microphone write failed: \(error)") }
+            micWriter.write(buffer)
             let level = Self.meterLevel(for: buffer)
             Task { @MainActor [weak self] in
                 guard let self, self.recordingID == takeID, self.isRecording else { return }
@@ -1071,14 +1098,15 @@ final class StemPlayer {
             bufferSize: 4_096,
             format: nil
         ) { @Sendable buffer, _ in
-            do { try mixWriter.write(buffer) }
-            catch { print("Atarang backing write failed: \(error)") }
+            mixWriter.write(buffer)
         }
 
         microphoneWriter = micWriter
         backingWriter = mixWriter
         microphoneURL = micURL
         backingURL = mixURL
+        recordingStagingFolder = folder
+        recordingWriteFailure = nil
         recordingID = recording.id
         recordingStartedAt = Date()
         activeRecordingMicrophoneLevel = recordingMicrophoneLevel
@@ -1086,7 +1114,6 @@ final class StemPlayer {
         recordingDuration = 0
         microphoneMeterLevel = 0
         recordedTake = nil
-        shareURL = nil
         isRecording = true
         recordingRouteTransitionDeadline = Date().addingTimeInterval(2)
         publishNowPlaying()
@@ -1100,6 +1127,7 @@ final class StemPlayer {
             isLoopTakeRecording = false
             recordingRouteTransitionDeadline = .distantPast
             deactivateAudioSession()
+            discardRecordingStaging()
             throw PlayerError.audioSetup("Could not start the audio engine", error)
         }
         logger.info("Performance recording started")
@@ -1161,59 +1189,151 @@ final class StemPlayer {
         isEchoCancellationActive = false
         publishNowPlaying()
 
-        guard let microphoneURL, let backingURL, let recordingID else { return }
-        let measuredDuration = min(
-            audioDuration(at: microphoneURL),
-            audioDuration(at: backingURL)
-        )
-        recordingDuration = measuredDuration
-        guard measuredDuration > 0 else {
-            alertMessage = "No audio was captured. Check the microphone route and try recording again."
-            logger.warning("Discarding an empty performance recording")
+        guard let stagingMicrophoneURL = microphoneURL,
+              let stagingBackingURL = backingURL,
+              let stagingFolder = recordingStagingFolder,
+              let recordingID else { return }
+
+        if let failure = recordingWriteFailure {
+            discardRecordingStaging()
+            alertMessage = Self.recordingWriteFailureMessage(failure)
+            logger.error(
+                "Discarding a performance recording after a write failure: \(failure.localizedDescription, privacy: .public)"
+            )
+            flushPracticeSettings()
             return
         }
-        let take = RecordedTake(
-            id: recordingID,
-            title: title,
-            microphoneURL: microphoneURL,
-            backingURL: backingURL,
-            microphoneLevel: activeRecordingMicrophoneLevel,
-            backingLevel: activeRecordingBackingLevel,
-            duration: measuredDuration,
-            createdAt: Date()
-        )
-        recordedTake = take
-        let metadata = RecordingMetadata(
-            id: take.id,
-            title: take.title,
-            createdAt: take.createdAt,
-            duration: take.duration,
-            sourceTrackID: currentTrackID,
-            microphoneLevel: take.microphoneLevel,
-            backingLevel: take.backingLevel,
-            exportedFilename: nil
-        )
+
+        // Nothing is published until both streams are closed and both files
+        // open, hold audio, and agree about how long the take was.
+        guard let validated = Self.validateStagedTake(
+            microphoneURL: stagingMicrophoneURL,
+            backingURL: stagingBackingURL
+        ) else {
+            discardRecordingStaging()
+            recordingDuration = 0
+            alertMessage = "No usable audio was captured. Check the microphone route and try recording again."
+            logger.warning("Discarding an unusable performance recording")
+            flushPracticeSettings()
+            return
+        }
+        recordingDuration = validated
+
+        let destination = stagingFolder
+            .deletingLastPathComponent()
+            .appendingPathComponent(recordingID.uuidString, isDirectory: true)
+        let take: RecordedTake
         do {
+            let metadata = RecordingMetadata(
+                id: recordingID,
+                title: title,
+                createdAt: Date(),
+                duration: validated,
+                sourceTrackID: currentTrackID,
+                microphoneLevel: activeRecordingMicrophoneLevel,
+                backingLevel: activeRecordingBackingLevel,
+                exportedFilename: nil
+            )
+            // Metadata goes in while the folder is still staged, so the commit
+            // publishes a complete performance in one step.
             try LibraryMetadata.write(
                 metadata,
-                to: microphoneURL.deletingLastPathComponent()
-                    .appendingPathComponent(LibraryMetadata.recordingFilename)
+                to: stagingFolder.appendingPathComponent(LibraryMetadata.recordingFilename)
             )
-            NotificationCenter.default.post(name: .atarangLibraryDidChange, object: nil)
+            try LibraryStaging.commit(stagingFolder, to: destination)
+            take = RecordedTake(
+                id: metadata.id,
+                title: metadata.title,
+                microphoneURL: destination.appendingPathComponent(
+                    stagingMicrophoneURL.lastPathComponent
+                ),
+                backingURL: destination.appendingPathComponent(
+                    stagingBackingURL.lastPathComponent
+                ),
+                microphoneLevel: metadata.microphoneLevel ?? 1,
+                backingLevel: metadata.backingLevel ?? 0.7,
+                duration: metadata.duration,
+                createdAt: metadata.createdAt
+            )
         } catch {
-            logger.error("Could not save recording metadata: \(error.localizedDescription, privacy: .public)")
+            discardRecordingStaging()
+            alertMessage = "The recording could not be saved: \(error.localizedDescription)"
+            logger.error(
+                "Could not commit a performance recording: \(error.localizedDescription, privacy: .public)"
+            )
+            flushPracticeSettings()
+            return
         }
-        logger.info("Performance recording stopped after \(measuredDuration, privacy: .public) seconds")
+
+        recordingStagingFolder = nil
+        microphoneURL = take.microphoneURL
+        backingURL = take.backingURL
+        recordedTake = take
+        NotificationCenter.default.post(name: .atarangLibraryDidChange, object: nil)
+        logger.info("Performance recording stopped after \(validated, privacy: .public) seconds")
         flushPracticeSettings()
-        export(take, sourceTrackID: currentTrackID)
+        RecordingExportCenter.shared.start(take, sourceTrackID: currentTrackID)
+    }
+
+    /// Ends the take the moment a writer reports it cannot keep the audio.
+    /// Continuing would produce a performance that is silently missing sound.
+    private func recordingWriterFailed(_ error: Error, stage: String, takeID: UUID) {
+        guard isRecording, recordingID == takeID else { return }
+        guard recordingWriteFailure == nil else { return }
+        recordingWriteFailure = error
+        logger.error(
+            "The \(stage, privacy: .public) writer failed: \(error.localizedDescription, privacy: .public)"
+        )
+        stopRecording()
+    }
+
+    private static func recordingWriteFailureMessage(_ error: Error) -> String {
+        if let writerError = error as? AudioTapFileWriter.WriterError,
+           writerError == .backlog {
+            return "Recording stopped because audio could not be written fast enough. Free up storage or close other apps, then try again."
+        }
+        return "Recording stopped because it could not be written to storage: \(error.localizedDescription)"
+    }
+
+    /// Both files must open, contain audio, and describe roughly the same span
+    /// of time — they are captured over one window, so a large disagreement
+    /// means one of the streams stopped early. Returns the take's duration.
+    nonisolated static func validateStagedTake(
+        microphoneURL: URL,
+        backingURL: URL
+    ) -> TimeInterval? {
+        guard let microphone = LibraryStaging.audioDuration(at: microphoneURL),
+              let backing = LibraryStaging.audioDuration(at: backingURL) else { return nil }
+        let shorter = min(microphone, backing)
+        let longer = max(microphone, backing)
+        guard shorter >= 0.25 else { return nil }
+        guard longer - shorter <= max(2, longer * 0.35) else { return nil }
+        return shorter
+    }
+
+    private func discardRecordingStaging() {
+        if let recordingStagingFolder {
+            LibraryStaging.discard(recordingStagingFolder)
+        }
+        recordingStagingFolder = nil
+        microphoneURL = nil
+        backingURL = nil
+        recordedTake = nil
     }
 
     private func removeRecordingTaps() {
         engine.inputNode.removeTap(onBus: 0)
         engine.mainMixerNode.removeTap(onBus: 0)
-        microphoneWriter?.finish()
+        // `finish()` drains anything still queued before closing, and reports
+        // the first failure the writer saw even if it happened too late to
+        // stop the take itself.
+        if let failure = microphoneWriter?.finish() {
+            recordingWriteFailure = recordingWriteFailure ?? failure
+        }
         microphoneWriter = nil
-        backingWriter?.finish()
+        if let failure = backingWriter?.finish() {
+            recordingWriteFailure = recordingWriteFailure ?? failure
+        }
         backingWriter = nil
         recordingStartedAt = nil
     }
@@ -1281,42 +1401,6 @@ final class StemPlayer {
         )
     }
 
-    private func export(_ take: RecordedTake, sourceTrackID: UUID?) {
-        isExporting = true
-        shareURL = nil
-        Task {
-            do {
-                let exportedURL = try await RecordingExporter.export(take: take)
-                shareURL = exportedURL
-                let metadata = RecordingMetadata(
-                    id: take.id,
-                    title: take.title,
-                    createdAt: take.createdAt,
-                    duration: take.duration,
-                    sourceTrackID: sourceTrackID,
-                    microphoneLevel: take.microphoneLevel,
-                    backingLevel: take.backingLevel,
-                    exportedFilename: exportedURL.lastPathComponent
-                )
-                do {
-                    try LibraryMetadata.write(
-                        metadata,
-                        to: take.microphoneURL.deletingLastPathComponent()
-                            .appendingPathComponent(LibraryMetadata.recordingFilename)
-                    )
-                } catch {
-                    logger.error("Could not update recording metadata: \(error.localizedDescription, privacy: .public)")
-                }
-                NotificationCenter.default.post(name: .atarangLibraryDidChange, object: nil)
-                logger.info("Shareable M4A export finished")
-            } catch {
-                alertMessage = error.localizedDescription
-                logger.error("M4A export failed: \(error.localizedDescription, privacy: .public)")
-            }
-            isExporting = false
-        }
-    }
-
     private func microphonePermissionGranted() async -> Bool {
         switch AVAudioApplication.shared.recordPermission {
         case .granted: return true
@@ -1364,22 +1448,9 @@ final class StemPlayer {
         return "\(inputs)|\(outputs)|\(session.sampleRate)|\(session.inputNumberOfChannels)|\(session.outputNumberOfChannels)"
     }
 
-    private func recordingFolder() throws -> (id: UUID, folder: URL) {
-        let root = try FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        ).appendingPathComponent("Recordings", isDirectory: true)
-        let id = UUID()
-        let folder = root.appendingPathComponent(id.uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        return (id, folder)
-    }
-
-    private func audioDuration(at url: URL) -> TimeInterval {
-        guard let file = try? AVAudioFile(forReading: url) else { return 0 }
-        return Double(file.length) / file.processingFormat.sampleRate
+    private func makeRecordingStagingFolder() throws -> (id: UUID, staging: URL) {
+        let root = try LibraryStaging.libraryRoot(named: "Recordings")
+        return (UUID(), try LibraryStaging.makeDirectory(in: root))
     }
 
     private func pausePlayback(source: TransportSource = .internalLogic) {
@@ -2065,60 +2136,6 @@ final class StemPlayer {
     }
 }
 
-/// Opens a tap destination lazily so its file header uses the format delivered
-/// by the running audio graph rather than a possibly stale pre-start format.
-///
-/// Synchronization invariant: `url` is immutable, and `file` — the only mutable
-/// state — is created, written, and released entirely under `lock`, so the
-/// render-thread tap callback and the main actor may both call in freely.
-private final class AudioTapFileWriter: @unchecked Sendable {
-    private let url: URL
-    private let lock = NSLock()
-    private var file: AVAudioFile?
-
-    init(url: URL) {
-        self.url = url
-    }
-
-    /// Creates the destination immediately, for callers that already know the
-    /// format and want a write failure surfaced before the take starts rather
-    /// than from inside a render callback.
-    init(
-        url: URL,
-        settings: [String: Any],
-        commonFormat: AVAudioCommonFormat,
-        interleaved: Bool
-    ) throws {
-        self.url = url
-        file = try AVAudioFile(
-            forWriting: url,
-            settings: settings,
-            commonFormat: commonFormat,
-            interleaved: interleaved
-        )
-    }
-
-    func write(_ buffer: AVAudioPCMBuffer) throws {
-        lock.lock()
-        defer { lock.unlock() }
-        if file == nil {
-            file = try AVAudioFile(
-                forWriting: url,
-                settings: buffer.format.settings,
-                commonFormat: buffer.format.commonFormat,
-                interleaved: buffer.format.isInterleaved
-            )
-        }
-        try file?.write(from: buffer)
-    }
-
-    func finish() {
-        lock.lock()
-        file = nil
-        lock.unlock()
-    }
-}
-
 /// Where a transport change came from. Diagnostic only, but it is the
 /// difference between "something paused us" and a fixable bug.
 enum TransportSource: String, Sendable {
@@ -2141,6 +2158,7 @@ private enum PlayerError: LocalizedError {
     case noTrack
     case microphoneDenied
     case noMicrophone
+    case noRecordingStorage
     case audioSetup(String, Error)
 
     var errorDescription: String? {
@@ -2149,6 +2167,7 @@ private enum PlayerError: LocalizedError {
         case .noTrack: "Separate and load a song before recording."
         case .microphoneDenied: "Microphone access is required. Enable Atarang in Settings → Privacy & Security → Microphone."
         case .noMicrophone: "No microphone input is available."
+        case .noRecordingStorage: "Atarang could not prepare a place to save this recording. Check that this device has free storage, then try again."
         case .audioSetup(let stage, let error): "\(stage): \(error.localizedDescription)"
         }
     }
