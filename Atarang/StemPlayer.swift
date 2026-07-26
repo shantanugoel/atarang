@@ -329,21 +329,21 @@ final class StemPlayer {
         if isPlaying || isCountingIn {
             pause(source: source)
         } else {
-            startPlaybackWithCountIn()
+            startPlaybackWithCountIn(source: source)
         }
     }
 
-    private func startPlaybackWithCountIn() {
+    private func startPlaybackWithCountIn(source: TransportSource) {
         cancelCountIn()
         guard practiceSettings.countInClicks > 0 else {
-            requestPlayback()
+            requestPlayback(source: source)
             return
         }
         countInTask = Task { @MainActor [weak self] in
             guard let self else { return }
             let completed = await self.performCountIn()
             guard completed else { return }
-            self.requestPlayback()
+            self.requestPlayback(source: source)
         }
     }
 
@@ -1390,7 +1390,15 @@ final class StemPlayer {
         metronomeNode.stop()
         timer?.invalidate()
         timer = nil
+        // Pause the engine, not just the player nodes. A live engine keeps the
+        // audio session rendering, and the system infers playback state from
+        // that rather than from what we publish — so the lock screen showed a
+        // pause button while we were paused, and a headphone pinch sent us
+        // another `pause` (a no-op) instead of `play`. `pause()` stops the
+        // hardware without discarding resources, so resuming stays cheap.
+        engine.pause()
         isPlaying = false
+        noteDiagnosticPlaybackStopped()
         persistPracticeSettings()
         publishNowPlaying()
         logDiagnosticEvent(
@@ -1411,6 +1419,7 @@ final class StemPlayer {
         isPlaying = false
         if resetPosition { playbackState.seek(to: 0) }
         if releaseSession { deactivateAudioSession() }
+        noteDiagnosticPlaybackStopped()
         publishNowPlaying()
     }
 
@@ -1450,6 +1459,15 @@ final class StemPlayer {
     func logDiagnosticEvent(_ name: String, detail: String = "") {
         #if DEBUG
         diagnostics.event(name, detail: detail)
+        #endif
+    }
+
+    /// Tells the harness that playback stopped, so the paused stretch is not
+    /// counted as a timer stall. The timer is invalidated on pause, so it
+    /// cannot notice this by itself.
+    private func noteDiagnosticPlaybackStopped() {
+        #if DEBUG
+        diagnostics.playbackStopped()
         #endif
     }
 

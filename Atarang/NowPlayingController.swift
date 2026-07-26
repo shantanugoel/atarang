@@ -70,6 +70,12 @@ final class NowPlayingController {
         info[MPMediaItemPropertyArtist] = "Atarang"
         infoCenter.nowPlayingInfo = info
         infoCenter.playbackState = snapshot.isPlaying ? .playing : .paused
+        #if DEBUG
+        print(
+            "ATARANG-DIAG nowPlaying published isPlaying=\(snapshot.isPlaying) "
+                + "rate=\(snapshot.isPlaying ? snapshot.rate : 0) position=\(Int(snapshot.position))"
+        )
+        #endif
     }
 
     func clear() {

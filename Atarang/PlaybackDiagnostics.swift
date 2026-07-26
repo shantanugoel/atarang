@@ -53,6 +53,12 @@ final class PlaybackDiagnostics {
         print("ATARANG-DIAG \(line)")
     }
 
+    /// Clears the tick marker so the paused stretch that follows is not
+    /// measured as a gap.
+    func playbackStopped() {
+        lastTick = nil
+    }
+
     /// Called from the position timer. `reference` is one shared node time so
     /// every stem is measured against the same instant.
     func tick(
