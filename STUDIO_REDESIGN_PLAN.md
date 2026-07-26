@@ -282,32 +282,36 @@ against known-good behaviour.
 - [x] Add `MPNowPlayingInfoCenter` and `MPRemoteCommandCenter` support for lock
       screen and headphone-remote play/pause/seek. This is the cheapest useful
       form of the parked "Bluetooth pedal, headphone remote" idea.
-- [~] Close the stem-synchronization verification left unfinished by the former
+- [x] Close the stem-synchronization verification left unfinished by the former
       practice plan: confirm all stems stay synchronized across seeking,
-      pausing, route changes, interruptions, and repeated playback. This is an
-      unverified assumption underneath everything else in this phase.
-      Scheduling is now unit-tested to request the identical source-second
-      range from every stem regardless of sample rate, which is the part that
-      can be checked without hardware. The device pass over route changes and
-      interruptions is still outstanding.
+      pausing, route changes, interruptions, and repeated playback. **Measured
+      on an iPhone 16 Pro Max: 0.00 ms drift, 0.02 ms worst case**, sustained
+      across ~30 engine restarts, seven loop wraps, a speaker-to-Bluetooth
+      route change, lock/unlock, and recording.
 - [x] Add `isIdleTimerDisabled` handling, scoped to full-screen practice modes.
 - [x] Extend unit coverage: latency-compensated position, throttled persistence,
       click scheduling, timing-stem fallback.
 
 ### Acceptance criteria
 
-- [x] The playhead continues updating while the user scrolls.
+- [x] The playhead continues updating while the user scrolls. Verified on
+      device: no stall, worst gap 179 ms under scroll load.
 - [~] Visual position matches audible position within 30 ms on wired output and
-      within 50 ms on Bluetooth. Compensation is implemented and unit-tested;
-      the measurement itself needs a device.
+      within 50 ms on Bluetooth. **Bluetooth confirmed** — 173 ms of measured
+      latency (163 output + 10 buffer) compensated, and reported as visually in
+      sync. Speaker measures 36.7 ms, itself over the 30 ms budget
+      uncompensated. Wired output remains untested: no wired headphones were
+      available.
 - [x] Ten consecutive seeks produce no audible hitch and no more than one
-      settings write per second.
-- [~] Lock screen shows the current song; headphone play/pause works. Implemented
-      but not yet exercised on hardware.
-- [~] No regression in playback, looping, recording, export, or route handling
-      on the physical-device matrix. Unit tests, a clean Swift 6 build with zero
-      app-owned warnings, and a simulator launch pass; the device matrix is
-      outstanding, together with Phase 0's.
+      settings write per second. Drag now costs one engine stop and one resume
+      instead of ~30, and the click on release is gone. Audio is silent *during*
+      a drag by design; audible scrubbing is Phase 4 work, if wanted at all.
+- [x] Lock screen shows the current song; headphone play/pause works. Both
+      confirmed on device, including correct play/pause iconography.
+- [x] No regression in playback, looping, recording, export, or route handling.
+      Verified on device: playback, looping, recording, export, playback of
+      takes, route changes, interruption, lock, and background. Wired output and
+      an incoming call were not exercised.
 
 ### Open decision
 
@@ -361,6 +365,37 @@ unit tests, not a fix for an observable bug.
 **Idle timer scope.** There is no full-screen practice mode yet, so the hold is
 scoped to the Studio tab with a song playing, recording, or counting in. Phase 6
 extends it rather than replacing it.
+
+**The device pass found three defects, two of them serious.**
+
+1. **Recording crashed 100% of the time** with a Swift 6 isolation trap on
+   AVFAudio's render thread. The microphone tap closure is written inside a
+   `@MainActor` method and captured a bare `AVAudioFile`; a non-`Sendable`
+   capture cannot cross actors, so Swift inferred the closure as main-actor
+   isolated and the runtime enforced it. **This was Phase 0's**, not Phase 1's —
+   the closure is byte-identical before Phase 1, and what changed was the
+   `SWIFT_VERSION` flip to 6.0. It shipped on `main` for three commits because
+   Phase 0's acceptance criterion was left at `[~]` for exactly the on-device
+   recording pass that would have caught it. Fixed by holding the file behind
+   `AudioTapFileWriter` and marking both tap closures `@Sendable`.
+2. **Every slider value restarted the engine.** One drag produced ~30
+   pause/reschedule/start cycles, audible as a click on release. Fixed with a
+   scrubbing lifecycle wired through `onEditingChanged`.
+3. **Headphone-remote resume did nothing on Bluetooth.** `pausePlayback` left
+   the engine running, so iOS inferred we were still playing and kept sending
+   `pause` — which a paused player correctly ignores. The lock screen showed a
+   pause button while paused. Fixed by pausing the engine too.
+
+**Process note.** Two of the three were only reachable on hardware, and the
+worst was a total failure of a core feature sitting undetected behind a
+deferred verification pass. Treat "device pass outstanding" as blocking for
+the audio layer rather than as trailing paperwork.
+
+**Recorded for Phase 4.** The A and B loop-boundary sliders derive A's range
+from B's value (`0...loop.end - minimumDuration`), so adjusting B visibly jumps
+the A knob; and B spans the whole song, making fine adjustment impractical
+(~0.7 s per point on a four-minute track), which is why the ±0.1 s nudge
+buttons exist. The transport rebuild replaces both.
 
 **Deferred.** The stem-scheduling helper preserves the existing render-time
 convention in `PlaybackState.calculatedPosition` — elapsed player-node time
