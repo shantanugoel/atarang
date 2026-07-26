@@ -209,10 +209,14 @@ was never released.
 - [x] No `@unchecked Sendable` remains without a written invariant.
 - [x] No hand-written `Codable` conformance remains whose only purpose is
       tolerating a pre-release format.
-- [~] Playback, recording, separation, export, and Library behaviour are
-      unchanged. Unit tests, a clean Swift 6 build, and a simulator launch pass;
-      the interactive on-device pass over playback, recording, and export is
-      still outstanding.
+- [!] Playback, recording, separation, export, and Library behaviour are
+      unchanged. **This was false as written.** The device pass deferred here was
+      finally run during Phase 1 and found that this phase's `SWIFT_VERSION` flip
+      broke recording completely — see the Outcome below. Playback, looping,
+      recording, export, take playback, Library browsing, route changes,
+      interruption, lock, and background are now all confirmed on an iPhone 16
+      Pro Max. **Separation was never exercised on device** and remains
+      unverified for this phase.
 
 ### Outcome
 
@@ -240,6 +244,19 @@ from packages.
 **Generated Core ML warnings need no containment.** Xcode's model generator emits
 `@preconcurrency import CoreML` when the target is in Swift 6 mode, so all four
 warnings disappeared with the language-mode flip rather than needing suppression.
+
+**This phase shipped a crash, and the deferred device pass is why.** Flipping to
+Swift 6 made `StemPlayer.startRecording`'s microphone tap closure main-actor
+isolated — it is written inside a `@MainActor` method and captured a bare,
+non-`Sendable` `AVAudioFile`, and a capture that cannot cross actors forces that
+inference. Under Swift 5 nothing enforced it; under Swift 6 the runtime asserts,
+so the first buffer AVFAudio delivered on its render thread trapped with SIGTRAP.
+Every attempt to record crashed, 100% of the time, and it sat on `main` for three
+commits because the acceptance criterion above was signed off at `[~]` on unit
+tests and a simulator launch. Fixed in `125292f` by holding the file behind
+`AudioTapFileWriter` and marking both tap closures `@Sendable`. The lesson is
+recorded in Phase 1's outcome: for the audio and recording layers, an
+outstanding device pass is a blocker, not trailing paperwork.
 
 **Known consequence.** `SongPracticeSettings`, `TrackMetadata`, and
 `RecordingMetadata` now use synthesized decoding, which requires every key. Files
@@ -354,10 +371,10 @@ practice state persisting through the throttle and restoring workspace, loop,
 and playhead across a relaunch; the lock screen showing the song title.
 Backgrounded playback continues while the app stays alive.
 
-Two things the simulator could **not** settle, both already on the device pass:
-the lock-screen scrubber shows `--:--` for elapsed and duration, and locking
-the screen gets the app jetsammed, so background and lock behaviour there says
-nothing about a device. Note also that the timing-stem fallback cannot be
+Two things the simulator could not settle were both later resolved on device
+and were simulator artifacts: the lock-screen scrubber showed `--:--` there but
+shows real times on hardware, and locking the simulator jetsams the app whereas
+a device plays on unbroken. Note also that the timing-stem fallback cannot be
 triggered through the UI — `duration` is the minimum across stems, so every
 stem always has frames in a scheduled range. It is defensive code covered by
 unit tests, not a fix for an observable bug.
@@ -397,10 +414,18 @@ the A knob; and B spans the whole song, making fine adjustment impractical
 (~0.7 s per point on a four-minute track), which is why the ±0.1 s nudge
 buttons exist. The transport rebuild replaces both.
 
-**Deferred.** The stem-scheduling helper preserves the existing render-time
-convention in `PlaybackState.calculatedPosition` — elapsed player-node time
-multiplied by `rate` — rather than re-deriving it. Verifying that convention
-against real output at 0.5× is part of the outstanding device pass.
+**Still unverified after the device pass.** Three things were not exercised and
+should be picked up with Phase 2's device work:
+
+- **Reduced playback rate.** `PlaybackState.calculatedPosition` treats elapsed
+  player-node time as render seconds and multiplies by `rate`; the helper
+  preserves that convention rather than re-deriving it. It is a no-op at 1.0, so
+  a wrong convention would only show at 0.5×, which was never played on device.
+- **Wired output**, for the 30 ms half of the sync criterion. No wired
+  headphones were available.
+- **Separation on device**, inherited from Phase 0, and an incoming call as a
+  true interruption — the app-switch interruption was exercised, Siri only
+  ducks.
 
 ---
 
