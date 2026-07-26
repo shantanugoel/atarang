@@ -85,7 +85,7 @@ struct HistoryView: View {
                 }
             }
             .searchable(text: $query, prompt: "Search \(category.searchPrompt)")
-            .refreshable { store.refresh() }
+            .refreshable { store.reload() }
             .onReceive(
                 NotificationCenter.default.publisher(
                     for: .atarangUnavailableLibraryAction

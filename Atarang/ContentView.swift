@@ -17,16 +17,16 @@ struct ContentView: View {
     @State private var didRunDebugURL = false
     @State private var sharePayload: SharePayload?
     @State private var selectedTab = AppTab.studio
-    @State private var existingSeparation: LocalTrack?
-    @State private var existingModels: [SeparationModelKind] = []
     @State private var separationTask: Task<Void, Never>?
-    @State private var existingLookupTask: Task<Void, Never>?
     @State private var pendingModelDownload: ModelDownloadRequest?
     @State private var studioNotice: String?
     @State private var showsRecordingIntroduction = false
     @State private var editingSectionID: UUID?
     @State private var sectionNameDraft = ""
     private let debugURL: String?
+
+    /// Long-running work reports itself in one place, whoever started it.
+    private var analysis: AnalysisProgressCenter { .shared }
 
     init() {
         let value = ProcessInfo.processInfo.environment["ATARANG_DEBUG_URL"]
@@ -58,7 +58,7 @@ struct ContentView: View {
                         } else {
                             importCard
                         }
-                        if model.isWorking { progressCard }
+                        if let job = analysis.active { progressCard(job) }
                     }
                     .padding()
                     .frame(
@@ -147,12 +147,6 @@ struct ContentView: View {
         }
         .background(KeyboardDismissController())
         .tint(.indigo)
-        .onReceive(
-            NotificationCenter.default.publisher(for: .atarangLibraryDidChange)
-                .receive(on: RunLoop.main)
-        ) { _ in
-            history.refresh()
-        }
         .onChange(of: selectedTab) { _, tab in
             if tab != .studio, !player.isRecording {
                 player.suspend()
@@ -162,8 +156,6 @@ struct ContentView: View {
                 historyAudioPlayer.stop()
             }
         }
-        .onChange(of: youtubeURL) { refreshExistingSeparation() }
-        .onChange(of: model.selectedModel) { refreshExistingSeparation() }
         .onChange(of: shouldKeepScreenAwake, initial: true) { _, keepAwake in
             UIApplication.shared.isIdleTimerDisabled = keepAwake
         }
@@ -347,7 +339,7 @@ struct ContentView: View {
             .controlSize(.large)
             .disabled(
                 YouTubeSource.validatedURL(from: youtubeURL) == nil
-                    || model.isWorking
+                    || analysis.isBusy
                     || !model.selectedModel.isAvailableOnCurrentDevice
             )
             if existingSeparation != nil {
@@ -355,7 +347,7 @@ struct ContentView: View {
                     requestSeparation(force: true)
                 }
                 .frame(maxWidth: .infinity)
-                .disabled(model.isWorking)
+                .disabled(analysis.isBusy)
                 .accessibilityHint("Runs the same separation again instead of opening saved stems")
             }
         }
@@ -390,7 +382,7 @@ struct ContentView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.bordered)
-                .disabled(model.isWorking)
+                .disabled(analysis.isBusy)
             } else {
                 Picker("Separation style", selection: $model.selectedModel) {
                     ForEach(SeparationModelKind.allCases) { separationModel in
@@ -400,7 +392,7 @@ struct ContentView: View {
                     }
                 }
                 .pickerStyle(.menu)
-                .disabled(model.isWorking)
+                .disabled(analysis.isBusy)
             }
             Text(
                 [
@@ -473,30 +465,38 @@ struct ContentView: View {
         return "\(separationModel.choiceTitle) · \(downloadSize)"
     }
 
-    private var progressCard: some View {
+    private func progressCard(_ job: AnalysisProgressCenter.Job) -> some View {
         VStack(spacing: 12) {
-            ProgressView(value: model.progress)
+            if job.isWaiting {
+                ProgressView()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                ProgressView(value: job.progress)
+            }
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(model.statusText).font(.subheadline.weight(.medium))
+                    Text(job.status).font(.subheadline.weight(.medium))
                     Text("Keep Atarang open while it works")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Text("\(Int(model.progress * 100))%").monospacedDigit().foregroundStyle(.secondary)
+                if !job.isWaiting {
+                    Text("\(Int(job.progress * 100))%")
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
             }
             HStack {
                 Text(
-                    model.estimatedRemainingText
+                    job.estimatedRemainingText
                         ?? "This can take several minutes on older devices."
                 )
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button("Cancel", role: .cancel) {
-                    separationTask?.cancel()
-                    separationTask = nil
+                    analysis.cancelActive()
                 }
                 .buttonStyle(.bordered)
             }
@@ -1509,21 +1509,22 @@ struct ContentView: View {
             : nil
     }
 
-    private func refreshExistingSeparation() {
-        existingLookupTask?.cancel()
-        let lookupURL = youtubeURL
-        let lookupModel = model.selectedModel
-        existingLookupTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(250))
-            guard !Task.isCancelled else { return }
-            existingSeparation = model.existingSeparation(
-                youtubeURL: lookupURL,
-                using: lookupModel
-            )
-            existingModels = model.existingSeparationModels(
-                youtubeURL: lookupURL
-            )
-        }
+    /// The saved separation for whatever is currently in the URL field.
+    ///
+    /// Answered from the published Library snapshot, so typing a URL does no
+    /// file-system work at all — this used to scan `Tracks/` on a 250 ms debounce
+    /// after every keystroke, on the main actor.
+    private var existingSeparation: LocalTrack? {
+        guard let url = YouTubeSource.validatedURL(from: youtubeURL) else { return nil }
+        return history.snapshot.separation(
+            forSourceURL: url,
+            using: model.selectedModel
+        )
+    }
+
+    private var existingModels: [SeparationModelKind] {
+        guard let url = YouTubeSource.validatedURL(from: youtubeURL) else { return [] }
+        return history.snapshot.separationModels(forSourceURL: url)
     }
 
     private func requestSeparation(force: Bool) {
@@ -1596,7 +1597,6 @@ struct ContentView: View {
                 studioNotice = result.reusedExistingSeparation
                     ? "Opened a saved separation instantly."
                     : "Separation ready to mix."
-                refreshExistingSeparation()
                 await runDebugRecordingIfRequested()
             }
             catch { model.errorMessage = error.localizedDescription }

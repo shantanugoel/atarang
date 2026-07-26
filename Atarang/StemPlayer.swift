@@ -915,6 +915,10 @@ final class StemPlayer {
             return
         }
         alertMessage = nil
+        // The gate closes before the count-in, not after the engine starts: a
+        // separation beginning during the three clicks before a take would be
+        // competing for the CPU by the time the first note is sung.
+        await AnalysisQueue.shared.setRecording(true)
         do {
             try await startRecording()
             alertMessage = nil
@@ -923,6 +927,10 @@ final class StemPlayer {
             alertMessage = error.localizedDescription
             logger.error("Could not start recording: \(error.localizedDescription, privacy: .public)")
         }
+        // Every path out of `startRecording` that did not end up recording —
+        // a denied microphone, a cancelled count-in, a failed engine — has to
+        // reopen the gate, or nothing would ever run again.
+        if !isRecording { await AnalysisQueue.shared.setRecording(false) }
     }
 
     func setVolume(_ volume: Float, for stem: StemKind) {
@@ -1192,6 +1200,9 @@ final class StemPlayer {
         isRecording = false
         isLoopTakeRecording = false
         recordingRouteTransitionDeadline = .distantPast
+        // Held-back jobs may start again. Committing this take does its own file
+        // work below, but that is seconds, not minutes, and it is this take's.
+        Task { await AnalysisQueue.shared.setRecording(false) }
 
         // Stop every render and input resource before removing the taps. This
         // both stops the backing track at the end of a take and releases the

@@ -115,6 +115,7 @@ actor ModelAssetStore {
         let descriptor = try descriptor(for: model)
         let downloaded = try await download(descriptor.url, for: model)
         defer { try? FileManager.default.removeItem(at: downloaded) }
+        try Task.checkCancellation()
         try verify(downloaded, sha256: descriptor.sha256, model: model)
 
         // Staged beside the target, then committed by replacement: an existing
@@ -144,12 +145,18 @@ actor ModelAssetStore {
         defer { try? FileManager.default.removeItem(at: downloaded) }
         try verify(downloaded, sha256: descriptor.sha256, model: model)
 
+        try Task.checkCancellation()
         await progress("Installing \(model.title)…", 0.08)
         let staging = try LibraryStaging.makeDirectory(in: directory)
         defer { LibraryStaging.discard(staging) }
         let extraction = staging.appendingPathComponent("archive", isDirectory: true)
         try FileManager.default.createDirectory(at: extraction, withIntermediateDirectories: true)
         try FileManager.default.unzipItem(at: downloaded, to: extraction)
+        // Each stage boundary is a place a cancel can take effect. Neither
+        // unzipping nor Core ML compilation can be interrupted part way, so
+        // stopping between them is as prompt as this install gets — and the
+        // `defer` above means whatever was staged is discarded.
+        try Task.checkCancellation()
 
         guard let package = try findFile(withExtension: "mlpackage", below: extraction) else {
             throw ModelAssetError.archiveMissingModel

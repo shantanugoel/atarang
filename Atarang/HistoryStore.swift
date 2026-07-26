@@ -1,4 +1,3 @@
-import AVFoundation
 import Combine
 import Foundation
 
@@ -62,20 +61,56 @@ struct HistoryRecording: Identifiable, Sendable {
 
 @MainActor
 final class HistoryStore: ObservableObject {
-    @Published private(set) var originals: [HistoryOriginal] = []
-    @Published private(set) var tracks: [HistoryTrack] = []
-    @Published private(set) var recordings: [HistoryRecording] = []
+    /// One published value for the whole library, so one change to the data
+    /// produces one change to the interface.
+    @Published private(set) var snapshot = LibrarySnapshot.empty
     @Published var errorMessage: String?
 
-    init() { refresh() }
+    var originals: [HistoryOriginal] { snapshot.originals }
+    var tracks: [HistoryTrack] { snapshot.tracks }
+    var recordings: [HistoryRecording] { snapshot.recordings }
 
+    private var refreshTask: Task<Void, Never>?
+    private var needsAnotherPass = false
+    private var refreshSubscription: AnyCancellable?
+
+    init() {
+        // Every writer in the app announces its change the same way, and a
+        // single separation can announce twice — once for the saved original,
+        // once for the finished stems. Listening here, in one place, means the
+        // coalescing below applies to all of them.
+        refreshSubscription = NotificationCenter.default
+            .publisher(for: .atarangLibraryDidChange)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated { self?.refresh() }
+            }
+        refresh()
+    }
+
+    /// Asks for a fresh snapshot. Concurrent asks collapse into at most one
+    /// extra pass, so a burst of notifications cannot start a queue of scans.
     func refresh() {
-        do {
-            originals = try discoverOriginals().sorted { $0.createdAt > $1.createdAt }
-            tracks = try discoverTracks().sorted { $0.createdAt > $1.createdAt }
-            recordings = try discoverRecordings().sorted { $0.createdAt > $1.createdAt }
-        } catch {
-            errorMessage = "History could not be refreshed: \(error.localizedDescription)"
+        guard refreshTask == nil else {
+            needsAnotherPass = true
+            return
+        }
+        refreshTask = Task { @MainActor [weak self] in
+            defer { self?.refreshTask = nil }
+            repeat {
+                self?.needsAnotherPass = false
+                let next = await LibraryIndexer.shared.snapshot()
+                self?.snapshot = next
+            } while self?.needsAnotherPass == true
+        }
+    }
+
+    /// A user-initiated refresh distrusts the cached measurements as well as the
+    /// snapshot, because that is what the gesture is for.
+    func reload() {
+        Task {
+            await LibraryIndexer.shared.invalidate()
+            refresh()
         }
     }
 
@@ -222,141 +257,6 @@ final class HistoryStore: ObservableObject {
         if let firstError {
             errorMessage = "Some items could not be deleted: \(firstError.localizedDescription)"
         }
-    }
-
-    private func discoverTracks() throws -> [HistoryTrack] {
-        let root = try libraryRoot(named: "Tracks", create: true)
-        return try folders(in: root).compactMap { folder in
-            let metadataURL = folder.appendingPathComponent(LibraryMetadata.trackFilename)
-            guard let metadata = try? LibraryMetadata.read(
-                TrackMetadata.self,
-                from: metadataURL
-            ) else { return nil }
-            let files = Dictionary(uniqueKeysWithValues: metadata.stems.compactMap { stem in
-                let url = folder.appendingPathComponent(stem.rawValue).appendingPathExtension("wav")
-                return FileManager.default.fileExists(atPath: url.path) ? (stem, url) : nil
-            })
-            guard files.count == metadata.stems.count else { return nil }
-            return HistoryTrack(
-                id: metadata.id,
-                title: metadata.title,
-                createdAt: metadata.createdAt,
-                sourceURL: metadata.sourceURL,
-                sourceKey: metadata.sourceKey,
-                sourceOriginalID: metadata.sourceOriginalID,
-                separationModel: metadata.separationModel,
-                separationCacheVersion: metadata.separationCacheVersion,
-                folderURL: folder,
-                files: files,
-                duration: audioDuration(at: files[.vocals] ?? files.values.first),
-                byteCount: folderSize(folder)
-            )
-        }
-    }
-
-    private func discoverOriginals() throws -> [HistoryOriginal] {
-        let root = try libraryRoot(named: "Originals", create: true)
-        return try folders(in: root).compactMap { folder in
-            let metadataURL = folder.appendingPathComponent(LibraryMetadata.originalFilename)
-            guard let metadata = try? LibraryMetadata.read(
-                OriginalMetadata.self,
-                from: metadataURL
-            ) else { return nil }
-            let audioURL = folder.appendingPathComponent(metadata.audioFilename)
-            guard FileManager.default.fileExists(atPath: audioURL.path) else { return nil }
-            return HistoryOriginal(
-                id: metadata.id,
-                title: metadata.title,
-                createdAt: metadata.createdAt,
-                sourceURL: metadata.sourceURL,
-                sourceKey: metadata.sourceKey,
-                folderURL: folder,
-                audioURL: audioURL,
-                duration: audioDuration(at: audioURL),
-                byteCount: folderSize(folder)
-            )
-        }
-    }
-
-    private func discoverRecordings() throws -> [HistoryRecording] {
-        let root = try libraryRoot(named: "Recordings", create: true)
-        return try folders(in: root).compactMap { folder in
-            let metadataURL = folder.appendingPathComponent(LibraryMetadata.recordingFilename)
-            guard let metadata = try? LibraryMetadata.read(
-                RecordingMetadata.self,
-                from: metadataURL
-            ) else { return nil }
-            let exported = exportedAudio(in: folder, preferredName: metadata.exportedFilename)
-            let microphone = folder.appendingPathComponent("microphone.caf")
-            let backing = folder.appendingPathComponent("backing.caf")
-            let microphoneExists = FileManager.default.fileExists(atPath: microphone.path)
-            let backingExists = FileManager.default.fileExists(atPath: backing.path)
-            guard exported != nil || microphoneExists else { return nil }
-            return HistoryRecording(
-                id: metadata.id,
-                title: metadata.title,
-                createdAt: metadata.createdAt,
-                duration: metadata.duration,
-                sourceTrackID: metadata.sourceTrackID,
-                folderURL: folder,
-                microphoneURL: microphoneExists ? microphone : nil,
-                backingURL: backingExists ? backing : nil,
-                microphoneLevel: metadata.microphoneLevel ?? 1,
-                backingLevel: metadata.backingLevel ?? 0.7,
-                playbackURL: exported,
-                byteCount: folderSize(folder)
-            )
-        }
-    }
-
-    private func libraryRoot(named name: String, create: Bool) throws -> URL {
-        try FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: create
-        ).appendingPathComponent(name, isDirectory: true)
-    }
-
-    private func folders(in root: URL) throws -> [URL] {
-        guard FileManager.default.fileExists(atPath: root.path) else { return [] }
-        return try FileManager.default.contentsOfDirectory(
-            at: root,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
-        ).filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
-    }
-
-    private func exportedAudio(in folder: URL, preferredName: String?) -> URL? {
-        if let preferredName {
-            let preferred = folder.appendingPathComponent(preferredName)
-            if FileManager.default.fileExists(atPath: preferred.path) { return preferred }
-        }
-        let contents = try? FileManager.default.contentsOfDirectory(
-            at: folder,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        )
-        return contents?.first { $0.pathExtension.lowercased() == "m4a" }
-    }
-
-    private func audioDuration(at url: URL?) -> TimeInterval {
-        guard let url, let file = try? AVAudioFile(forReading: url) else { return 0 }
-        return Double(file.length) / file.processingFormat.sampleRate
-    }
-
-    private func folderSize(_ folder: URL) -> Int64 {
-        guard let enumerator = FileManager.default.enumerator(
-            at: folder,
-            includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey]
-        ) else { return 0 }
-        var total: Int64 = 0
-        for case let file as URL in enumerator {
-            guard let values = try? file.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey]),
-                  values.isRegularFile == true else { continue }
-            total += Int64(values.fileSize ?? 0)
-        }
-        return total
     }
 
     private func nextMixTitle(for title: String) -> String {

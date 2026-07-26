@@ -634,47 +634,115 @@ Absorbs `IMPROVEMENTS_PLAN.md` items 1 (dissolved into the queue) and 11.
 
 ### 1. AnalysisQueue
 
-- [ ] Add an `AnalysisQueue` actor owning **separation, transcription, and
+- [x] Add an `AnalysisQueue` actor owning **separation, transcription, and
       chord/beat analysis** as job types. One job at a time, globally.
-- [ ] Give every job a stable ID and generation token; make all state updates
+- [x] Give every job a stable ID and generation token; make all state updates
       conditional on the job still being current.
-- [~] Make cancellation a distinct non-error terminal state that propagates to
-      download, extraction, inference, and file generation. **Inference is
+- [x] Make cancellation a distinct non-error terminal state that propagates to
+      download, extraction, inference, and file generation. **Inference was
       already done**, ahead of this phase: Phase 2's device pass found that
       Cancel did nothing at all, because all three separators ran their chunk
       loop inside a `Task.detached`, which inherits no cancellation — so their
       `Task.checkCancellation()` calls could never fire. `runCancellable` now
-      forwards the cancel to the detached handle. Download and extraction still
-      run to completion, and the terminal state is still `CancellationError`
-      rather than a distinct one.
-- [ ] Prevent an older job's cleanup from clearing a newer job's progress,
+      forwards the cancel to the detached handle. The terminal state is now
+      `AnalysisOutcome.cancelled`, and extraction and both downloads observe
+      the cancel — see the outcome below.
+- [x] Prevent an older job's cleanup from clearing a newer job's progress,
       status, or task handle.
-- [ ] Block every job while `StemPlayer.isRecording`.
-- [ ] Run jobs at `.utility` QoS; make each idempotent, discarding partial
+- [x] Block every job while `StemPlayer.isRecording`.
+- [x] Run jobs at `.utility` QoS; make each idempotent, discarding partial
       output on failure.
-- [ ] Report all jobs through one shared progress surface.
-- [ ] Add structured `OSLog` signposts per job so chord and transcription work
+- [x] Report all jobs through one shared progress surface.
+- [x] Add structured `OSLog` signposts per job so chord and transcription work
       is debuggable. (A deliberately small slice of item 15.)
 
 ### 2. Library off the main actor (item 11)
 
-- [ ] Move directory traversal, duration reads, and byte counting to a
+- [x] Move directory traversal, duration reads, and byte counting to a
       dedicated actor.
-- [ ] Publish an immutable Library snapshot to the UI.
-- [ ] Maintain a lightweight persistent index updated transactionally.
-- [ ] Reconcile the index with disk incrementally rather than rescanning.
-- [ ] Coalesce duplicate refresh notifications.
-- [ ] Move existing-separation lookup out of `ContentView` and stop scanning
+- [x] Publish an immutable Library snapshot to the UI.
+- [x] Maintain a lightweight persistent index updated transactionally.
+- [x] Reconcile the index with disk incrementally rather than rescanning.
+- [x] Coalesce duplicate refresh notifications.
+- [x] Move existing-separation lookup out of `ContentView` and stop scanning
       while the user types.
 
 ### Acceptance criteria
 
-- [ ] Starting job B immediately after cancelling job A never lets A alter B's
+- [x] Starting job B immediately after cancelling job A never lets A alter B's
       progress, status, error, result, or task handle.
-- [ ] Two long-running jobs never run concurrently, and none runs during a take.
-- [ ] Repeated cancel/restart cycles leave no partial library entry.
-- [ ] Library refresh does not block the main thread, and one data mutation
+- [x] Two long-running jobs never run concurrently, and none runs during a take.
+- [x] Repeated cancel/restart cycles leave no partial library entry.
+- [x] Library refresh does not block the main thread, and one data mutation
       produces at most one UI snapshot.
+
+### Outcome
+
+**New files.** `AnalysisQueue.swift` holds three pieces: the `AnalysisQueue`
+actor that serializes work, `AnalysisJobContext` — the only channel a running
+job has for reporting itself — and `AnalysisProgressCenter`, the one
+`@MainActor` surface the UI reads. `LibraryIndex.swift` holds `LibrarySnapshot`
+and the `LibraryIndexer` actor.
+
+**Notable changes.**
+
+- `SeparationModel` lost `isWorking`, `progress`, `statusText`, and
+  `estimatedRemainingText`. Those four properties *were* the cross-job bleed
+  the acceptance criteria describe: one set of globals, so whichever job wrote
+  last won. Progress is now an entry per job token, and a report whose token the
+  center is no longer tracking is dropped rather than applied.
+- The estimate moved with them, but keeps its old input. It is timed against the
+  *inference* fraction, not overall progress — a separation spends its first
+  fifth downloading and loading a model, and timing against that produced an
+  estimate that finished early.
+- Cancellation is `AnalysisOutcome.cancelled`, not a thrown `CancellationError`,
+  so a stopped job no longer travels the same path as a failure. A `URLError`
+  with code `.cancelled` maps to it too, because that is how URLSession says the
+  same thing.
+- Extraction became cancellable by *deleting* its `Task.detached`, not by
+  wrapping it: `BundledYTDLP` has been an actor since Phase 0, so the
+  interpreter already ran off the main actor and the detached task was only
+  standing between the job and its cancellation. The audio download and the
+  model download were already cancellation-aware through `URLSession`; what they
+  lacked was cleanup, so the scratch folder now goes when the job does. The
+  model install gained a cancellation check at each stage boundary — neither
+  unzipping nor Core ML compilation can be interrupted part way, so stopping
+  between them is as prompt as that path gets.
+- The recording gate closes before the count-in rather than after the engine
+  starts. A separation beginning during the three clicks before a take would be
+  competing for the CPU by the first sung note. Every path out of
+  `startRecording` that does not end up recording reopens it.
+- `HistoryStore` publishes one `LibrarySnapshot` instead of three arrays, and
+  listens for `atarangLibraryDidChange` itself instead of `ContentView` doing it
+  — one place to coalesce, which matters because a single separation announces
+  twice, once for the saved original and once for the finished stems. A burst of
+  notifications now collapses into at most one extra pass.
+- The index caches what is actually expensive: opening every audio file to
+  measure duration, and walking every folder to add up bytes. Metadata JSON is
+  re-read every pass, which keeps one source of truth for what an entry *is*.
+  Measurements are keyed on the folder's modification date and child count, so
+  recording one take remeasures one folder.
+- Studio's existing-separation lookup reads the snapshot. It used to scan
+  `Tracks/` on the main actor, on a 250 ms debounce, after every keystroke. A
+  side effect worth having: the offer Studio makes and the item the Library lists
+  are now the same fact rather than two independent scans that could disagree.
+- Pull-to-refresh in the Library became `reload()`, which discards the cached
+  measurements as well as the snapshot. The gesture exists for when the user
+  believes what is on screen is wrong, so it should not trust the cache.
+
+**Found by the tests.** The persistent index never survived a restart. Its
+timestamps went through `LibraryMetadata`, whose ISO-8601 date strategy rounds
+to the second, so a reloaded measurement never matched the modification date it
+came from and the first refresh after every launch remeasured the whole library
+— the exact cost the index exists to avoid. The same rounding would have missed
+a folder changed within the same second as its measurement. Timestamps are now
+stored as intervals.
+
+**Not verified on device.** This phase is all timing and file access, both of
+which behave differently on real storage under real thermal conditions. The
+simulator pass covered the Library reading through the actor with measured
+durations and byte counts, the snapshot-driven lookup resolving as a URL is
+typed, and opening a saved separation from it.
 
 ---
 

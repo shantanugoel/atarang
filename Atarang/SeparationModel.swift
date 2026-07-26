@@ -22,31 +22,9 @@ enum SeparationResult {
 
 @MainActor
 final class SeparationModel: ObservableObject {
-    @Published var isWorking = false
-    @Published var progress = 0.0
-    @Published var statusText = "Preparing…"
-    @Published var estimatedRemainingText: String?
     @Published var errorMessage: String?
     @Published var selectedModel: SeparationModelKind = .htdemucs
     private let logger = Logger(subsystem: "com.shantanugoel.atarang.Atarang", category: "Separation")
-    private var separationStartedAt: Date?
-
-    func existingSeparation(
-        youtubeURL: String,
-        using separationModel: SeparationModelKind
-    ) -> LocalTrack? {
-        guard let url = YouTubeSource.validatedURL(from: youtubeURL),
-              let original = try? savedOriginal(for: url) else { return nil }
-        return try? savedTrack(for: original, using: separationModel)
-    }
-
-    func existingSeparationModels(youtubeURL: String) -> [SeparationModelKind] {
-        guard let url = YouTubeSource.validatedURL(from: youtubeURL),
-              let original = try? savedOriginal(for: url) else { return [] }
-        return SeparationModelKind.allCases.filter {
-            (try? savedTrack(for: original, using: $0)) != nil
-        }
-    }
 
     func separate(
         youtubeURL: String,
@@ -56,72 +34,18 @@ final class SeparationModel: ObservableObject {
             errorMessage = "Enter a valid youtube.com or youtu.be URL."
             return nil
         }
-
-        isWorking = true
         let separationModel = selectedModel
         guard separationModel.isAvailableOnCurrentDevice else {
-            isWorking = false
             errorMessage = separationModel.unavailabilityMessage
             return nil
         }
-        progress = 0.01
-        estimatedRemainingText = nil
-        separationStartedAt = nil
-        statusText = "Reading video information…"
-        defer { isWorking = false }
-
-        do {
-            try Task.checkCancellation()
-            let original: SavedOriginal
-            if let existing = try savedOriginal(for: url) {
-                original = existing
-                statusText = "Using saved original…"
-                progress = 0.17
-            } else {
-                statusText = "Preparing bundled yt-dlp…"
-                try await BundledYTDLP.shared.install()
-                progress = 0.09
-                logger.info("Starting extraction for \(url.absoluteString, privacy: .public) with bundled yt-dlp \(BundledYTDLP.version, privacy: .public)")
-
-                let slowNotice = Task { @MainActor [weak self] in
-                    try? await Task.sleep(for: .seconds(20))
-                    guard !Task.isCancelled else { return }
-                    self?.statusText = "YouTube is taking longer than expected…"
-                }
-                defer { slowNotice.cancel() }
-                let downloaded = try await downloadAudio(from: url)
-                try Task.checkCancellation()
-                slowNotice.cancel()
-                original = try persistOriginal(
-                    downloadedURL: downloaded.url,
-                    title: downloaded.title,
-                    sourceURL: url
-                )
-                try? FileManager.default.removeItem(
-                    at: downloaded.url.deletingLastPathComponent()
-                )
-                NotificationCenter.default.post(name: .atarangLibraryDidChange, object: nil)
-                logger.info("Audio saved to Originals")
-            }
-            if !force, let existing = try savedTrack(
-                for: original,
-                using: separationModel
-            ) {
-                progress = 1
-                statusText = "Opened saved separation"
-                return .reused(existing)
-            }
-            return .created(
-                try await separate(original: original, using: separationModel)
+        return await runSeparationJob(title: url.absoluteString) { context in
+            try await self.separate(
+                url: url,
+                using: separationModel,
+                force: force,
+                context: context
             )
-        } catch is CancellationError {
-            statusText = "Cancelled"
-            progress = 0
-            return nil
-        } catch {
-            logger.error("Separation failed: \(error.localizedDescription, privacy: .public)")
-            errorMessage = friendlyMessage(for: error)
-            return nil
         }
     }
 
@@ -134,40 +58,39 @@ final class SeparationModel: ObservableObject {
             errorMessage = separationModel.unavailabilityMessage
             return nil
         }
-        isWorking = true
         selectedModel = separationModel
-        progress = 0.17
-        estimatedRemainingText = nil
-        separationStartedAt = nil
-        statusText = "Using saved original…"
-        defer { isWorking = false }
+        let savedOriginal = SavedOriginal(
+            id: original.id,
+            title: original.title,
+            sourceURL: original.sourceURL,
+            sourceKey: original.sourceKey
+                ?? YouTubeSource.canonicalKey(for: original.sourceURL),
+            audioURL: original.audioURL
+        )
+        return await runSeparationJob(title: original.title) { context in
+            try await self.separate(
+                original: savedOriginal,
+                using: separationModel,
+                force: force,
+                context: context
+            )
+        }
+    }
+
+    /// Every separation goes through the shared queue, so it cannot run beside
+    /// another job or during a take, and its progress is reported in the one
+    /// place the UI reads. A cancelled job returns `nil` without an error,
+    /// because the user stopping the work is not a failure.
+    private func runSeparationJob(
+        title: String,
+        work: @escaping @Sendable (AnalysisJobContext) async throws -> SeparationResult
+    ) async -> SeparationResult? {
         do {
-            let savedOriginal = SavedOriginal(
-                id: original.id,
-                title: original.title,
-                sourceURL: original.sourceURL,
-                sourceKey: original.sourceKey
-                    ?? YouTubeSource.canonicalKey(for: original.sourceURL),
-                audioURL: original.audioURL
-            )
-            if !force, let existing = try savedTrack(
-                for: savedOriginal,
-                using: separationModel
-            ) {
-                progress = 1
-                statusText = "Opened saved separation"
-                return .reused(existing)
-            }
-            return .created(
-                try await separate(
-                    original: savedOriginal,
-                    using: separationModel
-                )
-            )
-        } catch is CancellationError {
-            statusText = "Cancelled"
-            progress = 0
-            return nil
+            return try await AnalysisQueue.shared.submit(
+                kind: .separation,
+                title: title,
+                work: work
+            ).value
         } catch {
             logger.error("Separation failed: \(error.localizedDescription, privacy: .public)")
             errorMessage = friendlyMessage(for: error)
@@ -177,7 +100,88 @@ final class SeparationModel: ObservableObject {
 
     private func separate(
         original: SavedOriginal,
-        using separationModel: SeparationModelKind
+        using separationModel: SeparationModelKind,
+        force: Bool,
+        context: AnalysisJobContext
+    ) async throws -> SeparationResult {
+        context.report("Using saved original…", progress: 0.17)
+        if !force, let existing = try savedTrack(
+            for: original,
+            using: separationModel
+        ) {
+            context.report("Opened saved separation", progress: 1)
+            return .reused(existing)
+        }
+        return .created(
+            try await separate(
+                original: original,
+                using: separationModel,
+                context: context
+            )
+        )
+    }
+
+    private func separate(
+        url: URL,
+        using separationModel: SeparationModelKind,
+        force: Bool,
+        context: AnalysisJobContext
+    ) async throws -> SeparationResult {
+        context.report("Reading video information…", progress: 0.01)
+        try Task.checkCancellation()
+        let original: SavedOriginal
+        if let existing = try savedOriginal(for: url) {
+            original = existing
+            context.report("Using saved original…", progress: 0.17)
+        } else {
+            context.report("Preparing bundled yt-dlp…", progress: 0.05)
+            try await BundledYTDLP.shared.install()
+            context.report("Reading video information…", progress: 0.09)
+            logger.info("Starting extraction for \(url.absoluteString, privacy: .public) with bundled yt-dlp \(BundledYTDLP.version, privacy: .public)")
+
+            let slowNotice = Task { @MainActor in
+                try? await Task.sleep(for: .seconds(20))
+                guard !Task.isCancelled else { return }
+                context.report(
+                    "YouTube is taking longer than expected…",
+                    progress: 0.11
+                )
+            }
+            defer { slowNotice.cancel() }
+            let downloaded = try await downloadAudio(from: url, context: context)
+            try Task.checkCancellation()
+            slowNotice.cancel()
+            original = try persistOriginal(
+                downloadedURL: downloaded.url,
+                title: downloaded.title,
+                sourceURL: url
+            )
+            try? FileManager.default.removeItem(
+                at: downloaded.url.deletingLastPathComponent()
+            )
+            NotificationCenter.default.post(name: .atarangLibraryDidChange, object: nil)
+            logger.info("Audio saved to Originals")
+        }
+        if !force, let existing = try savedTrack(
+            for: original,
+            using: separationModel
+        ) {
+            context.report("Opened saved separation", progress: 1)
+            return .reused(existing)
+        }
+        return .created(
+            try await separate(
+                original: original,
+                using: separationModel,
+                context: context
+            )
+        )
+    }
+
+    private func separate(
+        original: SavedOriginal,
+        using separationModel: SeparationModelKind,
+        context: AnalysisJobContext
     ) async throws -> LocalTrack {
         let availableMemory = ModelMemoryBudget.availableBytes
         logger.info(
@@ -186,17 +190,21 @@ final class SeparationModel: ObservableObject {
         guard separationModel.isAvailableOnCurrentDevice else {
             throw StemSeparatorError.modelUnavailable(separationModel)
         }
-        statusText = separationModel == .htdemucs
-            ? "Loading \(separationModel.title)…"
-            : "Preparing \(separationModel.title)…"
+        context.report(
+            separationModel == .htdemucs
+                ? "Loading \(separationModel.title)…"
+                : "Preparing \(separationModel.title)…",
+            progress: 0.17
+        )
         let artifact = try await ModelAssetStore.shared.artifact(
             for: separationModel
-        ) { [weak self] status, value in
-            self?.statusText = status
-            self?.progress = value
+        ) { status, value in
+            context.report(status, progress: value)
         }
-        statusText = "Loading on-device \(separationModel.title)…"
-        progress = 0.18
+        context.report(
+            "Loading on-device \(separationModel.title)…",
+            progress: 0.18
+        )
         let separator = try StemSeparator(
             modelKind: separationModel,
             artifact: artifact
@@ -212,14 +220,15 @@ final class SeparationModel: ObservableObject {
                 fileURL: original.audioURL,
                 outputFolder: output.staging
             ) { value in
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    if self.separationStartedAt == nil {
-                        self.separationStartedAt = Date()
-                    }
-                    self.statusText = "Separating \(separationModel.stems.count) stems on this device…"
-                    self.progress = 0.2 + value * 0.78
-                    self.updateEstimatedRemaining(forSeparationProgress: value)
+                Task { @MainActor in
+                    context.report(
+                        "Separating \(separationModel.stems.count) stems on this device…",
+                        progress: 0.2 + value * 0.78,
+                        // The estimate is timed against inference alone. Timing
+                        // it against overall progress would count the download
+                        // and model load as separation and finish early.
+                        estimateFraction: value
+                    )
                 }
             }
         } catch {
@@ -254,9 +263,7 @@ final class SeparationModel: ObservableObject {
             throw error
         }
 
-        progress = 1
-        statusText = "Ready to mix"
-        estimatedRemainingText = nil
+        context.report("Ready to mix", progress: 1)
         NotificationCenter.default.post(name: .atarangLibraryDidChange, object: nil)
         logger.info("Separation completed successfully")
         return LocalTrack(
@@ -286,16 +293,31 @@ final class SeparationModel: ObservableObject {
         }
     }
 
-    private func downloadAudio(from url: URL) async throws -> (url: URL, title: String) {
-        statusText = "Reading YouTube video information…"
-        progress = 0.11
-        let selection = try await Task.detached(priority: .userInitiated) {
-            let folder = FileManager.default.temporaryDirectory
-                .appendingPathComponent("Atarang-\(UUID().uuidString)", isDirectory: true)
-            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    /// Extraction and download, both cancellable.
+    ///
+    /// Neither used to be: extraction ran inside a `Task.detached`, which
+    /// inherits no cancellation, and the download was never asked to stop. Both
+    /// are now ordinary awaits in the job's own task, so cancelling the job ends
+    /// them at the next suspension point and the scratch folder goes with them
+    /// rather than being left in the temporary directory.
+    private func downloadAudio(
+        from url: URL,
+        context: AnalysisJobContext
+    ) async throws -> (url: URL, title: String) {
+        context.report("Reading YouTube video information…", progress: 0.11)
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Atarang-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: folder,
+            withIntermediateDirectories: true
+        )
+        do {
             let metadataURL = folder.appendingPathComponent("selection.json")
             let printTemplate = "{\"title\":%(title)j,\"url\":%(url)j,\"headers\":%(http_headers)j,\"size\":%(filesize)j}"
 
+            // `BundledYTDLP` is an actor, so the interpreter already runs off the
+            // main actor without a detached task standing between this job and
+            // its cancellation.
             try await BundledYTDLP.shared.run(argv: [
                 "--no-playlist",
                 "--no-check-certificates",
@@ -305,31 +327,35 @@ final class SeparationModel: ObservableObject {
                 "--print-to-file", printTemplate, metadataURL.path,
                 url.absoluteString,
             ])
-            let data = try Data(contentsOf: metadataURL)
-            var decoded = try JSONDecoder().decode(YTDLPSelection.self, from: data)
-            decoded.temporaryFolder = folder
-            return decoded
-        }.value
+            try Task.checkCancellation()
+            let selection = try JSONDecoder().decode(
+                YTDLPSelection.self,
+                from: try Data(contentsOf: metadataURL)
+            )
 
-        guard let mediaURL = URL(string: selection.url) else {
-            throw SeparationFailure.noCompatibleAudio
+            guard let mediaURL = URL(string: selection.url) else {
+                throw SeparationFailure.noCompatibleAudio
+            }
+            context.report("Downloading audio to this device…", progress: 0.14)
+            var request = URLRequest(url: mediaURL)
+            selection.headers.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
+            if let size = selection.size, size > 0 {
+                request.setValue("bytes=0-\(size - 1)", forHTTPHeaderField: "Range")
+            }
+            let (temporary, response) = try await URLSession.shared.download(for: request)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+                throw SeparationFailure.httpStatus(code)
+            }
+            try Task.checkCancellation()
+            let destination = folder.appendingPathComponent("source.m4a")
+            try FileManager.default.moveItem(at: temporary, to: destination)
+            context.report("Downloaded", progress: 0.17)
+            return (destination, selection.title)
+        } catch {
+            try? FileManager.default.removeItem(at: folder)
+            throw error
         }
-        statusText = "Downloading audio to this device…"
-        progress = 0.14
-        var request = URLRequest(url: mediaURL)
-        selection.headers.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
-        if let size = selection.size, size > 0 {
-            request.setValue("bytes=0-\(size - 1)", forHTTPHeaderField: "Range")
-        }
-        let (temporary, response) = try await URLSession.shared.download(for: request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            let code = (response as? HTTPURLResponse)?.statusCode ?? -1
-            throw SeparationFailure.httpStatus(code)
-        }
-        let destination = selection.temporaryFolder.appendingPathComponent("source.m4a")
-        try FileManager.default.moveItem(at: temporary, to: destination)
-        progress = 0.17
-        return (destination, selection.title)
     }
 
     private func makeTrackStaging() throws -> (id: UUID, staging: URL, destination: URL) {
@@ -479,23 +505,6 @@ final class SeparationModel: ObservableObject {
         return host == "youtu.be" || host == "youtube.com" || host.hasSuffix(".youtube.com")
     }
 
-    private func updateEstimatedRemaining(forSeparationProgress progress: Double) {
-        guard progress > 0.02, progress < 1, let separationStartedAt else {
-            estimatedRemainingText = nil
-            return
-        }
-        let elapsed = Date().timeIntervalSince(separationStartedAt)
-        let remaining = elapsed * (1 - progress) / progress
-        guard remaining.isFinite, remaining > 5 else {
-            estimatedRemainingText = "Almost done"
-            return
-        }
-        let minutes = max(1, Int(ceil(remaining / 60)))
-        estimatedRemainingText = minutes == 1
-            ? "About 1 minute remaining"
-            : "About \(minutes) minutes remaining"
-    }
-
     private func friendlyMessage(for error: Error) -> String {
         if let urlError = error as? URLError {
             return "The download failed: \(urlError.localizedDescription). Check your connection and try again."
@@ -517,11 +526,6 @@ private struct YTDLPSelection: Decodable, Sendable {
     let url: String
     let headers: [String: String]
     let size: Int?
-    var temporaryFolder = URL(fileURLWithPath: "/")
-
-    private enum CodingKeys: String, CodingKey {
-        case title, url, headers, size
-    }
 }
 
 private enum SeparationFailure: LocalizedError {
