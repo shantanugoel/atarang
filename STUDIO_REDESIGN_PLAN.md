@@ -415,13 +415,36 @@ the A knob; and B spans the whole song, making fine adjustment impractical
 (~0.7 s per point on a four-minute track), which is why the ±0.1 s nudge
 buttons exist. The transport rebuild replaces both.
 
-**Still unverified after the device pass.** Three things were not exercised and
-should be picked up with Phase 2's device work:
+**The reduced-rate convention was wrong, and it was wrong in the way this note
+predicted.** Phase 2's device pass finally played a song at 0.5×, and the
+playhead advanced at half its true speed: measured in the simulator afterwards
+at 1.0 s of position per 4.0 s of wall clock, where 2.0 s was correct. The
+player node's sample time is already in *song* seconds — the time-pitch unit
+pulls the node at `rate`, so it renders half a second of file per second of
+wall clock — and `calculatedPosition` scaled it by `rate` a second time. The
+counter, the slider, the lock-screen position, the saved resume point, and the
+displayed loop wrap were all wrong whenever the song was slowed down. Fixed by
+scaling only the latency term, which is the one quantity genuinely measured in
+real time. The old unit tests asserted the wrong value, which is why nothing
+caught it; they now assert that node frames are song seconds at 1.0×, 0.75×,
+and 0.5×.
 
-- **Reduced playback rate.** `PlaybackState.calculatedPosition` treats elapsed
-  player-node time as render seconds and multiplies by `rate`; the helper
-  preserves that convention rather than re-deriving it. It is a no-op at 1.0, so
-  a wrong convention would only show at 0.5×, which was never played on device.
+**Speed and key changes no longer restart the engine.** Both were implemented as
+pause, reschedule every stem, start — synchronously on the main actor. On device
+that blocked long enough that the speed menu stayed on screen after the tap that
+chose a speed, which is how the position bug was found. Because the playhead is
+now derived from the node's own frame count, a mid-flight rate change needs no
+re-anchoring: `AVAudioUnitTimePitch.rate` is set live and the music keeps
+playing. `LiveRateChangeTests` renders the graph offline and holds that
+assumption in place — after halving the rate, two seconds of output consume
+exactly one second of file. The metronome keeps the restart path, because its
+clicks are queued ahead on a wall-clock timeline built from the old rate and a
+player node cannot unschedule a buffer. Its refill window also read the *stem*
+clock as though it were wall time; it now reads the metronome node's own clock,
+which is real time by construction.
+
+**Still unverified after the device pass.**
+
 - **Wired output**, for the 30 ms half of the sync criterion. No wired
   headphones were available.
 - **Separation on device**, inherited from Phase 0, and an incoming call as a
@@ -568,12 +591,36 @@ folder made recording fail before it started — which is also how the raw
 `NSFileManager` message ("You don't have permission to save the file
 '.staging-…'") was found and replaced with `PlayerError.noRecordingStorage`.
 
-**Not verified.** No device pass yet. Per Phase 1's process note, treat that as
-blocking for the recording layer before this phase is considered closed: the
-paths that only hardware exercises are a real microphone route under a genuine
-write failure, and the Bluetooth HFP handoff feeding a bounded queue. Also
-untested: killing the app exactly at a commit boundary, and re-downloading an
-optional model after the manifest change.
+### Device pass
+
+Run on an iPhone 16 Pro Max. Everything this phase claims held up, and the pass
+found three defects in **other** areas — which is the argument for doing it.
+
+**Passed.** Several recordings committed with correct durations. Export
+isolation: loading another song mid-export showed no stale state, and the take
+completed into the Library. A route loss during a take stopped recording and
+still saved a playable file. Force-quitting at the commit boundary left no new
+performance and no staging directory. Optional models re-downloaded cleanly
+after the manifest change.
+
+**Deliberately skipped.** The storage-failure test (§1) — it needs a nearly-full
+device or a debug injection, and is covered at the writer level by unit tests.
+
+**Found elsewhere, all pre-existing:**
+
+1. **The playhead ran at half speed at 0.5×.** Phase 1's known-unverified item,
+   now measured, fixed, and recorded in that phase's outcome.
+2. **The speed menu did not dismiss on device.** Same root cause area: the
+   engine restart inside the menu's action blocked the main actor. Fixed by
+   making rate and pitch live parameters.
+3. **Separation could not be cancelled.** `Task.detached` swallowed the
+   cancellation; see Phase 3.
+
+**Still open.** `htdemucs6s` crashed during separation on device — likely the
+`ModelMemoryBudget` gate being a launch-time check while ORT's CPU session peaks
+higher during inference, but unconfirmed: the crash report has not been read
+yet, because `devicectl` cannot mount the developer disk image on that phone.
+Nothing in this phase touches the inference path.
 
 ---
 
@@ -591,8 +638,15 @@ Absorbs `IMPROVEMENTS_PLAN.md` items 1 (dissolved into the queue) and 11.
       chord/beat analysis** as job types. One job at a time, globally.
 - [ ] Give every job a stable ID and generation token; make all state updates
       conditional on the job still being current.
-- [ ] Make cancellation a distinct non-error terminal state that propagates to
-      download, extraction, inference, and file generation.
+- [~] Make cancellation a distinct non-error terminal state that propagates to
+      download, extraction, inference, and file generation. **Inference is
+      already done**, ahead of this phase: Phase 2's device pass found that
+      Cancel did nothing at all, because all three separators ran their chunk
+      loop inside a `Task.detached`, which inherits no cancellation — so their
+      `Task.checkCancellation()` calls could never fire. `runCancellable` now
+      forwards the cancel to the detached handle. Download and extraction still
+      run to completion, and the terminal state is still `CancellationError`
+      rather than a distinct one.
 - [ ] Prevent an older job's cleanup from clearing a newer job's progress,
       status, or task handle.
 - [ ] Block every job while `StemPlayer.isRecording`.

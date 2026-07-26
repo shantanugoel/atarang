@@ -63,9 +63,9 @@ final class MDXVocalSeparator: @unchecked Sendable {
         progress: @Sendable @escaping (Double) -> Void
     ) async throws -> [StemKind: URL] {
         let mix = try loadAndResample(fileURL: fileURL)
-        return try await Task.detached(priority: .userInitiated) {
+        return try await runCancellable {
             try self.runChunked(mix: mix, outputFolder: outputFolder, progress: progress)
-        }.value
+        }
     }
 
     private func runChunked(

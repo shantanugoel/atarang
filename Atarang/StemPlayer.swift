@@ -102,12 +102,19 @@ final class StemPlayer {
         return nodes[stem]
     }
 
-    /// Render seconds elapsed since the current `play()` started, taken from
-    /// the timing stem so the metronome shares one clock with the stems.
-    private func currentRenderElapsed() -> TimeInterval? {
-        guard let node = timingNode(),
-              let renderTime = node.lastRenderTime,
-              let playerTime = node.playerTime(forNodeTime: renderTime),
+    /// Wall-clock seconds elapsed since the current `play()` started, taken
+    /// from the metronome node's own timeline.
+    ///
+    /// It has to come from that node rather than from a stem: clicks are placed
+    /// at absolute times in real seconds, while a stem node's frame count is in
+    /// *song* seconds, and the two only agree at 1.0×. Reading the stem clock
+    /// here made the scheduling window understate how much time had passed
+    /// whenever the song was slowed down. The metronome node is connected
+    /// straight to the main mixer with no time-pitch unit in front of it, so
+    /// its frame count is real time by construction.
+    private func currentMetronomeRenderElapsed() -> TimeInterval? {
+        guard let renderTime = metronomeNode.lastRenderTime,
+              let playerTime = metronomeNode.playerTime(forNodeTime: renderTime),
               playerTime.sampleRate > 0 else { return nil }
         return max(0, Double(playerTime.sampleTime) / playerTime.sampleRate)
     }
@@ -553,28 +560,42 @@ final class StemPlayer {
         seek(to: max(0, position - max(0, seconds)))
     }
 
+    /// Changes speed without stopping the music.
+    ///
+    /// `AVAudioUnitTimePitch.rate` is a live parameter, and since the playhead
+    /// is derived from the player node's own frame count — which counts song
+    /// frames at any speed — a mid-flight change needs no re-anchoring and no
+    /// rescheduling. This used to pause the engine, reschedule every stem, and
+    /// start it again, all synchronously on the main actor: audible as a click,
+    /// and slow enough on device to leave the speed menu sitting open after the
+    /// tap that chose a speed.
+    ///
+    /// The metronome is the exception. Its clicks are queued ahead on a
+    /// wall-clock timeline derived from the old rate, and a player node cannot
+    /// unschedule a buffer, so a running click track still needs the pass
+    /// restarted to be re-planned at the new tempo.
     func setPlaybackRate(_ rate: Float) {
         guard !isRecording else { return }
         updatePosition()
-        let shouldResume = isPlaying
-        if shouldResume { pausePlayback() }
+        let needsMetronomeReplan = isPlaying && practiceSettings.metronomeEnabled
+        if needsMetronomeReplan { pausePlayback() }
         playbackState.setRate(rate)
         practiceSettings.playbackRate = playbackState.rate
         persistPracticeSettings()
         applyPlaybackTransform()
-        if shouldResume { requestPlayback() }
+        publishNowPlaying()
+        if needsMetronomeReplan { requestPlayback() }
     }
 
+    /// Pitch is a live parameter too, and unlike rate it does not affect timing
+    /// at all, so nothing needs rescheduling in any case.
     func setPitchSemitones(_ semitones: Float) {
         guard !isRecording else { return }
         updatePosition()
-        let shouldResume = isPlaying
-        if shouldResume { pausePlayback() }
         playbackState.setPitchSemitones(semitones)
         practiceSettings.pitchSemitones = playbackState.pitchSemitones
         persistPracticeSettings()
         applyPlaybackTransform()
-        if shouldResume { requestPlayback() }
     }
 
     @discardableResult
@@ -1986,7 +2007,7 @@ final class StemPlayer {
     /// position timer, so it also keeps running while the user scrolls.
     private func refillMetronomeClicks() {
         guard practiceSettings.metronomeEnabled, isPlaying else { return }
-        let elapsed = currentRenderElapsed() ?? metronomePlan.renderOrigin
+        let elapsed = currentMetronomeRenderElapsed() ?? metronomePlan.renderOrigin
         scheduleMetronomeClicks(through: elapsed + Self.metronomeScheduleWindow)
     }
 

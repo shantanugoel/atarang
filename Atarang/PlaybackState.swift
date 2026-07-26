@@ -112,12 +112,23 @@ struct PlaybackState: Equatable, Sendable {
 
     /// The playhead implied by the render clock, in source-song seconds.
     ///
-    /// `outputLatency` is how far ahead of the speaker the engine renders —
-    /// the audio session's output latency plus its I/O buffer. Subtracting it
-    /// makes the reported position describe what the user is *hearing* rather
-    /// than what has been handed to the hardware, which on Bluetooth routes
-    /// differ by well over 100 ms. It is given in render seconds and scaled by
-    /// `rate` into source seconds, like the rest of the elapsed time.
+    /// The player node's sample time is **already** in source seconds. The
+    /// time-pitch unit downstream pulls the node at `rate`, so at 0.5× the node
+    /// renders half a second of file per second of wall clock — its frame count
+    /// tracks the position in the song directly, whatever speed it is played
+    /// at. Scaling it by `rate` a second time made the playhead run at half its
+    /// true speed at 0.5×, which is invisible at 1.0× and was the shape of a
+    /// real bug: the counter, the slider, the lock screen, and the saved resume
+    /// point were all wrong whenever someone practised slowly.
+    ///
+    /// `outputLatency` is the other half of the story and does need scaling. It
+    /// is how far ahead of the speaker the engine renders — the session's
+    /// output latency plus its I/O buffer — and it is measured in real time, so
+    /// converting it to song seconds means multiplying by `rate`: at half speed
+    /// a 200 ms output delay is only 100 ms of song. Subtracting it makes the
+    /// reported position describe what the user is *hearing* rather than what
+    /// has been handed to the hardware, which on Bluetooth routes differ by
+    /// well over 100 ms.
     func calculatedPosition(
         renderSampleTime: Int64,
         sampleRate: Double,
@@ -128,11 +139,10 @@ struct PlaybackState: Equatable, Sendable {
             return position
         }
         let latency = outputLatency.isFinite ? max(0, outputLatency) : 0
-        let elapsedRenderTime = max(
+        let elapsedMediaTime = max(
             0,
-            Double(renderSampleTime) / sampleRate - latency
+            Double(renderSampleTime) / sampleRate - latency * Double(rate)
         )
-        let elapsedMediaTime = elapsedRenderTime * Double(rate)
         let unwrappedPosition = anchorPosition + elapsedMediaTime
         if let loopRange, unwrappedPosition >= loopRange.end {
             let offset = (unwrappedPosition - loopRange.start)

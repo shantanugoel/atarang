@@ -11,19 +11,43 @@ final class PlaybackStateTests: XCTestCase {
         XCTAssertEqual(range, PlaybackLoopRange(start: 0, end: 10, duration: 10))
     }
 
-    func testRateAwarePositionUsesRenderedSamples() {
+    /// The player node's frames are song seconds at every speed, because the
+    /// time-pitch unit pulls the node more slowly rather than the node
+    /// producing fewer frames. Two seconds of node time is two seconds of song
+    /// whether the rate is 1.0 or 0.5; only the wall clock differs.
+    func testRenderedSamplesAreSongSecondsAtEverySpeed() {
+        for rate in [Float(1), 0.75, 0.5] {
+            var state = PlaybackState()
+            state.load(duration: 100)
+            state.seek(to: 10)
+            state.setRate(rate)
+
+            let position = state.calculatedPosition(
+                renderSampleTime: 96_000,
+                sampleRate: 48_000,
+                anchorPosition: state.position
+            )
+
+            XCTAssertEqual(position, 12, accuracy: 0.000_001, "rate \(rate)")
+        }
+    }
+
+    /// The regression this replaces: the playhead advanced at half its true
+    /// speed at 0.5×, and the old test asserted that wrong value.
+    func testPositionKeepsPaceWithTheSongAtHalfSpeed() {
         var state = PlaybackState()
         state.load(duration: 100)
-        state.seek(to: 10)
         state.setRate(0.5)
 
+        // Ten seconds of wall clock at 0.5× consumes five seconds of song, and
+        // the node reports those five seconds.
         let position = state.calculatedPosition(
-            renderSampleTime: 96_000,
+            renderSampleTime: 240_000,
             sampleRate: 48_000,
-            anchorPosition: state.position
+            anchorPosition: 0
         )
 
-        XCTAssertEqual(position, 11, accuracy: 0.000_001)
+        XCTAssertEqual(position, 5, accuracy: 0.000_001)
     }
 
     func testRenderedPositionWrapsAtLoopBoundary() {
@@ -73,7 +97,7 @@ final class PlaybackStateTests: XCTestCase {
             outputLatency: 0.2
         )
 
-        XCTAssertEqual(position, 10.9, accuracy: 0.000_001)
+        XCTAssertEqual(position, 11.9, accuracy: 0.000_001)
     }
 
     func testLatencyCompensationNeverRunsThePositionBackwards() {
