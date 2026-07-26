@@ -17,25 +17,28 @@
 
 ## Screenshots
 
-| Start a session | Mix and record |
+| One screen for practice | Recording is a mode |
 | :---: | :---: |
-| <img src="docs/images/studio.jpg" alt="Atarang Studio ready for a YouTube URL" width="320"> | <img src="docs/images/mixer.jpg" alt="Atarang stem mixer and recording controls" width="320"> |
-| Paste a link and choose a separation style. | Shape every stem and balance the microphone and backing track. |
+| <img src="docs/images/studio.png" alt="The Atarang Studio with the Mixer stage, the practice tool chips, and the persistent transport showing an A–B loop" width="300"> | <img src="docs/images/studio-recording.png" alt="Atarang recording a take, with the microphone meter, levels, and one explanation above a dimmed chip row" width="300"> |
+| The transport never scrolls: timeline, A–B loop, playback, and the tools that state their current value. | One red strip carries the meter, the levels, and what is locked — instead of a dozen disabled controls. |
 
-| Loop, transpose, and save | Practise with structure |
+| Choose the part you play | Build up repetitions |
 | :---: | :---: |
-| <img src="docs/images/practice-loop-and-pitch.jpg" alt="Atarang Practice workspace with rewind, speed, pitch, A–B loop, and saved-section controls" width="320"> | <img src="docs/images/practice-metronome-and-target.jpg" alt="Atarang Practice workspace with manual metronome, practice-target presets, and count-in controls" width="320"> |
-| Isolate a phrase, change its key, and keep useful sections. | Align a click, choose your part, and move from learning to playing along. |
+| <img src="docs/images/tool-target.png" alt="The Target sheet offering Learn, Guide, and Play Along for the selected stem" width="300"> | <img src="docs/images/tool-reps.png" alt="The Reps sheet with a repetition target, a pause between passes, and a tempo ramp" width="300"> |
+| Hear your part alone, keep it quiet under the band, or mute it and take its place. | Count passes, breathe between them, and ramp from comfortable to full tempo. |
 
-> [!NOTE]
-> The Studio screenshots above show the layout before the Studio redesign, which
-> replaced the Mix and Practice pair with a persistent transport, a Stage, and
-> practice tool chips. They will be retaken for the first release.
+| Separate a song | App-level choices |
+| :---: | :---: |
+| <img src="docs/images/import.png" alt="The Atarang import screen listing Balanced 4-stem, Detailed 6-stem, and Vocals + Backing with their stems, speed, and download size" width="300"> | <img src="docs/images/settings.png" alt="Atarang Settings with recording defaults, a default separation, and About" width="300"> |
+| Pick by outcome, with the stems, speed, download size, and device fit shown before you commit. | Recording defaults, the separation Studio offers first, and the bundled notices. |
 
 | Originals | Separated tracks | Performances |
 | :---: | :---: | :---: |
-| <img src="docs/images/library-originals.jpg" alt="Original songs in the Atarang Library" width="240"> | <img src="docs/images/library-separated.jpg" alt="Separated tracks in the Atarang Library" width="240"> | <img src="docs/images/library-performances.jpg" alt="Recorded performances in the Atarang Library" width="240"> |
+| <img src="docs/images/library-originals.png" alt="Original songs in the Atarang Library" width="230"> | <img src="docs/images/library-separated.png" alt="Separated tracks in the Atarang Library" width="230"> | <img src="docs/images/library-performances.png" alt="Recorded performances in the Atarang Library" width="230"> |
 | Reuse downloaded audio. | Reopen, play, record, or separate again. | Play, edit, share, or record another take. |
+
+<sub>Captured on iPhone 17 Pro Max in dark mode. The songs are synthetic demo
+tracks, so no copyrighted audio appears in the shots.</sub>
 
 ## Make any song yours
 

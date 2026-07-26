@@ -249,27 +249,20 @@ header{position:relative;z-index:5;padding:26px 0}
 .step p{color:var(--fg-dim);font-size:.9375rem;max-width:32ch}
 .step code{font-family:var(--mono);font-size:.8125em;color:#C6BCF0;
   background:rgba(124,92,255,.12);border-radius:2px;padding:.12em .38em}
-/* the shots are tall phone captures — show them through a fixed
-   window so all three align and none of them swallows the section */
+/* the shots are framed phone captures on transparency — size them by
+   height so all three line up, and never crop the device itself */
 .shot{
   position:relative;margin-top:auto;padding-top:26px;
   transition:transform .4s cubic-bezier(.2,.8,.3,1);
 }
 .shot img{
-  height:clamp(280px,34vw,400px);object-fit:cover;object-position:50% var(--op,0%);
-  border:1px solid var(--rule);border-radius:14px;
-  background:var(--panel);box-shadow:0 30px 60px -40px #000;
-  transition:border-color .4s;
-}
-/* fade the hard bottom edge into the page */
-.shot::after{
-  content:"";position:absolute;left:0;right:0;bottom:0;height:78px;pointer-events:none;
-  border-radius:0 0 14px 14px;
-  background:linear-gradient(to top,var(--ink) 8%,rgba(8,6,15,0));
+  height:clamp(300px,38vw,470px);width:auto;object-fit:contain;
+  filter:drop-shadow(0 26px 46px rgba(0,0,0,.6));
+  transition:filter .4s;
 }
 .step:hover .shot{transform:translateY(-6px)}
-.step:hover .shot img{border-color:rgba(124,92,255,.4)}
-@media(max-width:800px){.shot{max-width:320px}}
+.step:hover .shot img{filter:drop-shadow(0 26px 52px rgba(124,92,255,.32))}
+@media(max-width:800px){.shot{max-width:320px}.shot img{height:auto;width:100%}}
 
 /* practice ────────────────────────────────────────────────── */
 .practice{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,.85fr);
@@ -280,8 +273,8 @@ header{position:relative;z-index:5;padding:26px 0}
 .plist li{padding:20px 0;border-top:1px solid var(--rule-soft)}
 .plist li:last-child{border-bottom:1px solid var(--rule-soft)}
 .plist p{color:var(--fg-dim);font-size:.9375rem;margin-top:5px;max-width:46ch}
-.shot-lg{max-width:318px;margin:0 auto;border:1px solid var(--rule);border-radius:22px;
-  overflow:hidden;box-shadow:0 60px 110px -55px #000, 0 0 90px -50px var(--violet)}
+.shot-lg{max-width:330px;margin:0 auto}
+.shot-lg img{filter:drop-shadow(0 40px 70px rgba(0,0,0,.7)) drop-shadow(0 0 60px rgba(124,92,255,.22))}
 
 /* privacy band ────────────────────────────────────────────── */
 .band{position:relative;text-align:center;overflow:hidden}
@@ -417,20 +410,19 @@ footer{border-top:1px solid var(--rule-soft);padding:44px 0 56px}
           <div class="num">1</div>
           <h3>Paste a link</h3>
           <p>Any <code>youtube.com</code> or <code>youtu.be</code> URL. Atarang pulls the audio down and keeps it.</p>
-          <div class="shot"><img src="images/studio.jpg" alt="The Atarang studio screen with a field for a YouTube link and a choice of separation styles" loading="lazy" width="589" height="1280"></div>
+          <div class="shot"><img src="images/import.png" alt="The Atarang import screen with a field for a YouTube link and a choice of separation styles" loading="lazy" width="660" height="1330"></div>
         </div>
         <div class="step rv" data-d="2">
           <div class="num">2</div>
           <h3>Choose a split</h3>
           <p>Two, four, or six stems across four models. The separation runs on the phone's Neural Engine.</p>
-          <div class="shot"><img src="images/mixer.jpg" alt="The Atarang stem mixer with level sliders for vocals, drums, bass and other parts" loading="lazy" width="589" height="1280"></div>
+          <div class="shot"><img src="images/studio.png" alt="The Atarang Mixer stage with level sliders for vocals, drums, bass and other parts above the transport" loading="lazy" width="660" height="1330"></div>
         </div>
         <div class="step rv" data-d="3">
           <div class="num">3</div>
           <h3>Take a part</h3>
           <p>Mute your stem, count yourself in, and record your take against the rest of the band.</p>
-          <!-- --op skips a scrolled-card fragment baked into the top of this capture -->
-          <div class="shot" style="--op:6%"><img src="images/practice-metronome-and-target.jpg" alt="The Atarang practice screen with a metronome, practice target presets and count-in controls" loading="lazy" width="589" height="1280"></div>
+          <div class="shot"><img src="images/studio-recording.png" alt="Atarang recording a take, with the microphone meter and levels above the transport" loading="lazy" width="660" height="1330"></div>
         </div>
       </div>
     </div>
@@ -466,7 +458,7 @@ footer{border-top:1px solid var(--rule-soft);padding:44px 0 56px}
         </div>
 
         <div class="rv" data-d="2">
-          <div class="shot-lg"><img src="images/practice-loop-and-pitch.jpg" alt="The Atarang practice workspace showing rewind, speed, pitch, A to B loop and saved section controls" loading="lazy" width="589" height="1280"></div>
+          <div class="shot-lg"><img src="images/tool-reps.png" alt="The Atarang Reps sheet with a repetition target, a pause between passes and an automatic tempo ramp" loading="lazy" width="660" height="1330"></div>
         </div>
       </div>
     </div>
