@@ -244,15 +244,6 @@ struct LyricsReader: View {
                         // last lines can still sit in the centre slot.
                         Spacer(minLength: 120)
                         ForEach(Array(lines.enumerated()), id: \.element.id) { index, line in
-                            // The count sits above the line it counts into, as
-                            // a row of its own. Floating it over the page put
-                            // it on top of that very line on a small screen —
-                            // and anything laid out over scrolling text will
-                            // land on some of it eventually.
-                            if let entry = store.playhead.vocalEntry,
-                               entry.lineIndex == index {
-                                VocalEntryCountdown(seconds: entry.seconds)
-                            }
                             row(index: index, line: line)
                                 .id(index)
                         }
@@ -285,6 +276,9 @@ struct LyricsReader: View {
             }
 
             VStack(spacing: 8) {
+                if let countdown = store.playhead.countdown {
+                    VocalEntryCountdown(seconds: countdown)
+                }
                 if !isFollowing {
                     Button {
                         isFollowing = true
@@ -553,29 +547,36 @@ struct SweepingLyricLine: View {
 
 /// The count into a vocal entry after a long instrumental stretch.
 ///
-/// Laid out in the list rather than floated over it, directly above the line it
-/// is counting into. That fixes the collision it used to cause on a small
-/// screen and is the better placement anyway: the number now points at the
-/// words it belongs to instead of sitting in a corner and leaving the singer to
-/// work out which line is meant.
+/// A microphone and a number, and deliberately nothing else. It floats over the
+/// page rather than taking a row of its own — a row would reflow the lines
+/// under someone who is mid-phrase, and the words holding still matters more
+/// than the count having somewhere uncontested to sit. Small enough that what
+/// it covers is a sliver of one dimmed line, and the words it used to spell out
+/// are said in full to VoiceOver instead.
 struct VocalEntryCountdown: View {
     let seconds: Int
 
     var body: some View {
-        Label("Sing in \(seconds)", systemImage: "music.mic")
-            .font(.caption.weight(.bold))
-            .monospacedDigit()
-            .padding(.horizontal, 12)
-            .frame(minHeight: 28)
-            .background(Color.indigo.opacity(0.16), in: Capsule())
-            .foregroundStyle(.indigo)
-            .frame(maxWidth: .infinity)
-            .padding(.top, 4)
-            // A count is one thing said once, not four separate announcements
-            // interrupting whatever VoiceOver is reading.
-            .accessibilityHidden(seconds != Int(SongLyrics.vocalEntryGap))
-            .accessibilityLabel("Next line in \(seconds) seconds")
-            .transition(.opacity)
+        HStack(spacing: 5) {
+            Image(systemName: "music.mic")
+                .font(.caption2)
+            Text("\(seconds)")
+                .font(.callout.weight(.bold))
+                .monospacedDigit()
+        }
+        .padding(.horizontal, 11)
+        .frame(minHeight: 32)
+        // Opaque behind the digit: whatever line happens to be under it should
+        // not read through the number.
+        .background(.regularMaterial, in: Capsule())
+        .background(Color.indigo.opacity(0.18), in: Capsule())
+        .overlay(Capsule().strokeBorder(Color.indigo.opacity(0.35), lineWidth: 1))
+        .foregroundStyle(.indigo)
+        .accessibilityElement(children: .ignore)
+        // A count is one thing said once, not four announcements interrupting
+        // whatever VoiceOver is reading.
+        .accessibilityHidden(seconds != Int(SongLyrics.vocalEntryGap))
+        .accessibilityLabel("Next line in \(seconds) seconds")
     }
 }
 

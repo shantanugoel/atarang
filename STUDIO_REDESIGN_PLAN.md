@@ -1283,14 +1283,14 @@ persisted — there was nothing in the device log to read when this was reported
 The same real caption file showed the section-label rule calling `[♪♪♪]` a
 section named "♪♪♪"; a label now has to contain something alphanumeric.
 
-**The vocal-entry count moved into the list.** It was a pill floating over the
-bottom of the page, and on a small screen it landed on the very line it was
-counting into — which anything laid out over scrolling text will do eventually.
-It is a row above that line now: it cannot overlap, because it occupies space
-rather than hovering over it, and it reads better, because the number points at
-the words it belongs to instead of sitting in a corner leaving the singer to work
-out which line is meant. `LyricsPlayhead` publishes the line index with the
-count for exactly this.
+**The vocal-entry count is a microphone and a number, and it floats.** As a
+"Sing in 4" pill it was wide enough to land on the line it was counting into on
+a small screen. Giving it a row of its own in the list fixed the overlap and cost
+more than it saved: inserting a row reflows every line under it, so the words
+move under someone who is mid-phrase. Holding the text still is worth more than
+the count having somewhere uncontested to sit, so it floats as before and the
+words came off it instead. What is left is small enough to clip a sliver of the
+most-dimmed line, and the sentence it used to spell out is what VoiceOver hears.
 
 **The lyrics menu could not be tapped while a song played, and the cause was
 older than this phase.** Its "Save N Sections" item computed the count from
