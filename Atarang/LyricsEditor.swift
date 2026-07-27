@@ -458,7 +458,7 @@ struct CaptionsImportSheet: View {
                             .font(.system(size: 40, weight: .light))
                             .foregroundStyle(.secondary)
                         if isLoading {
-                            ProgressView("Fetching captions…")
+                            progress
                         } else {
                             Text(message ?? "Atarang can read this video's caption track and use it as a starting point. Captions are often approximate, so you will see them before anything is applied.")
                                 .font(.subheadline)
@@ -467,6 +467,10 @@ struct CaptionsImportSheet: View {
                             Button("Fetch Captions", action: fetch)
                                 .buttonStyle(.borderedProminent)
                                 .frame(minHeight: 44)
+                            Text("This uses the same YouTube downloader as separation, so it takes a few seconds — longer the first time after opening Atarang, and longer again if a separation is already running.")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                                .multilineTextAlignment(.center)
                         }
                     }
                     .frame(maxWidth: 420)
@@ -490,6 +494,35 @@ struct CaptionsImportSheet: View {
         }
     }
 
+    /// The job's own status, rather than a spinner that says nothing for
+    /// however long this takes.
+    ///
+    /// It matters most when the answer is "not yet": captions share the one
+    /// queue with separation, so a fetch started during one waits — and an
+    /// indeterminate spinner during that wait is indistinguishable from a hang.
+    /// The job says which it is.
+    @ViewBuilder
+    private var progress: some View {
+        let job = AnalysisProgressCenter.shared.job(ofKind: .captions)
+        VStack(spacing: 12) {
+            if let job, !job.isWaiting {
+                ProgressView(value: job.progress)
+            } else {
+                ProgressView()
+            }
+            Text(job?.status ?? "Fetching captions…")
+                .font(.subheadline)
+                .multilineTextAlignment(.center)
+            if let job {
+                Button("Stop", role: .cancel) {
+                    AnalysisProgressCenter.shared.cancel(job.token)
+                }
+                .buttonStyle(.bordered)
+                .frame(minHeight: 44)
+            }
+        }
+    }
+
     private func fetch() {
         guard let url = store.captionSourceURL else { return }
         isLoading = true
@@ -497,14 +530,21 @@ struct CaptionsImportSheet: View {
         Task {
             defer { isLoading = false }
             do {
-                let fetched = try await LyricsLookup.youTubeCaptions(
+                let outcome = try await LyricsLookup.youTubeCaptions(
                     for: url,
                     title: store.song?.title ?? "Captions"
                 )
-                if let fetched {
-                    candidate = fetched
-                } else {
-                    message = "This video has no caption track Atarang can read."
+                switch outcome {
+                case .cancelled:
+                    // The user stopped it. They know; saying so would be the
+                    // interface reporting their own action back to them.
+                    break
+                case .finished(let fetched):
+                    if let fetched {
+                        candidate = fetched
+                    } else {
+                        message = "This video has no caption track Atarang can read."
+                    }
                 }
             } catch {
                 message = error.localizedDescription

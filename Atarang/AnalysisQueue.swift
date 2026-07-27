@@ -212,7 +212,17 @@ final class AnalysisProgressCenter {
     /// only asks it to stop.
     func cancelActive() {
         guard let token = active?.token else { return }
+        cancel(token)
+    }
+
+    func cancel(_ token: AnalysisJobToken) {
         Task { await AnalysisQueue.shared.cancel(token.id) }
+    }
+
+    /// The job of a given kind, for a screen that started one and wants to show
+    /// its progress in place rather than sending the user to find it.
+    func job(ofKind kind: AnalysisJobKind) -> Job? {
+        jobs.first { $0.kind == kind }
     }
 
     private func index(of token: AnalysisJobToken) -> Int? {

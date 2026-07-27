@@ -14,17 +14,14 @@ struct ImportView: View {
     @Binding var youtubeURL: String
     @Binding var selectedModel: SeparationModelKind
     let isBusy: Bool
-    let existingSeparation: LocalTrack?
+    /// Only to badge the outcomes this song already has. Acting on them is
+    /// `ImportActionBar`'s job.
     let existingModels: [SeparationModelKind]
-    let separate: () -> Void
-    let separateAgain: () -> Void
-    let openExisting: (LocalTrack) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             urlSection
             outcomeSection
-            actionSection
         }
         .padding(18)
         .background(
@@ -64,13 +61,43 @@ struct ImportView: View {
         }
     }
 
+    /// Drawn rather than using `.roundedBorder`, because the clear button has
+    /// to live inside the border: overlaid on a system-styled field it sits on
+    /// top of the text, and a long YouTube URL runs straight under it.
     private var urlField: some View {
-        TextField("Paste a YouTube URL", text: $youtubeURL)
-            .textInputAutocapitalization(.never)
-            .autocorrectionDisabled()
-            .keyboardType(.URL)
-            .textFieldStyle(.roundedBorder)
-            .accessibilityLabel("YouTube URL")
+        HStack(spacing: 4) {
+            TextField("Paste a YouTube URL", text: $youtubeURL)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .keyboardType(.URL)
+                .textFieldStyle(.plain)
+                .accessibilityLabel("YouTube URL")
+            if !trimmedURL.isEmpty {
+                Button {
+                    youtubeURL = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                        // Narrow enough not to crowd the field, tall enough to
+                        // hit without looking.
+                        .frame(width: 30, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear the link")
+            }
+        }
+        .padding(.leading, 10)
+        .padding(.trailing, 2)
+        .frame(minHeight: 44)
+        .background(
+            Color(.tertiarySystemGroupedBackground),
+            in: RoundedRectangle(cornerRadius: 9)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 9)
+                .strokeBorder(Color.secondary.opacity(0.28), lineWidth: 1)
+        )
     }
 
     private var pasteButton: some View {
@@ -93,10 +120,6 @@ struct ImportView: View {
             : nil
     }
 
-    private var isURLValid: Bool {
-        YouTubeSource.validatedURL(from: youtubeURL) != nil
-    }
-
     // MARK: - Outcome
 
     private var outcomeSection: some View {
@@ -117,9 +140,31 @@ struct ImportView: View {
         }
     }
 
-    // MARK: - Actions
+}
 
-    private var actionSection: some View {
+/// The one thing to do on this screen, pinned so it is never the thing below
+/// the fold.
+///
+/// It used to be the last item in a scrolling card, under four outcome cards
+/// that are taller than a phone: someone who pasted a link saw the choices and
+/// no way to act on them, with nothing on screen saying there was more. It sits
+/// in the safe area now, the same place the transport does once a song is open,
+/// so the screen always shows what pressing on looks like.
+struct ImportActionBar: View {
+    @Binding var selectedModel: SeparationModelKind
+    let youtubeURL: String
+    let isBusy: Bool
+    let existingSeparation: LocalTrack?
+    let existingModels: [SeparationModelKind]
+    let separate: () -> Void
+    let separateAgain: () -> Void
+    let openExisting: (LocalTrack) -> Void
+
+    private var isURLValid: Bool {
+        YouTubeSource.validatedURL(from: youtubeURL) != nil
+    }
+
+    var body: some View {
         VStack(spacing: 12) {
             if let existingSeparation {
                 Button {

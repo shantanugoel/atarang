@@ -1305,6 +1305,30 @@ overlaps, so the duplicate check did not need to be in the menu. The general
 lesson is worth keeping for Phases 7–9, which will add more menus over a playing
 song: **anything a menu reads while open, it re-reads when that value changes.**
 
+**The caption fetch is as fast as it is going to get, so the fix is telling the
+user what it is doing.** Measured against the bundled yt-dlp: 0.94 s to import
+the zipapp into Python, 1.6 s for YouTube's extraction, 0.1 s for the subtitle
+file itself. The first two are fixed costs, they are the same ones a separation
+pays before it starts, and on a phone's CPU they are several times larger — there
+is no wasted work left to remove. What was missing was any account of the wait:
+an indeterminate spinner, no cancel, and — because captions share the one queue
+with separation — no way to tell "waiting behind a separation" from "hung". The
+sheet now shows the job's own status and progress, offers Stop, and says up front
+that this uses the same downloader as separation. `youTubeCaptions` returns the
+`AnalysisOutcome` whole rather than flattening it, because a fetch the user
+stopped and a video with no captions are different things to say and only one of
+them is news.
+
+**The primary action left the scroll.** On the import screen the Create button
+was the last item in a card sitting under four outcome cards that are taller
+than a phone, so someone who had just pasted a link saw the choices and no way
+to act on them. `ImportActionBar` is pinned with `safeAreaInset` — the same
+place the transport occupies once a song is open, and now the same rule on both
+screens: the one thing to do next is never the thing below the fold. The URL
+field also grew a clear button, which meant drawing the field rather than using
+`.roundedBorder`: overlaid on a system-styled field the button sits on top of
+the text, and a YouTube URL is long enough to run straight under it.
+
 **Not verified.** The caption path was diagnosed and fixed by running the exact
 argument list against the bundled `yt-dlp` on a Mac, not through the embedded
 interpreter on device; the parser is unit-tested against both a rolling

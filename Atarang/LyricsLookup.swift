@@ -28,12 +28,24 @@ enum LyricsLookup {
     /// Runs through the shared queue like every other long job: it drives the
     /// same non-reentrant Python interpreter a separation does, and it should
     /// not start during a take.
-    static func youTubeCaptions(for url: URL, title: String) async throws -> SongLyrics? {
+    ///
+    /// The outcome is returned whole rather than flattened to an optional,
+    /// because "you stopped it" and "this video has no captions" are different
+    /// things to tell someone and only one of them is news.
+    static func youTubeCaptions(
+        for url: URL,
+        title: String
+    ) async throws -> AnalysisOutcome<SongLyrics?> {
         try await AnalysisQueue.shared.submit(
             kind: .captions,
             title: title
         ) { context in
-            await context.report("Asking YouTube for captions…", progress: 0.2)
+            // The steps are named because the wait is long enough to look
+            // broken otherwise, and because they are not evenly weighted: the
+            // first one starts the embedded Python interpreter and imports the
+            // whole of yt-dlp, which on a phone is the bulk of the time and
+            // reports no progress of its own.
+            await context.report("Starting the YouTube downloader…", progress: 0.1)
             let folder = FileManager.default.temporaryDirectory
                 .appendingPathComponent("AtarangCaptions-\(UUID().uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -67,7 +79,7 @@ enum LyricsLookup {
                 url.absoluteString,
             ])
             try Task.checkCancellation()
-            await context.report("Reading captions…", progress: 0.8)
+            await context.report("Reading the caption track…", progress: 0.85)
 
             let files = (try? FileManager.default.contentsOfDirectory(
                 at: folder,
@@ -90,7 +102,7 @@ enum LyricsLookup {
                 lines: lines,
                 attribution: "YouTube caption track"
             )
-        }.value ?? nil
+        }
     }
 
     // MARK: - LRCLIB

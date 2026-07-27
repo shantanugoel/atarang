@@ -129,7 +129,13 @@ struct ContentView: View {
             }
             .background(Color(.systemGroupedBackground))
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                if player.isLoaded { transportInset }
+                // The same rule either way: the one thing to do next is in the
+                // safe area, not at the bottom of a scroll.
+                if player.isLoaded {
+                    transportInset
+                } else {
+                    importActionInset
+                }
             }
             .navigationTitle(player.isLoaded ? player.title : "Atarang")
             .navigationBarTitleDisplayMode(player.isLoaded ? .inline : .large)
@@ -353,6 +359,25 @@ struct ContentView: View {
         }
     }
 
+    private var importActionInset: some View {
+        ImportActionBar(
+            selectedModel: $model.selectedModel,
+            youtubeURL: youtubeURL,
+            isBusy: analysis.isBusy,
+            existingSeparation: existingSeparation,
+            existingModels: existingModels,
+            separate: { requestSeparation(force: false) },
+            separateAgain: { requestSeparation(force: true) },
+            openExisting: openExistingSeparation
+        )
+        .padding(.horizontal)
+        .padding(.top, 10)
+        .padding(.bottom, 6)
+        .frame(maxWidth: horizontalSizeClass == .regular ? 760 : .infinity)
+        .frame(maxWidth: .infinity)
+        .background(.bar)
+    }
+
     private var importScreen: some View {
         ScrollView {
             VStack(spacing: 22) {
@@ -362,11 +387,7 @@ struct ContentView: View {
                     youtubeURL: $youtubeURL,
                     selectedModel: $model.selectedModel,
                     isBusy: analysis.isBusy,
-                    existingSeparation: existingSeparation,
-                    existingModels: existingModels,
-                    separate: { requestSeparation(force: false) },
-                    separateAgain: { requestSeparation(force: true) },
-                    openExisting: openExistingSeparation
+                    existingModels: existingModels
                 )
                 if let job = analysis.active { progressCard(job) }
             }
