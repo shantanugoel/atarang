@@ -1283,6 +1283,28 @@ persisted — there was nothing in the device log to read when this was reported
 The same real caption file showed the section-label rule calling `[♪♪♪]` a
 section named "♪♪♪"; a label now has to contain something alphanumeric.
 
+**The lyrics menu could not be tapped while a song played, and the cause was
+older than this phase.** Its "Save N Sections" item computed the count from
+`player.duration` and `player.practiceSettings` — and reading either inside the
+menu's content means re-reading it whenever it changes. `playbackState` moves
+ten times a second by design, since the transport needs the position; but
+`practiceSettings` was moving at the same rate for no reason at all.
+`persistPracticeSettings()` assigned `lastPosition`, `playbackRate`, and
+`pitchSemitones` *before* consulting the throttle, so Phase 1's throttle covered
+the disk write and not the `@Observable` mutation. Everything watching practice
+state re-evaluated at 10 Hz, and SwiftUI rebuilt the open menu under the user's
+finger, swallowing the tap. It worked as soon as they paused.
+
+Both halves are fixed. The three assignments moved behind the throttle guard, so
+practice state now mutates when it is written rather than when it is asked to
+be; nothing outside `StemPlayer` reads those three from there, because the
+transport takes all of them from `playbackState`. And the menu answers "how many
+sections do these lyrics describe" from the lyrics alone, deferring every read
+of the player to the moment of the tap — `addSavedSections` already drops
+overlaps, so the duplicate check did not need to be in the menu. The general
+lesson is worth keeping for Phases 7–9, which will add more menus over a playing
+song: **anything a menu reads while open, it re-reads when that value changes.**
+
 **Not verified.** The caption path was diagnosed and fixed by running the exact
 argument list against the bundled `yt-dlp` on a Mac, not through the embedded
 interpreter on device; the parser is unit-tested against both a rolling

@@ -127,13 +127,10 @@ struct LyricsStage: View {
             } label: {
                 Label("Export .lrc", systemImage: "square.and.arrow.up")
             }
-            if let sections = pendingSections, !sections.isEmpty {
-                Button {
-                    player.addSavedSections(sections)
-                    Haptics.boundarySet()
-                } label: {
+            if labelledSectionCount > 0 {
+                Button(action: saveSectionsFromLabels) {
                     Label(
-                        "Save \(sections.count) Section\(sections.count == 1 ? "" : "s")",
+                        "Save \(labelledSectionCount) Section\(labelledSectionCount == 1 ? "" : "s")",
                         systemImage: "bookmark"
                     )
                 }
@@ -147,15 +144,25 @@ struct LyricsStage: View {
         }
     }
 
-    /// The sections these lyrics describe that are not already saved. Offering
-    /// to add ones the user already has would make the action a duplicate
-    /// factory.
-    private var pendingSections: [SavedPracticeSection]? {
-        guard let lyrics = store.lyrics, player.duration > 0 else { return nil }
-        let existing = player.practiceSettings.savedSections
-        return lyrics.practiceSections(duration: player.duration).filter { candidate in
-            !existing.contains { abs($0.start - candidate.start) < 0.5 }
-        }
+    /// How many sections these lyrics describe.
+    ///
+    /// Deliberately answered from the lyrics alone. Anything this menu reads
+    /// while it is open, it re-reads when that value changes — and both
+    /// `player.duration` and `player.practiceSettings` are mutated ten times a
+    /// second during playback, which rebuilt the open menu under the user's
+    /// finger and swallowed the tap. Lyrics do not move while a song plays.
+    private var labelledSectionCount: Int {
+        store.lyrics?.lines.filter { $0.isSection && $0.start != nil }.count ?? 0
+    }
+
+    /// Reads the player at the moment of the tap rather than while the menu is
+    /// being built, which is what keeps it out of the menu's dependencies.
+    /// `addSavedSections` drops ranges that overlap something already saved, so
+    /// tapping this twice is not a duplicate factory.
+    private func saveSectionsFromLabels() {
+        guard let lyrics = store.lyrics, player.duration > 0 else { return }
+        player.addSavedSections(lyrics.practiceSections(duration: player.duration))
+        Haptics.boundarySet()
     }
 }
 

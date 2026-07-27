@@ -1875,13 +1875,22 @@ final class StemPlayer {
     /// scheduled so the state still lands once the interval elapses.
     private func persistPracticeSettings(immediately: Bool = false) {
         guard let songStorage else { return }
-        practiceSettings.lastPosition = position
-        practiceSettings.playbackRate = playbackState.rate
-        practiceSettings.pitchSemitones = playbackState.pitchSemitones
         guard practiceThrottle.shouldWrite(force: immediately) else {
             schedulePracticeSettingsFlush()
             return
         }
+        // Folded in here, on the write, rather than on every call. The position
+        // timer calls this ten times a second, and assigning these three ahead
+        // of the throttle mutated an `@Observable` property at that rate for
+        // values no view reads from here — the transport takes position, rate,
+        // and pitch from `playbackState`. Everything observing
+        // `practiceSettings` re-evaluated 10 Hz as a result, which is how an
+        // open menu came to be rebuilt under the user's finger and lose the tap
+        // they had just made. The throttle was always meant to cover this; it
+        // only covered the disk write.
+        practiceSettings.lastPosition = position
+        practiceSettings.playbackRate = playbackState.rate
+        practiceSettings.pitchSemitones = playbackState.pitchSemitones
         practiceFlushTask?.cancel()
         practiceFlushTask = nil
         practiceSettingsStore.save(practiceSettings, to: songStorage)
