@@ -72,6 +72,10 @@ for each song, so the next session can pick up where the last one ended.
   song. The metronome is manually aligned rather than tempo-detected.
 - **Record a predictable loop take** — hear the count-in, record exactly one
   pass from A to B, and quickly compare the latest take with the reference.
+- **Sing from synced lyrics** — paste the words or import an `.lrc`, time them
+  by tapping once through the song, then tap a line to jump to it, hold one to
+  loop it, or drag across several to set A–B. A sing-along mode puts the current
+  line on screen at arm's length and keeps the display awake.
 
 ## Features
 
@@ -83,6 +87,13 @@ for each song, so the next session can pick up where the last one ended.
   song is loaded, and it is the only place that seeks.
 - **A hands-on stem mixer** — set a level for every stem, mute or solo parts,
   and apply target-aware Learn, Guide, and Play Along presets.
+- **Synced lyrics that do something** — paste plain words, import or export
+  `.lrc` (line and word tags, and `[offset:]`), pull in a YouTube caption track,
+  or search LRCLIB if you turn that on. Time a song by hand with tap-to-timestamp,
+  nudge one line by a tenth of a second or shift them all, and turn `[Chorus]`
+  markers into saved sections. The current line is large and centred, auto-scroll
+  yields the moment you scroll yourself, and long instrumental stretches count
+  you back in.
 - **Structured song practice** — loop and save difficult sections, control
   speed and key independently, add a count-in and manually aligned metronome,
   count repetitions, and ramp up to performance tempo.
@@ -212,6 +223,14 @@ fetch YouTube metadata and audio and, on first use, the selected optional
 model. A pinned `yt-dlp` Python zipapp is bundled with the project; the current
 checked-in version is `2026.07.04` and its SHA-256 checksum is verified before
 use.
+
+Lyrics are the one place the app can talk to a service that is not YouTube, and
+it is opt-in. **Online lyrics lookup is off by default.** With it turned on in
+Settings, searching sends the song title — and the artist name, if you type one
+— to [lrclib.net](https://lrclib.net), and nothing else. Nothing is sent while
+it is off. Pasting lyrics, importing an `.lrc` file, and timing lines by tapping
+all work with no network at all. Fetching a video's caption track uses the same
+bundled `yt-dlp` and the same YouTube connection as the audio download.
 
 The Library is stored locally on the device. It can permanently delete
 originals, separations, and performances.

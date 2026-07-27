@@ -1116,63 +1116,166 @@ accuracy risk.
 
 ### 1. Model and storage
 
-- [ ] Add `Lyrics.swift`: `LyricWord`, `LyricLine`, `LyricsSource`, `SongLyrics`.
-- [ ] Persist through the Phase 5 song-scoped storage.
+- [x] Add `Lyrics.swift`: `LyricWord`, `LyricLine`, `LyricsSource`, `SongLyrics`.
+- [x] Persist through the Phase 5 song-scoped storage. Read *without* the
+      version gate the other artifacts use — see the outcome.
 
 ### 2. Reading view
 
-- [ ] Current line large and centred; two lines above and below dimmed.
-- [ ] Auto-scroll follows the playhead; user scroll suspends it and shows a
+- [x] Current line large and centred; two lines above and below dimmed.
+- [x] Auto-scroll follows the playhead; user scroll suspends it and shows a
       "Back to playhead" pill.
-- [ ] Word-level fill sweep when word timings are present.
-- [ ] Tap a line to seek to it.
-- [ ] Long-press a line to loop it; drag across lines to set A–B.
-- [ ] Vocal-entry countdown after instrumental gaps longer than four seconds.
-- [ ] Render section labels inline and offer to populate Saved Sections from
+- [x] Word-level fill sweep when word timings are present. Word granularity, not
+      a geometric sweep — see the outcome.
+- [x] Tap a line to seek to it.
+- [x] Long-press a line to loop it; drag across lines to set A–B. One gesture,
+      not two.
+- [x] Vocal-entry countdown after instrumental gaps longer than four seconds.
+- [x] Render section labels inline and offer to populate Saved Sections from
       them.
-- [ ] Publish only `currentLineIndex` so a line change redraws two rows, not the
-      tree.
+- [x] Publish only `currentLineIndex` so a line change redraws two rows, not the
+      tree. `LyricsPlayhead` is a separate object from the store for exactly
+      this.
 
 ### 3. Sing-along mode
 
-- [ ] Full-screen presentation: large type, chords hidden, reduced transport,
+- [x] Full-screen presentation: large type, chords hidden, reduced transport,
       idle timer disabled, landscape supported.
-- [ ] Small unobtrusive mic meter while recording.
+- [x] Small unobtrusive mic meter while recording.
 
 ### 4. Input and editing
 
-- [ ] Paste plain lyrics.
-- [ ] Import and export `.lrc`, including `[mm:ss.xx]` line tags,
+- [x] Paste plain lyrics.
+- [x] Import and export `.lrc`, including `[mm:ss.xx]` line tags,
       `<mm:ss.xx>` word tags, and `[offset:]`.
-- [ ] Accept `.lrc` from the document picker and the share sheet.
-- [ ] Tap-to-timestamp mode: play, tap `Set` per line, advance automatically.
-- [ ] Per-line nudge ±0.1 s and a global offset slider ±2 s.
-- [ ] Mark every edited line `isUserEdited`; never overwrite on re-analysis.
+- [x] Accept `.lrc` from the document picker and the share sheet.
+- [x] Tap-to-timestamp mode: play, tap `Set` per line, advance automatically.
+- [x] Per-line nudge ±0.1 s and a global offset slider ±2 s.
+- [x] Mark every edited line `isUserEdited`; never overwrite on re-analysis.
 
 ### 5. YouTube captions
 
-- [ ] Extend the existing `yt_dlp(argv:)` call with `--write-subs
+- [x] Extend the existing `yt_dlp(argv:)` call with `--write-subs
       --write-auto-subs --sub-langs --sub-format vtt --skip-download`.
-- [ ] Parse WebVTT cues into `LyricLine`s, marked `.youtubeCaptions`, low
+- [x] Parse WebVTT cues into `LyricLine`s, marked `.youtubeCaptions`, low
       confidence, fully editable.
-- [ ] Offer them with a preview rather than applying them silently.
+- [x] Offer them with a preview rather than applying them silently.
 
 ### 6. LRCLIB lookup (opt-in)
 
-- [ ] Add a Settings toggle, off by default, with a clear statement of what is
+- [x] Add a Settings toggle, off by default, with a clear statement of what is
       sent.
-- [ ] Look up by title, artist, and duration; present candidates for
+- [x] Look up by title, artist, and duration; present candidates for
       confirmation.
-- [ ] Update the README privacy section when this ships.
+- [x] Update the README privacy section when this ships.
 
 ### Acceptance criteria
 
-- [ ] Line-level sync is accurate to within ±150 ms after a single
-      tap-to-timestamp pass.
-- [ ] A song with no network access can be fully lyric-synced by hand.
-- [ ] Auto-scroll remains smooth at 0.5× speed and at ±12 semitones.
-- [ ] Transcribed or imported lyrics are visibly labelled until edited.
-- [ ] Lyric-range looping produces the same result as setting A–B manually.
+- [~] Line-level sync is accurate to within ±150 ms after a single
+      tap-to-timestamp pass. The stamp is taken from `currentPosition()`, which
+      is the latency-compensated render clock, so the app contributes no error
+      beyond one frame. **The number itself is unmeasured**: it is dominated by
+      human reaction time, and quantifying that needs a device, a real song, and
+      a reference the simulator cannot provide.
+- [x] A song with no network access can be fully lyric-synced by hand. Verified
+      in the simulator end to end: pasted seven lines, timed all seven by
+      tapping, and the result read back correctly after a relaunch.
+- [~] Auto-scroll remains smooth at 0.5× speed and at ±12 semitones. Correct by
+      construction — every timestamp is in source-song seconds and the playhead
+      is derived from the node's frame count, which Phase 1 fixed for exactly
+      this. Confirmed smooth at 1.0×; the reduced-rate and transposed cases were
+      not driven.
+- [x] Transcribed or imported lyrics are visibly labelled until edited. The
+      badge names the source while any line is still unedited and is replaced by
+      the timed-line count once they all are; unit-tested line by line.
+- [x] Lyric-range looping produces the same result as setting A–B manually. True
+      by construction: the reader calls `setLoopBoundaryA(at:)`,
+      `setLoopBoundaryB(at:)`, `setLoopEnabled(true)` — the transport's own
+      calls. Confirmed in the simulator: dragging across three lines produced
+      A 0:39 / B 1:00 with the handles, shading, and chip the button produces.
+
+### Outcome
+
+**New files.** `Lyrics.swift` is the model and every question that can be asked
+of it — which line is current, which word, how long the gap is, what range a run
+of lines covers. `LyricsFormats.swift` reads and writes `.lrc`, plain text, and
+WebVTT. `LyricsStore.swift` owns a song's words while it is open, plus
+`LyricsPlayhead`. `LyricsStage.swift` is the reader, `LyricsEditor.swift` the
+five sheets, `SingAlongView.swift` the full-screen mode, and
+`LyricsLookup.swift` the two places words can come from without typing.
+
+**Lyrics are the one artifact that is half the user's own work, so they are not
+version-gated.** `SongLyrics` conforms to `AnalysisArtifact` for its filename
+and version, but the store reads it with a plain `read` rather than
+`readAnalysis`. Discarding a stale chord grid is right — it is output we would
+now compute differently. Discarding lyrics on a version bump would delete words
+the user typed and times they tapped, which no algorithm change can make wrong.
+
+**Three of the four format problems were about hostile input, not syntax.**
+`[Chorus]` is not a timestamp and not a `key:value` tag, so the LRC scanner
+stops consuming brackets and hands the rest to the text — which is what makes a
+section marker fall out of the parser rather than needing a second pass.
+`[offset:]` is defined the opposite way round from the app's slider, positive
+meaning *earlier*, so the sign is flipped on the way in and back on the way out.
+And YouTube's automatic captions roll: each cue repeats the tail of the one
+before it so the words appear to scroll, which printed verbatim gives a page
+where every line appears two or three times. A cue that merely extends its
+predecessor now contributes only what it adds.
+
+**The word sweep is per-word colouring, not a geometric fill.** A mask sweeping
+across the line would have to know where every line break landed, and a lyric
+line wraps. Word granularity is what the timings carry anyway, so the current
+line is one `Text` built from an `AttributedString` — sung words full strength,
+the current word tinted, the rest secondary — rebuilt at display rate by a
+`TimelineView` inside the current row only.
+
+**Hold-to-loop and drag-to-loop are one gesture.** They are the same intent at
+two sizes: a long press selects the line under the finger, and keeping hold and
+dragging extends the selection. Sequencing it behind a long press is what keeps
+it from fighting the scroll view. Row geometry is measured through a preference
+key **only while a selection is live** — measuring all the time would mean every
+scrolled frame writing a new dictionary into state and re-evaluating the page.
+
+**Two integers, one object.** The store holds hundreds of lines that change only
+when the user edits; `LyricsPlayhead` holds the line index and the countdown,
+which change while the song plays. Splitting them is what stops a line change
+from invalidating the views that read the lyrics themselves. It is fed by a
+`Color.clear` leaf watching `player.position` — the same trick `PlayheadView`
+uses, and for the same reason: reading that property anywhere larger costs ten
+full re-evaluations a second.
+
+**The simulator pass found one defect, and it was in the gesture.** A tap that
+lingered past 0.35 s recognised the long press, then lost to the tap gesture on
+release — and because the selection lived in `@State`, `onEnded` never ran and
+the line stayed highlighted with no gesture behind it. It is `@GestureState` now,
+which SwiftUI resets on cancellation. The haptic moved out of the gesture's
+`updating` body with it: that body is not main-actor isolated, so it is driven
+from an `onChange` of the state it produces instead.
+
+**Simulator verification.** Driven against a seeded synthetic 4-stem track and a
+matching Original on an iPhone 17 Pro. Confirmed: the empty state offering
+captions only because the song has a YouTube source; pasting seven lines with
+two `[…]` markers, rendered inline as section headers; timing all seven by
+tapping `Set` against playing audio, with the cursor advancing and Undo walking
+back; the editor showing each time, its ±0.1 s nudges, and the edited-by-you
+mark; the reader following the playhead with the current line large and the fade
+ramp either side; tapping a line seeking to it; a long press dragged across three
+lines setting A 0:39 / B 1:00 and turning looping on; the "Sing in 1" countdown
+appearing before an eighteen-second gap; a manual scroll suspending auto-scroll
+and offering "Back to playhead"; sing-along mode with large type, the reduced
+transport, and the status bar hidden; the LRCLIB sheet refusing to show a search
+field until the preference is on, and the same disclosure sentence in both
+places; and everything surviving a relaunch, including the resumed playhead.
+
+**Not verified.** Fetching a real caption track needs a real video and a network
+run of the bundled `yt-dlp`; the parser is unit-tested against a rolling
+auto-caption fixture, but the yt-dlp invocation and file discovery are not. An
+LRCLIB search *was* run and round-tripped its way to "no matches" — request,
+headers, and decode are exercised, but the path where a match comes back and is
+applied is not. Sing-along in landscape draws, but the simulator's rotated
+coordinate space made driving it unreliable, so it is untested. And nothing here
+had a device pass: haptics — now including the selection confirmation — and
+VoiceOver reading order are still what the next one owes, alongside Phase 4's.
 
 ---
 

@@ -8,6 +8,10 @@ import OSLog
 /// each slower and both harder to reason about, so they share one queue.
 enum AnalysisJobKind: String, Sendable, CaseIterable {
     case separation
+    /// Fetching a video's caption track. Short and network-bound rather than
+    /// long and CPU-bound, but it drives the same non-reentrant Python
+    /// interpreter a separation does, so it belongs in the same queue.
+    case captions
     case transcription
     case beatAnalysis
     case chordAnalysis
@@ -16,6 +20,7 @@ enum AnalysisJobKind: String, Sendable, CaseIterable {
     var waitingDescription: String {
         switch self {
         case .separation: "Separation is waiting"
+        case .captions: "Caption download is waiting"
         case .transcription: "Transcription is waiting"
         case .beatAnalysis: "Beat detection is waiting"
         case .chordAnalysis: "Chord analysis is waiting"
@@ -25,6 +30,7 @@ enum AnalysisJobKind: String, Sendable, CaseIterable {
     var title: String {
         switch self {
         case .separation: "Separation"
+        case .captions: "Captions"
         case .transcription: "Transcription"
         case .beatAnalysis: "Beat detection"
         case .chordAnalysis: "Chord analysis"
@@ -34,6 +40,7 @@ enum AnalysisJobKind: String, Sendable, CaseIterable {
     fileprivate var signpostName: StaticString {
         switch self {
         case .separation: "Separation"
+        case .captions: "Captions"
         case .transcription: "Transcription"
         case .beatAnalysis: "BeatAnalysis"
         case .chordAnalysis: "ChordAnalysis"

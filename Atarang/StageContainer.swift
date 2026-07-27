@@ -2,16 +2,18 @@ import SwiftUI
 
 /// The part of Studio that is about the *song*: what you read while playing.
 ///
-/// Only the Mixer is real today. Lyrics, Chords, and Sheet ship as empty states
-/// because the selector is the shape of the screen — adding stages one phase at
-/// a time would mean rebuilding the layout around them three more times, and an
-/// honest "not yet, here is what it will do" is better than a stage that
-/// appears from nowhere in a later release.
+/// Mixer and Lyrics are real. Chords and Sheet ship as empty states because the
+/// selector is the shape of the screen — adding stages one phase at a time
+/// would mean rebuilding the layout around them, and an honest "not yet, here
+/// is what it will do" is better than a stage that appears from nowhere in a
+/// later release.
 struct StageContainer: View {
     let player: StemPlayer
+    let lyrics: LyricsStore
     /// Regular width puts the tools beside the Stage, so the Stage should not
     /// also try to fill the screen.
     var showsSelector = true
+    var openSingAlong: (() -> Void)?
 
     var body: some View {
         VStack(spacing: 10) {
@@ -53,11 +55,10 @@ struct StageContainer: View {
         case .mixer:
             MixerStage(player: player)
         case .lyrics:
-            StagePlaceholder(
-                stage: .lyrics,
-                headline: "Synced lyrics",
-                detail: "Paste or import lyrics, tap a line to jump to it, and drag across lines to loop them.",
-                availability: "Arrives with the lyrics milestone."
+            LyricsStage(
+                player: player,
+                store: lyrics,
+                openSingAlong: openSingAlong
             )
         case .chords:
             StagePlaceholder(

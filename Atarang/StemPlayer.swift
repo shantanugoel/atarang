@@ -845,6 +845,29 @@ final class StemPlayer {
         persistPracticeSettings()
     }
 
+    /// Adds sections the user did not draw by hand — today, the ones a set of
+    /// lyrics describes with `[Chorus]`-style markers.
+    ///
+    /// Ranges that overlap something already saved are dropped rather than
+    /// merged: the point of the offer is to save the user drawing them, not to
+    /// quietly reorganise the sections they have.
+    func addSavedSections(_ sections: [SavedPracticeSection]) {
+        guard !isRecording else { return }
+        for section in sections {
+            guard PlaybackLoopRange(
+                start: section.start,
+                end: section.end,
+                duration: duration
+            ) != nil else { continue }
+            guard !practiceSettings.savedSections.contains(
+                where: { abs($0.start - section.start) < 0.5 }
+            ) else { continue }
+            practiceSettings.savedSections.append(section)
+        }
+        practiceSettings.savedSections.sort { $0.start < $1.start }
+        persistPracticeSettings()
+    }
+
     func loadSection(_ id: UUID) {
         guard !isRecording,
               let section = practiceSettings.savedSections.first(

@@ -14,12 +14,15 @@ import UIKit
 struct SettingsView: View {
     let player: StemPlayer
     @ObservedObject var separationModel: SeparationModel
+    @AppStorage(LyricsLookup.onlineLookupDefaultsKey)
+    private var isOnlineLyricsLookupEnabled = false
 
     var body: some View {
         NavigationStack {
             Form {
                 recordingDefaults
                 separationDefaults
+                lyrics
                 about
             }
             .navigationTitle("Settings")
@@ -83,6 +86,20 @@ struct SettingsView: View {
             Text("Separation")
         } footer: {
             Text("The choice Studio offers first. You can still pick a different one for any individual song.")
+        }
+    }
+
+    // MARK: - Lyrics
+
+    /// The only preference in the app that decides whether anything leaves the
+    /// device, so it is stated in full and starts off.
+    private var lyrics: some View {
+        Section {
+            Toggle("Look up lyrics online", isOn: $isOnlineLyricsLookupEnabled)
+        } header: {
+            Text("Lyrics")
+        } footer: {
+            Text("Off by default. When on, searching for lyrics sends the song title, and the artist if you enter one, to lrclib.net — nothing else, and nothing at all while this is off. Pasting lyrics, importing an .lrc file, and timing lines by tapping all work with no network.")
         }
     }
 

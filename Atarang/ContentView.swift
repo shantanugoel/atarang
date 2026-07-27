@@ -36,6 +36,11 @@ struct ContentView: View {
     /// source and the transport can draw its waveform.
     @State private var loadedTrack: LocalTrack?
     @State private var waveform: WaveformSummary?
+    /// The song's words, for as long as it is open. Owned here rather than by
+    /// the player: they are not audio, and the Stage, the sing-along mode, and
+    /// an incoming `.lrc` file all need the same one.
+    @State private var lyrics = LyricsStore()
+    @State private var showsSingAlong = false
     private let debugURL: String?
 
     /// Long-running work reports itself in one place, whoever started it.
@@ -174,6 +179,13 @@ struct ContentView: View {
                 ToolSheet(tool: tool, player: player)
                     .presentationDetents([.medium, .large])
             }
+            .fullScreenCover(isPresented: $showsSingAlong) {
+                SingAlongView(
+                    player: player,
+                    store: lyrics,
+                    requestRecording: requestRecording
+                )
+            }
             // A confirmation the user has already read stops being a
             // confirmation and starts being clutter. A caution is not on the
             // same footing: it says something changed that the user did not
@@ -195,7 +207,11 @@ struct ContentView: View {
             if let studioNotice { noticeBanner(studioNotice) }
             if usesSplitLayout {
                 HStack(spacing: 0) {
-                    StageContainer(player: player)
+                    StageContainer(
+                        player: player,
+                        lyrics: lyrics,
+                        openSingAlong: { showsSingAlong = true }
+                    )
                     Divider()
                     ToolInspector(
                         player: player,
@@ -207,7 +223,11 @@ struct ContentView: View {
                     .frame(width: isLandscapePhone ? 320 : 340)
                 }
             } else {
-                StageContainer(player: player)
+                StageContainer(
+                    player: player,
+                    lyrics: lyrics,
+                    openSingAlong: { showsSingAlong = true }
+                )
             }
         }
     }
@@ -443,12 +463,15 @@ struct ContentView: View {
     /// the screen, and the auto-lock cutting the song off mid-practice is the
     /// worst moment for it to happen. Scoped to Studio actually running
     /// something, so a paused song or another tab still lets the screen sleep.
-    /// Phase 6's full-screen sing-along mode extends this rather than
-    /// replacing it.
+    /// Sing-along mode holds it unconditionally: that mode exists for the
+    /// stretches when nobody is touching the phone, so a pause between takes
+    /// must not put the screen out.
     private var shouldKeepScreenAwake: Bool {
-        selectedTab == .studio
-            && player.isLoaded
-            && (player.isPlaying || player.isRecording || player.isCountingIn)
+        guard selectedTab == .studio, player.isLoaded else { return false }
+        return showsSingAlong
+            || player.isPlaying
+            || player.isRecording
+            || player.isCountingIn
     }
 
     @MainActor
@@ -461,6 +484,7 @@ struct ContentView: View {
         studioNotice = player.takePracticeNotice().map(StudioNotice.caution)
         hasUsedStudio = true
         loadedTrack = track
+        lyrics.open(track: track, duration: player.duration)
         loadWaveform(for: track)
     }
 
@@ -585,6 +609,8 @@ struct ContentView: View {
         player.unload()
         loadedTrack = nil
         waveform = nil
+        lyrics.close()
+        showsSingAlong = false
         youtubeURL = ""
     }
 
@@ -626,6 +652,23 @@ struct ContentView: View {
     }
 
     private func handleIncomingURL(_ incomingURL: URL) {
+        // A file arriving from the share sheet or "Open in" is lyrics for the
+        // song that is open. There is nothing sensible to do with one when no
+        // song is loaded, so say that rather than importing it into nowhere.
+        if incomingURL.isFileURL {
+            selectedTab = .studio
+            guard player.isLoaded else {
+                studioNotice = .caution("Open a song first, then import its lyrics file.")
+                return
+            }
+            lyrics.importFile(at: incomingURL)
+            if lyrics.errorMessage == nil {
+                player.setStage(.lyrics)
+                studioNotice = .confirmation("Lyrics imported.")
+            }
+            return
+        }
+
         let candidate: String?
         if incomingURL.scheme?.lowercased() == "atarang" {
             candidate = URLComponents(
