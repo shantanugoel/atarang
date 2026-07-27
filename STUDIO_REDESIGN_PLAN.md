@@ -1724,6 +1724,76 @@ phase adds everything that depends on downloadable assets.
 
 ---
 
+## Phase 13 — Separation backend performance and memory
+
+**Goal:** Make the two vocal models as fast and as safe as their reputation
+says they are. Unscheduled: nothing else depends on it, and every song can
+already be separated without it.
+
+Raised by a user run of **Vocals + Backing (MDX23C InstVoc HQ)** that took
+*longer* than Balanced 4-stem on the same song while Xcode reported over
+2.5 GB in use. Both observations are explained by the implementation rather
+than by the model, and both are fixable here.
+
+### 1. The spectral transform is the bottleneck
+
+`MDXVocalSeparator` does per chunk, in app code, what `CoreMLWaveformSeparator`
+does not do at all — HTDemucs carries its STFT inside the model graph:
+
+- 1,536 complex 8192-point DFTs, using `vDSP_DFT_zop` (complex-to-complex) on
+  real input, which is about twice the necessary work;
+- roughly 12.6 million scalar Swift loop iterations for windowing, bin
+  mirroring, and overlap-add, including a `reflected()` call per sample;
+- an inverse transform run **twice**, because this model returns both stems;
+- all of it single-threaded and serialized around each inference.
+
+Its chunks also generate 5.74 s of output against the 4-stem's ~7 s, so a
+four-minute song needs about 20% more of them.
+
+- [ ] Replace `vDSP_DFT_zop` with a real-to-complex transform.
+- [ ] Vectorise the window, mirror, and overlap-add loops; hoist `reflected()`
+      out of the per-sample path.
+- [ ] Reuse the scratch buffers across chunks instead of reallocating per call.
+- [ ] Measure before and after on the same song and device, and record both.
+- [ ] Revisit `speedClass` afterwards. It reads "Moderate" for both vocal models
+      now, which is honest about this implementation; "Fastest" was honest only
+      about the model.
+
+### 2. Memory is ungated for the models that need it most
+
+`minimumAvailableMemoryBytes` is set for `htdemucs6s` alone. MDX23C's input is
+`[1, 4, 4096, 256]` — 4.2M floats — with attention across 4096 frequency bins,
+and the whole song sits resampled in memory for the duration (~85 MB for four
+minutes) alongside the per-chunk spectra and stem arrays.
+
+- [ ] Give MDX23C and Kim Vocals a real memory requirement, checked by
+      `AnalysisQueue` like the 6-stem gate.
+- [ ] Add the `cautionMessage` treatment the 6-stem card has, once there are
+      measurements to justify the wording.
+- [ ] Free the resampled mix before the last chunk's output is written, or
+      stream it, so peak and steady-state are not the same number.
+- [ ] Confirm what happens when iOS jetsams a run: Phase 2's staging says no
+      partial entry survives, and that has never been tested against a real
+      out-of-memory kill.
+
+### 3. Kim Vocals runs everything twice, on the CPU
+
+- [ ] `ONNXModelSession` runs CPU-only, and `MDXVocalSeparator` calls it **twice
+      per chunk** — once with the spectrum and once negated — to average the
+      two. Measure whether Core ML conversion, or an ONNX execution provider
+      with GPU support, is worth the conversion work.
+
+### Acceptance criteria
+
+- [ ] Vocals + Backing is measurably faster than Balanced 4-stem on the same
+      song and device, or its label says otherwise.
+- [ ] Peak memory during a vocal separation is measured, published in this plan,
+      and gated on.
+- [ ] Separated output is unchanged: the same song separated before and after
+      is sample-identical, or the difference is explained.
+
+---
+
 ## Delivery milestones
 
 ### Milestone A — Stable base
@@ -1761,6 +1831,10 @@ better chords and automatic lyric timing.
   several thousand lines of concurrent code costs materially more than now.
 - **Phase 10 is a gate, not a phase to skip.** Nothing in Milestone E should
   download until capacity checks and model management exist.
+- **Phase 13 is deliberately unscheduled.** It makes an existing feature faster
+  and safer rather than adding one, and it can be picked up whenever separation
+  performance becomes the thing worth a week. It belongs before a public
+  release only if the memory half of it stays unmeasured.
 
 ---
 

@@ -98,11 +98,16 @@ enum SeparationModelKind: String, CaseIterable, Identifiable, Codable, Sendable 
 
     /// How long it takes relative to the others, in words rather than numbers:
     /// the real figure depends entirely on the device.
+    ///
+    /// The two vocal models used to claim "Fastest", which is their reputation
+    /// elsewhere and not what this app delivers: their STFT and inverse STFT
+    /// are hand-written Swift around each inference rather than part of the
+    /// model graph, so a run measured longer than the balanced 4-stem on the
+    /// same song. The label describes this implementation until that is fixed.
     var speedClass: String {
         switch self {
-        case .htdemucs: "Moderate"
+        case .htdemucs, .mdx23cInstVocHQ, .kimVocals: "Moderate"
         case .htdemucs6s: "Slowest"
-        case .mdx23cInstVocHQ, .kimVocals: "Fastest"
         }
     }
 
