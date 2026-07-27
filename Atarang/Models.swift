@@ -186,6 +186,23 @@ enum SeparationModelKind: String, CaseIterable, Identifiable, Codable, Sendable 
         guard !isAvailableOnCurrentDevice else { return nil }
         return "6-stem needs a newer high-memory device or more free memory."
     }
+
+    /// A warning about a model this device *can* run but may not run well.
+    ///
+    /// Separate from `unavailabilityMessage`, which says the model is out of
+    /// reach here. This one says it is within reach and still risky: the
+    /// memory check happens before the run, while inference peaks higher than
+    /// the check, and a 6-stem separation has been seen to stop the app part
+    /// way through on real hardware. Better said before an expensive run than
+    /// discovered during one.
+    var cautionMessage: String? {
+        switch self {
+        case .htdemucs6s:
+            "Memory-hungry. On older devices it can fail part way through, or stop the app."
+        default:
+            nil
+        }
+    }
 }
 
 struct LocalTrack: Identifiable, Sendable {

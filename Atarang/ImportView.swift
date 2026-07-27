@@ -250,6 +250,14 @@ private struct OutcomeCard: View {
                         .font(.caption)
                         .foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
+                } else if let caution = kind.cautionMessage {
+                    // Only when the model is actually offered. When it is out
+                    // of reach the line above already says so, and two warnings
+                    // about the same choice read as one long one.
+                    Label(caution, systemImage: "exclamationmark.circle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
