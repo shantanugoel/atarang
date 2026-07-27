@@ -355,7 +355,7 @@ final class SeparationModel: ObservableObject {
             // `BundledYTDLP` is an actor, so the interpreter already runs off the
             // main actor without a detached task standing between this job and
             // its cancellation.
-            try await BundledYTDLP.shared.run(argv: [
+            let ytdlpErrors = try await BundledYTDLP.shared.run(argv: [
                 "--no-playlist",
                 "--no-check-certificates",
                 "--no-warnings",
@@ -365,6 +365,14 @@ final class SeparationModel: ObservableObject {
                 url.absoluteString,
             ])
             try Task.checkCancellation()
+            // yt-dlp exits zero when it cannot extract a video, so the missing
+            // file is the only signal that anything went wrong. Without this the
+            // user was shown `The file "selection.json" couldn't be opened`,
+            // which names an implementation detail and says nothing about the
+            // video they actually asked for.
+            guard FileManager.default.fileExists(atPath: metadataURL.path) else {
+                throw SeparationFailure.extractionFailed(ytdlpErrors.last)
+            }
             let selection = try JSONDecoder().decode(
                 YTDLPSelection.self,
                 from: try Data(contentsOf: metadataURL)
@@ -572,7 +580,10 @@ private struct YTDLPSelection: Decodable, Sendable {
     let size: Int?
 }
 
-private enum SeparationFailure: LocalizedError {
+/// Internal rather than private so the message it builds out of yt-dlp's own
+/// output can be tested against the real strings.
+enum SeparationFailure: LocalizedError {
+    case extractionFailed(String?)
     case noCompatibleAudio
     case httpStatus(Int)
     case unreadableDownload
@@ -581,11 +592,42 @@ private enum SeparationFailure: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .noCompatibleAudio: "YouTube did not provide a compatible audio stream for this video."
-        case .httpStatus(let code): "YouTube refused the audio download (HTTP \(code))."
-        case .unreadableDownload: "The downloaded audio could not be read back, so it was discarded."
-        case .incompleteOutput(let stem): "Separation did not produce the \(stem.title.lowercased()) stem."
-        case .unreadableStem(let stem): "The separated \(stem.title.lowercased()) stem could not be read back."
+        case .extractionFailed(let reason):
+            var message = "This video could not be read from YouTube."
+            if let reason = Self.cleaned(reason) { message += " YouTube said: \(reason)" }
+            return message
+                + " Videos that are private, region-locked, or DRM-protected cannot be separated."
+        case .noCompatibleAudio:
+            return "YouTube did not provide a compatible audio stream for this video."
+        case .httpStatus(let code):
+            return "YouTube refused the audio download (HTTP \(code))."
+        case .unreadableDownload:
+            return "The downloaded audio could not be read back, so it was discarded."
+        case .incompleteOutput(let stem):
+            return "Separation did not produce the \(stem.title.lowercased()) stem."
+        case .unreadableStem(let stem):
+            return "The separated \(stem.title.lowercased()) stem could not be read back."
         }
+    }
+
+    /// yt-dlp prefixes its errors with `ERROR: [youtube] <video id>: `, which is
+    /// its own bookkeeping and means nothing to the person reading the alert.
+    static func cleaned(_ reason: String?) -> String? {
+        guard var text = reason?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !text.isEmpty else { return nil }
+        for prefix in ["ERROR:", "\u{001B}[0;31mERROR:\u{001B}[0m"] where text.hasPrefix(prefix) {
+            text = String(text.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
+        }
+        if text.hasPrefix("["), let close = text.firstIndex(of: "]") {
+            let remainder = text[text.index(after: close)...]
+            // `[youtube] ILRs2r6lcHY: This video is not available` — drop the
+            // extractor name and the video id, keep the sentence.
+            if let colon = remainder.firstIndex(of: ":") {
+                text = String(remainder[remainder.index(after: colon)...])
+                    .trimmingCharacters(in: .whitespaces)
+            }
+        }
+        guard !text.isEmpty else { return nil }
+        return text.hasSuffix(".") ? text : text + "."
     }
 }

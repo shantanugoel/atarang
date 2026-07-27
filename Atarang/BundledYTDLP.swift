@@ -27,13 +27,28 @@ actor BundledYTDLP {
         category: "yt-dlp-download"
     )
 
-    /// Runs yt-dlp with `argv`, installing the bundled extractor first if needed.
-    func run(argv: [String]) async throws {
+    /// Runs yt-dlp with `argv`, installing the bundled extractor first if
+    /// needed, and returns whatever it reported as an error.
+    ///
+    /// The return value is not decoration. yt-dlp handles an extraction failure
+    /// internally and **exits zero**: a video that is private, region-locked, or
+    /// DRM-protected produces `ERROR: … This video is not available`, no output
+    /// file, and no thrown Swift error at all. A caller that expects yt-dlp to
+    /// have written something must check that it did, and these lines are the
+    /// only account of why it did not.
+    @discardableResult
+    func run(argv: [String]) async throws -> [String] {
         try install()
         let extractionLogger = extractionLogger
+        let collector = YTDLPLogCollector()
         try await yt_dlp(argv: argv, log: { level, message in
             extractionLogger.debug("[\(level, privacy: .public)] \(message, privacy: .public)")
+            collector.record(level: level, message: message)
         })
+        for message in collector.errors {
+            logger.error("yt-dlp: \(message, privacy: .public)")
+        }
+        return collector.errors
     }
 
     func install() throws {
@@ -79,6 +94,31 @@ actor BundledYTDLP {
     private static func sha256(of url: URL) throws -> String {
         let digest = SHA256.hash(data: try Data(contentsOf: url, options: .mappedIfSafe))
         return digest.map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+/// Gathers yt-dlp's error lines from whatever thread the interpreter calls back
+/// on.
+///
+/// **Invariant:** `messages` is only ever touched inside `lock`. The logger
+/// closure is handed to a Python object and invoked synchronously from the
+/// interpreter, which is not the actor's executor and carries no isolation of
+/// its own, so a bare array here would be a data race.
+private final class YTDLPLogCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var messages: [String] = []
+
+    func record(level: String, message: String) {
+        guard level == "error" else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        messages.append(message)
+    }
+
+    var errors: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return messages
     }
 }
 
