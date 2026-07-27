@@ -964,16 +964,18 @@ from Phase 3; this phase is only about storage.
 
 ### 1. Song-scoped storage
 
-- [ ] Define song-scoped storage in `Application Support/Originals/<originalID>/`:
+- [x] Define song-scoped storage in `Application Support/Originals/<originalID>/`:
       `lyrics.json`, `chords.json`, `beats.json`, `practice.json`, written
       through `LibraryMetadata` and committed atomically per Phase 2.
-- [ ] Resolve storage from `TrackMetadata.sourceOriginalID`, falling back to the
+- [x] Resolve storage from `TrackMetadata.sourceOriginalID`, falling back to the
       track folder when the original has been deleted.
-- [ ] Add an `analysisVersion` constant so improving an algorithm invalidates
+- [x] Add an `analysisVersion` constant so improving an algorithm invalidates
       cached results, mirroring `separationCacheVersion`.
-- [ ] Add analysis job types to the Phase 3 `AnalysisQueue`, gating model-backed
-      jobs on `ModelMemoryBudget` as `htdemucs6s` already is.
-- [ ] Extend the Phase 3 Library index and storage accounting to cover analysis
+- [x] Add analysis job types to the Phase 3 `AnalysisQueue`, gating model-backed
+      jobs on `ModelMemoryBudget` as `htdemucs6s` already is. The gate is a
+      per-submission byte requirement checked when the job reaches the front of
+      the queue, not a per-kind constant — see the outcome.
+- [x] Extend the Phase 3 Library index and storage accounting to cover analysis
       artifacts.
 
 ### 2. Move practice state out of `UserDefaults`
@@ -982,29 +984,128 @@ All per-song state moves to library metadata keyed by **original** ID rather
 than track ID. Pre-release, so this is a straight move: delete the old keys, no
 migration, no deprecation window.
 
-- [ ] Move `SongPracticeSettings` into `practice.json` beside the original and
+- [x] Move `SongPracticeSettings` into `practice.json` beside the original and
       delete the `practiceSettings.v1.<trackID>` defaults key.
-- [ ] Move stem levels into the same file and delete the `stemLevels.<trackID>`
+- [x] Move stem levels into the same file and delete the `stemLevels.<trackID>`
       defaults key.
-- [ ] Rewrite `PracticeSettingsStore` against `LibraryMetadata`; it should no
+- [x] Rewrite `PracticeSettingsStore` against `LibraryMetadata`; it should no
       longer reference `UserDefaults` at all.
-- [ ] Keep `validate` as the sanity boundary for values, not as a compatibility
+- [x] Keep `validate` as the sanity boundary for values, not as a compatibility
       shim.
-- [ ] Apply one backup policy across the whole original folder.
-- [ ] Leave global preferences — default mic and backing levels — in
+- [x] Apply one backup policy across the whole original folder. One rule, two
+      answers, because the folder now holds two kinds of thing — see the outcome.
+- [x] Leave global preferences — default mic and backing levels — in
       `UserDefaults`; they are not per-song.
 
 ### Acceptance criteria
 
-- [ ] Re-separating a song with a different model preserves its lyrics, chords,
+- [~] Re-separating a song with a different model preserves its lyrics, chords,
       beat grid, **and** its practice settings, loop, sections, and stem levels.
-- [ ] A damaged or partially written analysis file never makes its song
-      unopenable, and never loses practice state.
-- [ ] When a re-separation removes the targeted stem, the app falls back and
-      says so once, rather than silently practising a different part.
-- [ ] Deleting an Original removes its analysis and practice artifacts, and
-      storage totals reflect it.
-- [ ] No per-song state remains in `UserDefaults`.
+      Verified in the simulator for practice settings, loop, and stem levels
+      across a 4-stem → 2-stem re-separation. Lyrics, chords, and beats have no
+      producer yet; the storage they will use is covered by unit tests against a
+      stub artifact, which is as far as this phase can take it.
+- [x] A damaged or partially written analysis file never makes its song
+      unopenable, and never loses practice state. Reads are non-throwing by
+      construction and the two files are independent; both are unit-tested with
+      deliberately truncated JSON.
+- [x] When a re-separation removes the targeted stem, the app falls back and
+      says so once, rather than silently practising a different part. Confirmed
+      in the simulator: opening a 2-stem separation of a song whose target was
+      Drums shows the caution banner and falls back to Vocals.
+- [x] Deleting an Original removes its analysis and practice artifacts, and
+      storage totals reflect it. Confirmed in the simulator: the folder and its
+      `practice.json` are gone and the Originals total drops to zero.
+- [x] No per-song state remains in `UserDefaults`. Neither key is written any
+      more, and a launch sweep removes the ones earlier builds wrote. The sweep
+      is unit-tested; the simulator check was inconclusive because `cfprefsd`
+      caches the preference file behind the app.
+
+### Outcome
+
+**New files.** `SongStorage.swift` holds the whole phase: the `SongStorage`
+value that resolves and addresses a song's folder, the `AnalysisArtifact`
+protocol that gives every future analysis result its version and filename, and
+the backup rule. `TemporaryLibrary.swift` and `SongStorageTests.swift` are its
+test support and coverage.
+
+**Practice state is addressed by song now, not by separation.** `LocalTrack`
+gained `folderURL` so a song can name its fallback, and
+`SongStorage.resolve(originalID:trackFolder:)` prefers `Originals/<id>/` and
+falls back to the separation's own folder when the original has been deleted.
+The fallback dies with that separation, which is the honest outcome: there is no
+longer a song for it to outlive. `PracticeSettingsStore` no longer mentions
+`UserDefaults`; it reads and writes `practice.json` through `LibraryMetadata`,
+whose encode-and-replace is already atomic.
+
+**Stem levels stopped being their own store.** They were a separate
+`UserDefaults` dictionary written synchronously on every fader move. They are
+now `stemLevels` inside `SongPracticeSettings`, so they share one file, one
+throttle, and one atomic write with the rest of the practice state — and survive
+re-separation with it. `validate` keeps levels for stems this separation does
+not have, so separating 4-stem and then 6-stem again finds the guitar fader
+where it was left; only keys naming no stem at all are dropped.
+
+**A missing practice target is reported, and the report is not on a timer.**
+`validate` returns a `PracticeSettingsValidation` instead of silently swapping
+the target, and `ContentView.load` turns it into a notice — at the single load
+site, so the Library, a re-separation, and a fresh separation all report it
+rather than only the two paths that also show a confirmation. That made the
+banner's one style wrong: a green tick on "your practice target is gone" is the
+interface agreeing with itself. `StudioNotice` now has a confirmation kind and a
+caution kind, and only confirmations auto-dismiss. The caution stays until it is
+dismissed or another song is opened, which is also why it is visible at all —
+the first three simulator attempts appeared to show nothing, and the notice had
+in fact been raised, shown, and cleared by the 5-second timer before the
+screenshot came back.
+
+**The memory gate is per submission, not per job kind.** The plan asked for
+model-backed jobs to be gated "as `htdemucs6s` already is". A per-kind constant
+would have meant inventing numbers for transcription and chord analysis before
+either exists, so `AnalysisQueue.submit` takes an optional
+`requiredMemoryBytes` and the caller — which knows what model it is about to
+run — supplies it. It is checked when the job reaches the front of the queue
+rather than at submission, because a job that waited ten minutes behind a
+separation is starting on a different device than the one it was submitted to.
+Separation now passes `SeparationModelKind.minimumAvailableMemoryBytes`, so the
+6-stem gate exists at run time as well as at selection time. `beatAnalysis`
+joined the job kinds for Phase 7.
+
+**`os_proc_available_memory()` returns zero in the simulator**, which is why the
+queue takes its memory reading as an injectable closure. The real one is
+untestable there — and it also means `htdemucs6s` reports as unavailable in
+every simulator, which is pre-existing behaviour this phase leaves alone.
+
+**One backup policy, two answers, and the bullet as written no longer works.**
+The plan's decision that downloaded originals are reproducible cache predates
+practice state moving into the same folder. Excluding the folder as a whole would
+now exclude the user's own work from their backups. The rule is therefore stated
+once, in `SongStorage.applyBackupPolicy`, and it says: the downloaded audio is
+excluded because it can be fetched again from its source URL; everything else in
+the folder — settings the user tuned, loops they set, corrections they will make
+to an analysis — is backed up, and the folder itself is never excluded. Applied
+while staging, so a committed original is never briefly in the wrong state.
+
+**Storage accounting names the song's own data.** `LibraryIndexer` measures the
+practice and analysis files separately from the folder total and publishes
+`songDataByteCount` on originals and tracks, with totals on `LibrarySnapshot`.
+No new UI: the storage screen is Phase 10's, and the number is there for it.
+
+**Note for Phase 10.** The index gained a field, so index files written by
+earlier builds no longer decode — synthesized `Codable` requires every key. The
+cost is one slow refresh, which is exactly what the index is allowed to cost.
+
+**Simulator verification.** Driven against a seeded original and two seeded
+separations of it (4-stem and 2-stem) on an iPhone 17 Pro. Confirmed:
+`practice.json` written beside the original with the loop, target, and stem
+levels; those settings intact after opening a separation made with a different
+model; the caution banner naming the missing Drums stem and the fallback to
+Vocals; deleting the Original removing its `practice.json` with it and the
+Originals total returning to zero.
+
+**Not verified on device.** Nothing in this phase touches the audio layer that
+Phase 1 declared device-blocking. The device pass still owes Phase 4's haptics
+and VoiceOver reading order.
 
 ---
 

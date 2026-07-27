@@ -13,6 +13,23 @@ struct LibrarySnapshot: Sendable {
     var recordings: [HistoryRecording] = []
 
     static let empty = LibrarySnapshot()
+
+    /// Every byte the library occupies.
+    var byteCount: Int64 {
+        var total: Int64 = 0
+        for original in originals { total += original.byteCount }
+        for track in tracks { total += track.byteCount }
+        for recording in recordings { total += recording.byteCount }
+        return total
+    }
+
+    /// The part of it that is practice state and analysis results.
+    var songDataByteCount: Int64 {
+        var total: Int64 = 0
+        for original in originals { total += original.songDataByteCount }
+        for track in tracks { total += track.songDataByteCount }
+        return total
+    }
 }
 
 /// Reads the library off the main actor, and re-reads as little of it as it can.
@@ -104,7 +121,8 @@ actor LibraryIndexer {
                 folderURL: folder,
                 audioURL: audioURL,
                 duration: measured.duration,
-                byteCount: measured.byteCount
+                byteCount: measured.byteCount,
+                songDataByteCount: measured.songDataByteCount
             )
         }
     }
@@ -134,7 +152,8 @@ actor LibraryIndexer {
                 folderURL: folder,
                 files: files,
                 duration: measured.duration,
-                byteCount: measured.byteCount
+                byteCount: measured.byteCount,
+                songDataByteCount: measured.songDataByteCount
             )
         }
     }
@@ -202,6 +221,10 @@ actor LibraryIndexer {
     private struct Measurement: Codable, Sendable {
         var duration: TimeInterval
         var byteCount: Int64
+        /// The part of `byteCount` that is practice state and analysis results
+        /// rather than audio. Counted separately because it is the one part of
+        /// a song folder whose size the user has no intuition for.
+        var songDataByteCount: Int64 = 0
         /// What the folder looked like when the measurement was taken. Library
         /// folders are only ever published, replaced, or added to as a whole, and
         /// each of those changes the directory's own modification date.
@@ -230,6 +253,7 @@ actor LibraryIndexer {
         let measurement = Measurement(
             duration: audioURL.flatMap { LibraryStaging.audioDuration(at: $0) } ?? 0,
             byteCount: LibraryStaging.byteCount(of: folder),
+            songDataByteCount: SongStorage.songDataByteCount(of: folder),
             modifiedAt: fingerprint.modifiedAt,
             childCount: fingerprint.childCount
         )

@@ -22,6 +22,10 @@ final class StemPlayer {
     private(set) var completedRepetitions = 0
     private(set) var isTempoRampHeld = false
     private(set) var isLoopTakeRecording = false
+    /// Something the song's saved state could not be honoured about, said once
+    /// when it is loaded. Today that is only a practice target whose stem this
+    /// separation does not have.
+    private(set) var practiceNotice: String?
 
     /// Computed rather than stored so the `UserDefaults` write happens on
     /// assignment. `@Observable` rewrites stored properties into accessors, so
@@ -160,6 +164,9 @@ final class StemPlayer {
     @ObservationIgnored private var recordingWriteFailure: Error?
     @ObservationIgnored private var recordingID: UUID?
     @ObservationIgnored private var currentTrackID: UUID?
+    /// Where this song's practice state is written. Resolved from the original
+    /// rather than the track, so re-separating keeps it.
+    @ObservationIgnored private var songStorage: SongStorage?
     @ObservationIgnored private var recordingStartedAt: Date?
     @ObservationIgnored private var activeRecordingMicrophoneLevel: Float = 1
     @ObservationIgnored private var activeRecordingBackingLevel: Float = 0.7
@@ -185,7 +192,6 @@ final class StemPlayer {
     #endif
     private static let microphoneLevelDefaultsKey = "recordingMicrophoneLevel"
     private static let backingLevelDefaultsKey = "recordingBackingLevel"
-    private static let stemLevelDefaultsPrefix = "stemLevels."
     private static let practicePersistenceInterval: TimeInterval = 2
     nonisolated static let metronomeSampleRate = 8_000.0
     /// How far ahead of the render clock metronome clicks are queued. Long
@@ -308,12 +314,20 @@ final class StemPlayer {
         title = track.title
         separationModel = track.separationModel
         currentTrackID = track.id
-        restoreStemLevels(for: track.id)
-        practiceSettings = practiceSettingsStore.load(for: track.id)
-        practiceSettings.validate(
+        let storage = track.songStorage
+        songStorage = storage
+        practiceSettings = practiceSettingsStore.load(from: storage)
+        let validation = practiceSettings.validate(
             duration: playbackState.duration,
             availableStems: activeStems
         )
+        practiceNotice = validation.targetChangeMessage
+        if let missing = validation.missingTarget {
+            logger.info(
+                "Practice target \(missing.rawValue, privacy: .public) is missing from this separation; fell back to \(validation.replacementTarget?.rawValue ?? "none", privacy: .public)"
+            )
+        }
+        restoreStemLevels()
         playbackState.seek(to: practiceSettings.lastPosition)
         playbackState.setRate(practiceSettings.playbackRate)
         playbackState.setPitchSemitones(practiceSettings.pitchSemitones)
@@ -885,15 +899,21 @@ final class StemPlayer {
         persistPracticeSettings()
     }
 
+    /// Reads the notice and clears it, so it can only ever be shown once.
+    func takePracticeNotice() -> String? {
+        defer { practiceNotice = nil }
+        return practiceNotice
+    }
+
     func resetPracticeSettings() {
-        guard let currentTrackID else { return }
+        guard let songStorage else { return }
         cancelCountIn()
         let shouldResume = isPlaying
         if shouldResume { pausePlayback() }
         practiceFlushTask?.cancel()
         practiceFlushTask = nil
         practiceThrottle.reset()
-        practiceSettingsStore.reset(for: currentTrackID)
+        practiceSettingsStore.reset(in: songStorage)
         practiceSettings = SongPracticeSettings()
         practiceSettings.validate(duration: duration, availableStems: activeStems)
         playbackState.clearLoop()
@@ -1005,7 +1025,9 @@ final class StemPlayer {
         activeStems = []
         soloedStem = nil
         currentTrackID = nil
+        songStorage = nil
         practiceSettings = SongPracticeSettings()
+        practiceNotice = nil
         isLoaded = false
         recordedTake = nil
         activeTimingStem = nil
@@ -1793,15 +1815,17 @@ final class StemPlayer {
         }
     }
 
+    /// Folds the current mix into the practice settings and lets the same
+    /// throttle carry it to disk. Stem levels used to be their own
+    /// `UserDefaults` entry written synchronously on every fader move; they are
+    /// part of the song's practice state, and now share its file and its
+    /// write policy.
     private func persistStemLevels() {
-        guard let currentTrackID else { return }
-        let values = Dictionary(uniqueKeysWithValues: activeStems.map {
-            ($0.rawValue, Double(volumes[$0] ?? 1))
-        })
-        UserDefaults.standard.set(
-            values,
-            forKey: Self.stemLevelDefaultsPrefix + currentTrackID.uuidString
-        )
+        guard songStorage != nil else { return }
+        for stem in activeStems {
+            practiceSettings.setLevel(volumes[stem] ?? 1, for: stem)
+        }
+        persistPracticeSettings()
     }
 
     private func updateSavedLoop(start: TimeInterval, end: TimeInterval) {
@@ -1827,7 +1851,7 @@ final class StemPlayer {
     /// twice per tap. Suppressed writes are not dropped: the last one is
     /// scheduled so the state still lands once the interval elapses.
     private func persistPracticeSettings(immediately: Bool = false) {
-        guard let currentTrackID else { return }
+        guard let songStorage else { return }
         practiceSettings.lastPosition = position
         practiceSettings.playbackRate = playbackState.rate
         practiceSettings.pitchSemitones = playbackState.pitchSemitones
@@ -1837,7 +1861,7 @@ final class StemPlayer {
         }
         practiceFlushTask?.cancel()
         practiceFlushTask = nil
-        practiceSettingsStore.save(practiceSettings, for: currentTrackID)
+        practiceSettingsStore.save(practiceSettings, to: songStorage)
     }
 
     private func schedulePracticeSettingsFlush() {
@@ -1895,12 +1919,10 @@ final class StemPlayer {
         return !Task.isCancelled && generation == countInGeneration
     }
 
-    private func restoreStemLevels(for trackID: UUID) {
-        let key = Self.stemLevelDefaultsPrefix + trackID.uuidString
-        let saved = UserDefaults.standard.dictionary(forKey: key) as? [String: Double]
+    private func restoreStemLevels() {
         for stem in activeStems {
-            let value = Float(saved?[stem.rawValue] ?? 1)
-            volumes[stem] = min(1, max(0, value))
+            let value = practiceSettings.level(for: stem)
+            volumes[stem] = value
             lastAudibleVolumes[stem] = value > 0 ? value : 1
         }
     }

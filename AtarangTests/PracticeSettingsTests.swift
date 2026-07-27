@@ -2,6 +2,16 @@ import XCTest
 @testable import Atarang
 
 final class PracticeSettingsTests: XCTestCase {
+    private var library: TemporaryLibrary!
+
+    override func setUpWithError() throws {
+        library = try TemporaryLibrary()
+    }
+
+    override func tearDown() {
+        library = nil
+    }
+
     func testNewSettingsReceiveSafeDefaults() {
         var settings = SongPracticeSettings()
         settings.stage = .lyrics
@@ -94,24 +104,77 @@ final class PracticeSettingsTests: XCTestCase {
         XCTAssertEqual(settings.lastPosition, 100)
     }
 
+    func testValidationReportsAMissingTargetInsteadOfSwappingItSilently() {
+        var settings = SongPracticeSettings()
+        settings.target = .guitar
+
+        let validation = settings.validate(
+            duration: 100,
+            availableStems: [.vocals, .drums]
+        )
+
+        XCTAssertEqual(validation.missingTarget, .guitar)
+        XCTAssertEqual(validation.replacementTarget, .vocals)
+        XCTAssertEqual(settings.target, .vocals)
+        XCTAssertNotNil(validation.targetChangeMessage)
+    }
+
+    func testValidationSaysNothingWhenTheTargetSurvives() {
+        var settings = SongPracticeSettings()
+        settings.target = .bass
+
+        let validation = settings.validate(
+            duration: 100,
+            availableStems: [.vocals, .bass]
+        )
+
+        XCTAssertNil(validation.missingTarget)
+        XCTAssertNil(validation.targetChangeMessage)
+        XCTAssertEqual(settings.target, .bass)
+    }
+
+    func testValidationClampsStemLevelsAndKeepsOnesThisSeparationLacks() {
+        var settings = SongPracticeSettings()
+        settings.setLevel(0.4, for: .vocals)
+        settings.setLevel(0.9, for: .guitar)
+        settings.stemLevels["drums"] = 5
+        settings.stemLevels["kazoo"] = 0.5
+
+        settings.validate(duration: 100, availableStems: [.vocals, .drums])
+
+        XCTAssertEqual(settings.level(for: .vocals), 0.4)
+        XCTAssertEqual(settings.level(for: .drums), 1)
+        // Kept, so separating this song 6-stem again finds the guitar fader
+        // where it was left.
+        XCTAssertEqual(settings.level(for: .guitar), 0.9)
+        XCTAssertNil(settings.stemLevels["kazoo"])
+    }
+
     func testStoreKeepsSettingsSeparateForEachSong() {
-        let suiteName = "PracticeSettingsTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-        let store = PracticeSettingsStore(defaults: defaults)
-        let firstID = UUID()
-        let secondID = UUID()
+        let first = SongStorage(folderURL: library.folder(named: "first"))
+        let second = SongStorage(folderURL: library.folder(named: "second"))
+        let store = PracticeSettingsStore()
         var settings = SongPracticeSettings()
         settings.stage = .lyrics
         settings.target = .bass
         settings.playbackRate = 0.5
+        settings.setLevel(0.25, for: .drums)
 
-        store.save(settings, for: firstID)
+        store.save(settings, to: first)
 
-        XCTAssertEqual(store.load(for: firstID), settings)
-        XCTAssertEqual(store.load(for: secondID), SongPracticeSettings())
+        XCTAssertEqual(store.load(from: first), settings)
+        XCTAssertEqual(store.load(from: second), SongPracticeSettings())
 
-        store.reset(for: firstID)
-        XCTAssertEqual(store.load(for: firstID), SongPracticeSettings())
+        store.reset(in: first)
+        XCTAssertEqual(store.load(from: first), SongPracticeSettings())
+    }
+
+    func testDamagedSettingsReadAsDefaultsRatherThanFailing() throws {
+        let storage = SongStorage(folderURL: library.folder(named: "song"))
+        try Data("{ not json at all".utf8).write(
+            to: storage.url(for: SongStorage.practiceFilename)
+        )
+
+        XCTAssertEqual(PracticeSettingsStore().load(from: storage), SongPracticeSettings())
     }
 }

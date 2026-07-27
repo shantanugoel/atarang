@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 /// What the Stage is showing. Replaces the former Mix/Practice split: practice
 /// tools are chips now, so the Stage is free to be about the song itself.
@@ -96,11 +97,29 @@ struct SavedPracticeSection: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+/// What `validate` had to change, so the app can say so instead of quietly
+/// practising something else.
+struct PracticeSettingsValidation: Equatable, Sendable {
+    /// The stem the user was practising, when this separation does not have it.
+    var missingTarget: StemKind?
+    /// What is being practised instead, if anything could be.
+    var replacementTarget: StemKind?
+
+    var targetChangeMessage: String? {
+        guard let missingTarget else { return nil }
+        guard let replacementTarget else {
+            return "This separation has no \(missingTarget.title) stem, so there is no practice target."
+        }
+        return "This separation has no \(missingTarget.title) stem. Practising \(replacementTarget.title) instead."
+    }
+}
+
 struct SongPracticeSettings: Codable, Equatable, Sendable {
-    /// Bumped to 2 by Phase 4: `workspace` became `stage`, with a different
-    /// case set. Pre-release, so there is no migration — settings written by an
-    /// earlier build no longer decode and the song starts from defaults.
-    static let currentSchemaVersion = 2
+    /// Bumped to 3 by Phase 5: stem levels joined the settings, and the whole
+    /// file moved out of `UserDefaults` and beside the original. Pre-release, so
+    /// there is no migration — settings written by an earlier build no longer
+    /// decode and the song starts from defaults.
+    static let currentSchemaVersion = 3
     static let supportedCountInClicks = [0, 2, 4]
     static let supportedBPMRange = 30...300
     static let supportedRepetitionPauseRange: ClosedRange<TimeInterval> = 0...10
@@ -131,13 +150,34 @@ struct SongPracticeSettings: Codable, Equatable, Sendable {
     var tempoRampIncrement: Float = 0.05
     var tempoRampTarget: Float = 1
     var savedSections: [SavedPracticeSection] = []
+    /// Per-stem mix levels, keyed by `StemKind.rawValue`.
+    ///
+    /// They used to be their own `UserDefaults` entry, written on every fader
+    /// move. Folding them in here means one file per song, one throttle, and one
+    /// atomic write — and a mix that survives re-separation along with the rest
+    /// of the practice state. Keyed by raw value rather than by `StemKind`
+    /// because JSON object keys have to be strings.
+    var stemLevels: [String: Float] = [:]
 
     var loopRange: (start: TimeInterval, end: TimeInterval)? {
         guard let loopStart, let loopEnd else { return nil }
         return (loopStart, loopEnd)
     }
 
-    mutating func validate(duration: TimeInterval, availableStems: [StemKind]) {
+    func level(for stem: StemKind) -> Float {
+        stemLevels[stem.rawValue] ?? 1
+    }
+
+    mutating func setLevel(_ level: Float, for stem: StemKind) {
+        stemLevels[stem.rawValue] = min(1, max(0, level))
+    }
+
+    @discardableResult
+    mutating func validate(
+        duration: TimeInterval,
+        availableStems: [StemKind]
+    ) -> PracticeSettingsValidation {
+        var validation = PracticeSettingsValidation()
         schemaVersion = Self.currentSchemaVersion
         playbackRate = min(
             max(playbackRate, PlaybackState.supportedRateRange.lowerBound),
@@ -176,11 +216,24 @@ struct SongPracticeSettings: Codable, Equatable, Sendable {
             ? min(max(0, lastPosition), max(0, duration))
             : 0
 
+        // A separation that no longer has the targeted stem is reported, not
+        // silently swapped: practising a different part without being told is
+        // worse than being told the part is gone.
         if let target, !availableStems.contains(target) {
+            validation.missingTarget = target
             self.target = nil
         }
         if target == nil {
             target = availableStems.contains(.vocals) ? .vocals : availableStems.first
+        }
+        validation.replacementTarget = validation.missingTarget == nil ? nil : target
+
+        // Levels for stems this separation does not have are kept, not dropped:
+        // separating the same song 4-stem and then 6-stem again should find the
+        // guitar fader where it was left. Only keys that name no stem at all go.
+        stemLevels = stemLevels.reduce(into: [:]) { result, entry in
+            guard StemKind(rawValue: entry.key) != nil else { return }
+            result[entry.key] = entry.value.isFinite ? min(1, max(0, entry.value)) : 1
         }
 
         savedSections = savedSections.compactMap { section in
@@ -204,10 +257,11 @@ struct SongPracticeSettings: Codable, Equatable, Sendable {
             loopStart = nil
             loopEnd = nil
             isLoopEnabled = false
-            return
+            return validation
         }
         loopStart = range.start
         loopEnd = range.end
+        return validation
     }
 
     init() {}
@@ -221,31 +275,39 @@ struct SongPracticeSettings: Codable, Equatable, Sendable {
     }
 }
 
-struct PracticeSettingsStore {
-    private static let keyPrefix = "practiceSettings.v1."
-    let defaults: UserDefaults
+/// Reads and writes a song's practice state as `practice.json` beside the song.
+///
+/// It knows nothing about `UserDefaults` any more, and nothing about track IDs:
+/// practice state belongs to the song, so it is addressed by the song's storage
+/// and outlives any particular separation of it.
+struct PracticeSettingsStore: Sendable {
+    private let logger = Logger(
+        subsystem: "com.shantanugoel.atarang.Atarang",
+        category: "Library"
+    )
 
-    init(defaults: UserDefaults = .standard) {
-        self.defaults = defaults
+    init() {}
+
+    /// A damaged or half-written file reads as "no saved practice state", which
+    /// costs the user their settings for this song and nothing more. The
+    /// alternative — refusing to open the song — is worse for a file whose whole
+    /// purpose is convenience.
+    func load(from storage: SongStorage) -> SongPracticeSettings {
+        storage.read(SongPracticeSettings.self, from: SongStorage.practiceFilename)
+            ?? SongPracticeSettings()
     }
 
-    func load(for trackID: UUID) -> SongPracticeSettings {
-        guard let data = defaults.data(forKey: Self.keyPrefix + trackID.uuidString),
-              let settings = try? JSONDecoder().decode(
-                SongPracticeSettings.self,
-                from: data
-              ) else {
-            return SongPracticeSettings()
+    func save(_ settings: SongPracticeSettings, to storage: SongStorage) {
+        do {
+            try storage.write(settings, to: SongStorage.practiceFilename)
+        } catch {
+            logger.error(
+                "Could not save practice settings: \(error.localizedDescription, privacy: .public)"
+            )
         }
-        return settings
     }
 
-    func save(_ settings: SongPracticeSettings, for trackID: UUID) {
-        guard let data = try? JSONEncoder().encode(settings) else { return }
-        defaults.set(data, forKey: Self.keyPrefix + trackID.uuidString)
-    }
-
-    func reset(for trackID: UUID) {
-        defaults.removeObject(forKey: Self.keyPrefix + trackID.uuidString)
+    func reset(in storage: SongStorage) {
+        storage.remove(SongStorage.practiceFilename)
     }
 }

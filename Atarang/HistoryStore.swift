@@ -11,6 +11,9 @@ struct HistoryOriginal: Identifiable, Sendable {
     let audioURL: URL
     let duration: TimeInterval
     let byteCount: Int64
+    /// Practice state and analysis results stored beside this song, in bytes.
+    /// Part of `byteCount`, reported separately for storage accounting.
+    let songDataByteCount: Int64
 }
 
 struct HistoryTrack: Identifiable, Sendable {
@@ -26,6 +29,9 @@ struct HistoryTrack: Identifiable, Sendable {
     let files: [StemKind: URL]
     let duration: TimeInterval
     let byteCount: Int64
+    /// Only non-zero when the original this came from has been deleted and the
+    /// song's state fell back to living here.
+    let songDataByteCount: Int64
 
     var localTrack: LocalTrack {
         LocalTrack(
@@ -35,7 +41,8 @@ struct HistoryTrack: Identifiable, Sendable {
             createdAt: createdAt,
             sourceURL: sourceURL,
             sourceOriginalID: sourceOriginalID,
-            separationModel: separationModel
+            separationModel: separationModel,
+            folderURL: folderURL
         )
     }
 }

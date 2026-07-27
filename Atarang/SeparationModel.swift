@@ -67,7 +67,10 @@ final class SeparationModel: ObservableObject {
             errorMessage = separationModel.unavailabilityMessage
             return nil
         }
-        return await runSeparationJob(title: url.absoluteString) { context in
+        return await runSeparationJob(
+            title: url.absoluteString,
+            requiredMemoryBytes: separationModel.minimumAvailableMemoryBytes
+        ) { context in
             try await self.separate(
                 url: url,
                 using: separationModel,
@@ -95,7 +98,10 @@ final class SeparationModel: ObservableObject {
                 ?? YouTubeSource.canonicalKey(for: original.sourceURL),
             audioURL: original.audioURL
         )
-        return await runSeparationJob(title: original.title) { context in
+        return await runSeparationJob(
+            title: original.title,
+            requiredMemoryBytes: separationModel.minimumAvailableMemoryBytes
+        ) { context in
             try await self.separate(
                 original: savedOriginal,
                 using: separationModel,
@@ -111,12 +117,14 @@ final class SeparationModel: ObservableObject {
     /// because the user stopping the work is not a failure.
     private func runSeparationJob(
         title: String,
+        requiredMemoryBytes: UInt64?,
         work: @escaping @Sendable (AnalysisJobContext) async throws -> SeparationResult
     ) async -> SeparationResult? {
         do {
             return try await AnalysisQueue.shared.submit(
                 kind: .separation,
                 title: title,
+                requiredMemoryBytes: requiredMemoryBytes,
                 work: work
             ).value
         } catch {
@@ -301,7 +309,8 @@ final class SeparationModel: ObservableObject {
             createdAt: createdAt,
             sourceURL: original.sourceURL,
             sourceOriginalID: original.id,
-            separationModel: separationModel
+            separationModel: separationModel,
+            folderURL: output.destination
         )
     }
 
@@ -424,6 +433,12 @@ final class SeparationModel: ObservableObject {
                 ),
                 to: staging.appendingPathComponent(LibraryMetadata.originalFilename)
             )
+            // Applied while staging, so the committed folder is never briefly
+            // in the wrong backup state.
+            SongStorage.applyBackupPolicy(
+                to: staging,
+                audioFilename: stagedAudioURL.lastPathComponent
+            )
             try LibraryStaging.commit(staging, to: folder)
         } catch {
             LibraryStaging.discard(staging)
@@ -517,7 +532,8 @@ final class SeparationModel: ObservableObject {
                     createdAt: metadata.createdAt,
                     sourceURL: metadata.sourceURL,
                     sourceOriginalID: metadata.sourceOriginalID,
-                    separationModel: metadata.separationModel
+                    separationModel: metadata.separationModel,
+                    folderURL: folder
                 )
             ))
         }

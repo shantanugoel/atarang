@@ -165,13 +165,21 @@ enum SeparationModelKind: String, CaseIterable, Identifiable, Codable, Sendable 
     /// Increment this when a model or its output processing changes incompatibly.
     var separationCacheVersion: Int { 1 }
 
-    var isAvailableOnCurrentDevice: Bool {
+    /// How much free memory this model needs, or `nil` when it runs anywhere.
+    ///
+    /// Consulted twice: once when the user picks a model, so an unusable choice
+    /// is explained rather than offered, and again by `AnalysisQueue` when the
+    /// job actually starts, which may be minutes and one memory warning later.
+    var minimumAvailableMemoryBytes: UInt64? {
         switch self {
-        case .htdemucs6s:
-            ModelMemoryBudget.supportsHTDemucs6Stem
-        default:
-            true
+        case .htdemucs6s: ModelMemoryBudget.sixStemMinimumAvailableBytes
+        default: nil
         }
+    }
+
+    var isAvailableOnCurrentDevice: Bool {
+        guard let minimumAvailableMemoryBytes else { return true }
+        return ModelMemoryBudget.hasHeadroom(forBytes: minimumAvailableMemoryBytes)
     }
 
     var unavailabilityMessage: String? {
@@ -188,6 +196,14 @@ struct LocalTrack: Identifiable, Sendable {
     let sourceURL: URL?
     let sourceOriginalID: UUID?
     let separationModel: SeparationModelKind
+    /// `Tracks/<id>/`. Carried so song-scoped storage has somewhere to fall back
+    /// to when the original this separation came from has been deleted.
+    let folderURL: URL
+
+    /// Where this song's practice state and analysis results live.
+    var songStorage: SongStorage {
+        SongStorage.resolve(originalID: sourceOriginalID, trackFolder: folderURL)
+    }
 }
 
 struct OriginalMetadata: Codable, Sendable {

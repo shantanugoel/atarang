@@ -26,7 +26,7 @@ struct ContentView: View {
     @State private var selectedTab = AppTab.studio
     @State private var separationTask: Task<Void, Never>?
     @State private var pendingModelDownload: ModelDownloadRequest?
-    @State private var studioNotice: String?
+    @State private var studioNotice: StudioNotice?
     @State private var showsRecordingIntroduction = false
     @State private var selectedTool: StudioTool?
     /// The split layouts show a tool in place instead of presenting it, so the
@@ -175,9 +175,11 @@ struct ContentView: View {
                     .presentationDetents([.medium, .large])
             }
             // A confirmation the user has already read stops being a
-            // confirmation and starts being clutter.
+            // confirmation and starts being clutter. A caution is not on the
+            // same footing: it says something changed that the user did not
+            // ask for, and it stays until they dismiss it or open another song.
             .task(id: studioNotice) {
-                guard studioNotice != nil else { return }
+                guard studioNotice?.kind == .confirmation else { return }
                 try? await Task.sleep(for: .seconds(5))
                 studioNotice = nil
             }
@@ -413,11 +415,11 @@ struct ContentView: View {
         )
     }
 
-    private func noticeBanner(_ text: String) -> some View {
+    private func noticeBanner(_ notice: StudioNotice) -> some View {
         HStack(spacing: 10) {
-            Image(systemName: "checkmark.circle.fill")
-                .foregroundStyle(.green)
-            Text(text)
+            Image(systemName: notice.iconName)
+                .foregroundStyle(notice.tint)
+            Text(notice.text)
                 .font(.subheadline)
             Spacer()
             Button {
@@ -429,7 +431,7 @@ struct ContentView: View {
             .accessibilityLabel("Dismiss")
         }
         .padding(12)
-        .background(Color.green.opacity(0.1), in: RoundedRectangle(cornerRadius: 14))
+        .background(notice.tint.opacity(0.1), in: RoundedRectangle(cornerRadius: 14))
         .padding(.horizontal)
         .padding(.bottom, 8)
         .transition(.opacity)
@@ -452,6 +454,11 @@ struct ContentView: View {
     @MainActor
     private func load(_ track: LocalTrack) throws {
         try player.load(track: track)
+        // Reported here rather than at the two call sites that also show a
+        // confirmation, because a practice target that this separation does not
+        // have has to be said whichever door the user came in through — the
+        // Library, a re-separation, or a fresh one.
+        studioNotice = player.takePracticeNotice().map(StudioNotice.caution)
         hasUsedStudio = true
         loadedTrack = track
         loadWaveform(for: track)
@@ -636,7 +643,7 @@ struct ContentView: View {
         if player.isLoaded { chooseAnotherSong() }
         youtubeURL = candidate
         selectedTab = .studio
-        studioNotice = "YouTube link received. Choose what you want out of it to continue."
+        studioNotice = .confirmation("YouTube link received. Choose what you want out of it to continue.")
     }
 
     private func consumePendingImport() {
@@ -659,10 +666,19 @@ struct ContentView: View {
         }
     }
 
+    /// Confirms a song opened, unless `load` already had something more
+    /// important to say. "Opened instantly" is a pleasantry; a practice target
+    /// that no longer exists is something the user has to be told before they
+    /// start playing along to the wrong part.
+    private func announce(_ confirmation: String) {
+        guard studioNotice == nil else { return }
+        studioNotice = .confirmation(confirmation)
+    }
+
     private func openExistingSeparation(_ track: LocalTrack) {
         do {
             try load(track)
-            studioNotice = "Opened a saved separation instantly."
+            announce("Opened a saved separation instantly.")
         } catch {
             model.errorMessage = error.localizedDescription
         }
@@ -673,9 +689,11 @@ struct ContentView: View {
         if let result = await model.separate(youtubeURL: url, force: force) {
             do {
                 try load(result.track)
-                studioNotice = result.reusedExistingSeparation
-                    ? "Opened a saved separation instantly."
-                    : "Separation ready to play."
+                announce(
+                    result.reusedExistingSeparation
+                        ? "Opened a saved separation instantly."
+                        : "Separation ready to play."
+                )
                 await runDebugRecordingIfRequested()
             }
             catch { model.errorMessage = error.localizedDescription }
@@ -692,6 +710,44 @@ struct ContentView: View {
             try? await Task.sleep(for: .seconds(seconds))
             guard player.isRecording else { return }
             await player.toggleRecording()
+        }
+    }
+}
+
+/// A short, self-dismissing message above the Studio content.
+///
+/// Two kinds, because they are not the same thing: a confirmation says
+/// something the user asked for happened, and a caution says something they
+/// did not ask for did. A green tick on "your practice target is gone" would
+/// be the interface agreeing with itself.
+struct StudioNotice: Equatable {
+    enum Kind: Equatable {
+        case confirmation
+        case caution
+    }
+
+    let kind: Kind
+    let text: String
+
+    static func confirmation(_ text: String) -> StudioNotice {
+        StudioNotice(kind: .confirmation, text: text)
+    }
+
+    static func caution(_ text: String) -> StudioNotice {
+        StudioNotice(kind: .caution, text: text)
+    }
+
+    var iconName: String {
+        switch kind {
+        case .confirmation: "checkmark.circle.fill"
+        case .caution: "exclamationmark.triangle.fill"
+        }
+    }
+
+    var tint: Color {
+        switch kind {
+        case .confirmation: .green
+        case .caution: .orange
         }
     }
 }

@@ -9,6 +9,7 @@ import OSLog
 enum AnalysisJobKind: String, Sendable, CaseIterable {
     case separation
     case transcription
+    case beatAnalysis
     case chordAnalysis
 
     /// Shown while the job is waiting rather than working.
@@ -16,7 +17,17 @@ enum AnalysisJobKind: String, Sendable, CaseIterable {
         switch self {
         case .separation: "Separation is waiting"
         case .transcription: "Transcription is waiting"
+        case .beatAnalysis: "Beat detection is waiting"
         case .chordAnalysis: "Chord analysis is waiting"
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .separation: "Separation"
+        case .transcription: "Transcription"
+        case .beatAnalysis: "Beat detection"
+        case .chordAnalysis: "Chord analysis"
         }
     }
 
@@ -24,7 +35,20 @@ enum AnalysisJobKind: String, Sendable, CaseIterable {
         switch self {
         case .separation: "Separation"
         case .transcription: "Transcription"
+        case .beatAnalysis: "BeatAnalysis"
         case .chordAnalysis: "ChordAnalysis"
+        }
+    }
+}
+
+/// Why a job could not run, as distinct from having failed while running.
+enum AnalysisJobError: LocalizedError {
+    case insufficientMemory(AnalysisJobKind)
+
+    var errorDescription: String? {
+        switch self {
+        case .insufficientMemory(let kind):
+            "\(kind.title) needs more free memory than this device has right now. Close other apps and try again."
         }
     }
 }
@@ -219,6 +243,15 @@ final class AnalysisProgressCenter {
 actor AnalysisQueue {
     static let shared = AnalysisQueue()
 
+    /// How much memory a job may assume. Injectable because
+    /// `os_proc_available_memory()` reports zero in the simulator, so the gate
+    /// is untestable against the real one.
+    private let availableMemoryBytes: @Sendable () -> UInt64
+
+    init(availableMemoryBytes: @escaping @Sendable () -> UInt64 = { ModelMemoryBudget.availableBytes }) {
+        self.availableMemoryBytes = availableMemoryBytes
+    }
+
     private var tail: Task<Void, Never>?
     private var generationCounter = 0
     private var cancellations: [UUID: @Sendable () -> Void] = [:]
@@ -242,9 +275,16 @@ actor AnalysisQueue {
     ///
     /// A job must not submit another one: the second would wait behind the first,
     /// which is waiting for it. Work that needs several stages belongs in one job.
+    ///
+    /// `requiredMemoryBytes` is checked when the job reaches the front of the
+    /// queue rather than when it is submitted, because that is when the memory
+    /// has to be there. A model-backed job asks for the headroom its model
+    /// needs, the same gate `htdemucs6s` has always had — only measured at the
+    /// moment it matters instead of at the moment the user chose it.
     func submit<Value: Sendable>(
         kind: AnalysisJobKind,
         title: String,
+        requiredMemoryBytes: UInt64? = nil,
         work: @escaping @Sendable (AnalysisJobContext) async throws -> Value
     ) async throws -> AnalysisOutcome<Value> {
         generationCounter += 1
@@ -263,7 +303,11 @@ actor AnalysisQueue {
         let job = Task<AnalysisOutcome<Value>, Error>(priority: .utility) {
             await previous?.value
             do {
-                try await self.waitUntilRunnable(token)
+                try await self.waitUntilRunnable(
+                    token,
+                    kind: kind,
+                    requiredMemoryBytes: requiredMemoryBytes
+                )
                 let signpostID = signposter.makeSignpostID()
                 let interval = signposter.beginInterval(kind.signpostName, id: signpostID)
                 defer { signposter.endInterval(kind.signpostName, interval) }
@@ -308,7 +352,11 @@ actor AnalysisQueue {
         isRecording = recording
     }
 
-    private func waitUntilRunnable(_ token: AnalysisJobToken) async throws {
+    private func waitUntilRunnable(
+        _ token: AnalysisJobToken,
+        kind: AnalysisJobKind,
+        requiredMemoryBytes: UInt64?
+    ) async throws {
         try Task.checkCancellation()
         if isRecording {
             await AnalysisProgressCenter.shared.setState(
@@ -323,6 +371,12 @@ actor AnalysisQueue {
             }
         }
         try Task.checkCancellation()
+        // Checked here, at the front of the queue: a job that waited behind a
+        // separation is starting in a different device than the one it was
+        // submitted on.
+        if let requiredMemoryBytes, availableMemoryBytes() < requiredMemoryBytes {
+            throw AnalysisJobError.insufficientMemory(kind)
+        }
         await AnalysisProgressCenter.shared.setState(.running, for: token)
     }
 

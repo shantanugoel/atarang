@@ -18,6 +18,10 @@ struct AtarangApp: App {
                     // mid-commit.
                     await Task.detached(priority: .utility) {
                         LibraryStaging.sweepAbandonedStaging()
+                        // Phase 5 moved every per-song value beside the song
+                        // itself. Pre-release, so the keys earlier builds wrote
+                        // are dropped rather than migrated.
+                        SongStorage.purgeLegacyPerSongDefaults()
                     }.value
                 }
         }

@@ -24,6 +24,45 @@ final class AnalysisQueueTests: XCTestCase {
         XCTAssertEqual(completed, 5)
     }
 
+    /// A model-backed job that cannot fit says so instead of starting and
+    /// being killed part way through.
+    func testAJobThatNeedsMoreMemoryThanExistsNeverRuns() async throws {
+        let queue = AnalysisQueue(availableMemoryBytes: { 512 * 1_024 * 1_024 })
+        let ran = Latch()
+
+        do {
+            _ = try await queue.submit(
+                kind: .transcription,
+                title: "impossible",
+                requiredMemoryBytes: 3 * 1_024 * 1_024 * 1_024
+            ) { _ in
+                await ran.open()
+            }
+            XCTFail("A job needing every byte of memory should not have run.")
+        } catch let error as AnalysisJobError {
+            guard case .insufficientMemory(let kind) = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+            XCTAssertEqual(kind, .transcription)
+            XCTAssertNotNil(error.errorDescription)
+        }
+        let didRun = await ran.isOpen
+        XCTAssertFalse(didRun)
+    }
+
+    /// A job that fits runs, so the gate is not simply refusing everything.
+    func testAJobWithinBudgetStillRuns() async throws {
+        let queue = AnalysisQueue(availableMemoryBytes: { 4 * 1_024 * 1_024 * 1_024 })
+
+        let outcome = try await queue.submit(
+            kind: .beatAnalysis,
+            title: "beats",
+            requiredMemoryBytes: 3 * 1_024 * 1_024 * 1_024
+        ) { _ in 42 }
+
+        XCTAssertEqual(outcome.value, 42)
+    }
+
     /// The bug this guards against: job A's cleanup, or its last progress
     /// report, landing after job B has started and overwriting B's state.
     func testACancelledJobCannotAlterTheJobThatReplacesIt() async throws {
@@ -172,7 +211,7 @@ private enum QueueTestError: Error { case expected }
 /// A one-shot signal, so the tests can wait for a job to reach a point without
 /// passing a non-`Sendable` `XCTestExpectation` into a `@Sendable` closure.
 private actor Latch {
-    private var isOpen = false
+    private(set) var isOpen = false
 
     func open() { isOpen = true }
 
