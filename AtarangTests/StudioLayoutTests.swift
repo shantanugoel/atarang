@@ -112,6 +112,15 @@ final class StudioFormatTests: XCTestCase {
         XCTAssertEqual(StudioFormat.preciseTime(9.05), "0:09.1")
     }
 
+    /// A value a tenth short of the minute must carry, not print sixty
+    /// seconds. The Loop sheet showed a B boundary at 59.96 as "0:60.0".
+    func testPreciseTimeCarriesIntoTheMinute() {
+        XCTAssertEqual(StudioFormat.preciseTime(59.96), "1:00.0")
+        XCTAssertEqual(StudioFormat.preciseTime(59.94), "0:59.9")
+        XCTAssertEqual(StudioFormat.preciseTime(119.99), "2:00.0")
+        XCTAssertEqual(StudioFormat.preciseTime(60), "1:00.0")
+    }
+
     func testKeyReadsAsAKeyRatherThanANumber() {
         XCTAssertEqual(StudioFormat.semitones(0), "Original key")
         XCTAssertEqual(StudioFormat.semitones(1), "+1 semitone")

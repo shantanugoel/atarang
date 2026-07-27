@@ -15,7 +15,10 @@ enum StudioFormat {
     /// `m:ss.t` for values a user is nudging a tenth at a time.
     static func preciseTime(_ seconds: TimeInterval) -> String {
         guard seconds.isFinite else { return "0:00.0" }
-        let value = max(0, seconds)
+        // Rounded to a tenth *before* the split, not by the format string
+        // afterwards. Rounding last leaves 59.96 as "0:60.0" — the seconds
+        // field showing a value that should have carried into the minute.
+        let value = (max(0, seconds) * 10).rounded() / 10
         let minutes = Int(value) / 60
         let remainder = value - Double(minutes * 60)
         return String(format: "%d:%04.1f", minutes, remainder)

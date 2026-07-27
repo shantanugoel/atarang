@@ -15,14 +15,23 @@ import UniformTypeIdentifiers
 final class LyricsPlayhead {
     /// The line the playhead is inside, as an index into `SongLyrics.lines`.
     var lineIndex: Int?
-    /// Whole seconds until the next vocal entry, during a long instrumental
-    /// gap. `nil` at every other moment.
-    var countdown: Int?
+    /// The vocal entry being counted into during a long instrumental gap, and
+    /// which line it belongs to. `nil` at every other moment.
+    var vocalEntry: VocalEntry?
 
     func clear() {
         lineIndex = nil
-        countdown = nil
+        vocalEntry = nil
     }
+}
+
+/// A count into an upcoming line.
+///
+/// It carries the line it is counting into, not just the number, because the
+/// countdown is shown *at* that line rather than floating over the page.
+struct VocalEntry: Equatable, Sendable {
+    let seconds: Int
+    let lineIndex: Int
 }
 
 /// A song's words, for as long as that song is open.
@@ -104,9 +113,13 @@ final class LyricsStore {
         }
         let index = lyrics.lineIndex(at: position)
         if playhead.lineIndex != index { playhead.lineIndex = index }
-        let countdown = lyrics.vocalEntryCountdown(at: position)
-            .map { max(1, Int($0.secondsRemaining.rounded(.up))) }
-        if playhead.countdown != countdown { playhead.countdown = countdown }
+        let entry = lyrics.vocalEntryCountdown(at: position).map {
+            VocalEntry(
+                seconds: max(1, Int($0.secondsRemaining.rounded(.up))),
+                lineIndex: $0.lineIndex
+            )
+        }
+        if playhead.vocalEntry != entry { playhead.vocalEntry = entry }
     }
 
     // MARK: - Mutation

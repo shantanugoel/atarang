@@ -1283,6 +1283,15 @@ persisted — there was nothing in the device log to read when this was reported
 The same real caption file showed the section-label rule calling `[♪♪♪]` a
 section named "♪♪♪"; a label now has to contain something alphanumeric.
 
+**The vocal-entry count moved into the list.** It was a pill floating over the
+bottom of the page, and on a small screen it landed on the very line it was
+counting into — which anything laid out over scrolling text will do eventually.
+It is a row above that line now: it cannot overlap, because it occupies space
+rather than hovering over it, and it reads better, because the number points at
+the words it belongs to instead of sitting in a corner leaving the singer to work
+out which line is meant. `LyricsPlayhead` publishes the line index with the
+count for exactly this.
+
 **The lyrics menu could not be tapped while a song played, and the cause was
 older than this phase.** Its "Save N Sections" item computed the count from
 `player.duration` and `player.practiceSettings` — and reading either inside the
