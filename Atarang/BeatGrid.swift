@@ -266,6 +266,29 @@ struct BeatGrid: AnalysisArtifact, Equatable {
         return grid
     }
 
+    /// Re-phases the bar lines without claiming a person did it.
+    ///
+    /// This is what a *second detector* is allowed to do. Phase 8's chord
+    /// analysis is the third witness to where the bar starts — harmony changes
+    /// on the one — and when it disagrees with the bass envelope it is usually
+    /// right. Routing it through `settingFirstDownbeat` would mark the grid as
+    /// the user's work and make the next detection refuse to touch it.
+    func settingDownbeatPhase(_ phase: Int) -> BeatGrid {
+        let bar = max(2, min(12, beatsPerBar))
+        let wrapped = ((phase % bar) + bar) % bar
+        var grid = self
+        for index in grid.beats.indices {
+            grid.beats[index].isDownbeat = index % bar == wrapped
+        }
+        grid.updatedAt = Date()
+        return grid
+    }
+
+    /// Which beat of the bar the downbeats currently fall on.
+    var downbeatPhase: Int? {
+        beats.firstIndex(where: \.isDownbeat).map { $0 % max(1, beatsPerBar) }
+    }
+
     /// Re-marks the bar lines for a different metre, keeping the beats and the
     /// first downbeat where they are.
     func settingBeatsPerBar(_ value: Int) -> BeatGrid {

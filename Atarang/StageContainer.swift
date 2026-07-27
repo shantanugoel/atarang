@@ -2,7 +2,7 @@ import SwiftUI
 
 /// The part of Studio that is about the *song*: what you read while playing.
 ///
-/// Mixer and Lyrics are real. Chords and Sheet ship as empty states because the
+/// Mixer, Lyrics, and Chords are real. Sheet ships as an empty state because the
 /// selector is the shape of the screen — adding stages one phase at a time
 /// would mean rebuilding the layout around them, and an honest "not yet, here
 /// is what it will do" is better than a stage that appears from nowhere in a
@@ -10,6 +10,8 @@ import SwiftUI
 struct StageContainer: View {
     let player: StemPlayer
     let lyrics: LyricsStore
+    let chords: ChordStore
+    let beats: BeatGridStore
     /// Regular width puts the tools beside the Stage, so the Stage should not
     /// also try to fill the screen.
     var showsSelector = true
@@ -61,12 +63,7 @@ struct StageContainer: View {
                 openSingAlong: openSingAlong
             )
         case .chords:
-            StagePlaceholder(
-                stage: .chords,
-                headline: "Chords",
-                detail: "A bar grid that follows the playhead, transposed to match the key you are playing in.",
-                availability: "Coming soon."
-            )
+            ChordsStage(player: player, store: chords, beats: beats)
         case .sheet:
             StagePlaceholder(
                 stage: .sheet,

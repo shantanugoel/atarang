@@ -67,9 +67,13 @@ for each song, so the next session can pick up where the last one ended.
 - **Practise your part three ways** — select any available vocal or instrument
   stem, then use **Learn** to hear it alone, **Guide** to keep it quietly in the
   mix, or **Play Along** to mute it and take its place.
-- **Add a manual click and count-in** — enter a BPM or use tap tempo, choose a
-  subdivision, accent the downbeat, set the click level, and align it with the
-  song. The metronome is manually aligned rather than tempo-detected.
+- **Add a click and count-in** — let Atarang find the song's tempo and
+  downbeats and follow them, or enter a BPM, use tap tempo, choose a
+  subdivision, accent the downbeat, set the click level, and align it by hand.
+- **Read the chords as you play** — work out the chord chart on the device, in
+  bars or as a ribbon under a fixed "now" line, transposed to whatever key you
+  have the backing in. Tap a bar to jump to it, hold and drag across bars to
+  loop them, and hold one bar to fix a chord Atarang got wrong.
 - **Record a predictable loop take** — hear the count-in, record exactly one
   pass from A to B, and quickly compare the latest take with the reference.
 - **Sing from synced lyrics** — paste the words or import an `.lrc`, time them
@@ -94,9 +98,20 @@ for each song, so the next session can pick up where the last one ended.
   markers into saved sections. The current line is large and centred, auto-scroll
   yields the moment you scroll yourself, and long instrumental stretches count
   you back in.
+- **A chord chart worked out on the device** — bars four to a row with the
+  current one marked and the next chord counted in beats, or a ribbon that
+  scrolls under a fixed "now" line. The key is named, the chart follows the
+  transport's transposition, chords Atarang is unsure of are dimmed rather than
+  stated, and any chord can be corrected by holding its bar. Corrections survive
+  running the analysis again. Nothing is downloaded and nothing leaves the
+  device.
+- **A detected beat grid** — tempo, downbeats, and bar lines found from the
+  drums, driving the click, the count-in, and A–B loops that snap to bars. A
+  wrong tempo is usually one tap to fix, and a grid Atarang is unsure of is
+  labelled rather than acted on.
 - **Structured song practice** — loop and save difficult sections, control
-  speed and key independently, add a count-in and manually aligned metronome,
-  count repetitions, and ramp up to performance tempo.
+  speed and key independently, add a count-in and a metronome that can follow
+  the song, count repetitions, and ramp up to performance tempo.
 - **Performance recording** — capture the microphone and live backing mix
   together, with independent microphone and backing levels; an active loop
   records one predictable pass from A to B.

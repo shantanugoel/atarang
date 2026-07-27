@@ -44,6 +44,9 @@ struct ContentView: View {
     /// are: the transport draws it, the click and the count-in run on it, and
     /// the Click sheet corrects it.
     @State private var beats = BeatGridStore()
+    /// The song's harmony. Owned here alongside the grid it is measured
+    /// against, and because the Chords and Sheet stages will both read it.
+    @State private var chords = ChordStore()
     @State private var showsSingAlong = false
     private let debugURL: String?
 
@@ -205,6 +208,13 @@ struct ContentView: View {
             }
             // A detection that failed has to say so where the user is, not only
             // in the sheet they may already have closed — the job outlives it.
+            .onChange(of: chords.notice) { _, notice in
+                guard let notice else { return }
+                studioNotice = .confirmation(notice)
+                chords.notice = nil
+            }
+            // A detection that failed has to say so where the user is, not only
+            // in the sheet they may already have closed — the job outlives it.
             .onChange(of: beats.errorMessage) { _, message in
                 guard let message else { return }
                 studioNotice = .caution(message)
@@ -234,6 +244,8 @@ struct ContentView: View {
                     StageContainer(
                         player: player,
                         lyrics: lyrics,
+                        chords: chords,
+                        beats: beats,
                         openSingAlong: { showsSingAlong = true }
                     )
                     Divider()
@@ -251,6 +263,8 @@ struct ContentView: View {
                 StageContainer(
                     player: player,
                     lyrics: lyrics,
+                    chords: chords,
+                    beats: beats,
                     openSingAlong: { showsSingAlong = true }
                 )
             }
@@ -540,6 +554,13 @@ struct ContentView: View {
         loadedTrack = track
         lyrics.open(track: track, duration: player.duration)
         beats.open(track: track, duration: player.duration)
+        chords.open(track: track, duration: player.duration)
+        // Harmony is the third witness to where the bar starts, and the only
+        // one the grid could not have when it was measured. Handed over here,
+        // where both stores are in scope, so neither has to know the other.
+        chords.onDownbeatPhase = { phase, confidence in
+            beats.adoptDownbeatPhase(phase, confidence: confidence)
+        }
         player.applyBeatGrid(beats.grid)
         loadWaveform(for: track)
     }
@@ -667,6 +688,7 @@ struct ContentView: View {
         waveform = nil
         lyrics.close()
         beats.close()
+        chords.close()
         player.applyBeatGrid(nil)
         showsSingAlong = false
         youtubeURL = ""

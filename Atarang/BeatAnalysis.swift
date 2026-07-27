@@ -160,7 +160,15 @@ final class BeatGridStore {
 
     // MARK: - Detection
 
-    func detect() {
+    /// Detects a grid, and hands whatever grid the song ends up with to
+    /// `then`.
+    ///
+    /// The continuation is what lets the Chords stage offer one tap for "find
+    /// the beat, then the chords" — chord analysis is beat-synchronous, so
+    /// making the user run two detections in order would be the app asking them
+    /// to know its own pipeline. It runs on every path that leaves a grid in
+    /// place, including the one where a correction of theirs was kept.
+    func detect(then continuation: (@MainActor (BeatGrid?) -> Void)? = nil) {
         guard detectionTask == nil, let song else { return }
         guard let rhythmStem = BeatAnalysis.rhythmStem(among: song.stems),
               let rhythmURL = song.files[rhythmStem] else {
@@ -185,7 +193,11 @@ final class BeatGridStore {
                     title: song.title
                 )
                 guard let self, self.song == song else { return }
+                // A stopped detection continues nothing: the user asked for the
+                // work to end, and running the next stage anyway would be the
+                // app finishing what they interrupted.
                 if outcome.wasCancelled { return }
+                defer { continuation?(self.grid) }
                 guard let detected = outcome.value ?? nil else {
                     self.notice = "Atarang could not find a steady beat in this song. Set the tempo by hand if you need a click."
                     return
@@ -245,6 +257,23 @@ final class BeatGridStore {
     func scaleTempo(by factor: Double) {
         guard let grid, let tempo = grid.tempo, factor > 0 else { return }
         setTempo(tempo * factor)
+    }
+
+    /// Takes the chord analysis's opinion about where the bar starts.
+    ///
+    /// The grid's own downbeat comes from the bass and the full-band envelope,
+    /// which is two witnesses; harmony is the third, and on material where the
+    /// bass rests or plays through the bar line it is the better one. It is
+    /// deliberately meek: it never touches a grid the user has corrected, never
+    /// touches one the detector was unsure of, and says nothing when it agrees.
+    func adoptDownbeatPhase(_ phase: Int, confidence: Double) {
+        guard song != nil, var grid, grid.isReliable, !grid.isUserEdited else { return }
+        guard confidence >= 0.25, grid.downbeatPhase != phase % max(1, grid.beatsPerBar) else {
+            return
+        }
+        grid = grid.settingDownbeatPhase(phase)
+        apply(grid)
+        notice = "Moved the bar line to where the chords change."
     }
 
     func setFirstDownbeat(at time: TimeInterval) {

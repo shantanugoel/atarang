@@ -593,9 +593,12 @@ enum BeatDetector {
 /// A real-to-complex FFT with its scratch buffers, so the per-frame loop
 /// allocates nothing.
 ///
+/// Shared with `ChordDetector`, which needs exactly the same thing at a
+/// different window length; there is no second copy of this.
+///
 /// Deliberately not `Sendable`: one instance belongs to one analysis pass, and
 /// `vDSP_fft_zrip` writes through its split-complex buffers.
-private final class RealFFT {
+final class RealFFT {
     let size: Int
     private let log2n: vDSP_Length
     private let setup: FFTSetup

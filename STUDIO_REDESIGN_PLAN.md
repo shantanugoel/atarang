@@ -1533,45 +1533,190 @@ Phase 4's haptics and VoiceOver reading order are still owed by a device pass.
 
 ### 1. Feature extraction
 
-- [ ] Build the analysis mix: `0.8·bass + other + guitar + piano`, excluding
+- [x] Build the analysis mix: `0.8·bass + other + guitar + piano`, excluding
       vocals and drums; record `sourceStemSet` with the result.
-- [ ] Resample to 22.05 kHz mono.
-- [ ] Compute a harmonic pitch-class profile with overtone suppression.
-- [ ] Compute a separate bass chroma from the bass stem over ~40–250 Hz.
-- [ ] Average chroma within beats from the Phase 7 grid.
+- [x] Resample to 22.05 kHz mono. Streamed through one `AVAudioConverter` per
+      stem rather than read whole and converted whole.
+- [x] Compute a harmonic pitch-class profile with overtone suppression.
+- [x] Compute a separate bass chroma from the bass stem over ~40–250 Hz.
+- [x] Average chroma within beats from the Phase 7 grid.
 
 ### 2. Classification
 
-- [ ] Define templates for `{maj, min}` first, extending to `{dom7, min7, maj7,
-      sus4, dim}` plus no-chord.
-- [ ] Score frames by cosine similarity, with a bass term rewarding root and
-      inversion matches.
-- [ ] Decode with an HMM: strong self-transition prior plus key-conditioned
+- [x] Define templates for `{maj, min}` first, extending to `{dom7, min7, maj7,
+      sus4, dim}` plus no-chord. The five extensions carry a prior penalty — see
+      the outcome.
+- [x] Score frames by cosine similarity, with a bass term rewarding root and
+      inversion matches. The bass term is *relative* to the average chord, which
+      is the only form of it that stays neutral when the bass says nothing.
+- [x] Decode with an HMM: strong self-transition prior plus key-conditioned
       transition probabilities.
-- [ ] Estimate key by Krumhansl–Schmuckler correlation, cross-checked against
+- [x] Estimate key by Krumhansl–Schmuckler correlation, cross-checked against
       the decoded chord histogram.
-- [ ] Emit `ChordSegment`s snapped to beats and bars.
+- [x] Emit `ChordSegment`s snapped to beats and bars.
 
 ### 3. Display
 
-- [ ] Bar-grid view, four bars per row, section labels, current bar highlighted,
+- [x] Bar-grid view, four bars per row, section labels, current bar highlighted,
       auto-scrolling ahead of the playhead.
-- [ ] Ribbon view scrolling under a fixed "now" line.
-- [ ] Next-chord preview with a beat countdown.
-- [ ] Tap a bar to seek; drag across bars to set a bar-snapped loop.
-- [ ] Dim low-confidence chords; long-press to correct one.
-- [ ] Transpose displayed chords by `player.pitchSemitones` so the chart always
+- [x] Ribbon view scrolling under a fixed "now" line.
+- [x] Next-chord preview with a beat countdown.
+- [x] Tap a bar to seek; drag across bars to set a bar-snapped loop.
+- [x] Dim low-confidence chords; long-press to correct one. One gesture does
+      both — see the outcome.
+- [x] Transpose displayed chords by `player.pitchSemitones` so the chart always
       matches what is heard.
-- [ ] Detect material the templates cannot model and say so, instead of
+- [x] Detect material the templates cannot model and say so, instead of
       displaying confident nonsense.
 
 ### Acceptance criteria
 
-- [ ] Analysis of a 4-minute song completes in under 30 seconds without
-      blocking playback.
-- [ ] Chord display remains correct at every supported transposition.
-- [ ] Any chord can be corrected, and corrections survive re-analysis.
-- [ ] Unreliable results are labelled rather than shown as facts.
+- [~] Analysis of a 4-minute song completes in under 30 seconds without
+      blocking playback. **8.9 s in the simulator** on a seeded four-minute
+      song, and playback ran through a re-analysis without a stall or a dropped
+      frame. A phone's CPU is slower and this has not been measured on one.
+- [x] Chord display remains correct at every supported transposition. The chart
+      and the key name are transposed on display and stored untransposed;
+      confirmed in the simulator by correcting a chord at +2 and finding the
+      correction in the song's own key at 0. Unit-tested through a round trip.
+- [x] Any chord can be corrected, and corrections survive re-analysis. Confirmed
+      in the simulator: a corrected bar kept its chord and its mark through a
+      rerun that replaced every other bar, with the banner saying so.
+- [x] Unreliable results are labelled rather than shown as facts. A chart below
+      the confidence bar is badged "Uncertain", individual chords below it are
+      dimmed rather than hidden, and a song the templates could not fit says so
+      outright.
+
+### Outcome
+
+**New files.** `Chords.swift` is the model and every question that can be asked
+of it — what a chord is called in this key, what it becomes transposed, which
+bar it lands in, what a correction does to the chart. `ChordDetector.swift` is
+the analysis, as plain functions over arrays. `ChordAnalysis.swift` holds the
+queue job and `ChordStore`, the per-song owner, in the shape Phase 6 established
+for lyrics and Phase 7 for beats. `ChordsStage.swift` is the two views, the now
+card, and the correction sheet.
+
+**Vocals and drums are excluded, and that is the whole first stage.** A sung
+melody is not the harmony and frequently disagrees with it; drums put broadband
+noise into all twelve pitch classes at once. What is left — bass, other, guitar,
+piano, or a two-stem separation's instrumental — is summed at 22.05 kHz mono
+with the bass at 0.8, because a bass fundamental in a per-frame-normalised
+profile is loud enough to turn every chord into its own root. The result records
+which stems it actually heard, so a chart taken off isolated instruments can be
+told from one taken off a single instrumental stem.
+
+**Overtone suppression is what stops one note reading as a chord.** A low C with
+four harmonics has energy at C, G, and E: a plain bin-to-pitch-class histogram
+of a bass line prints a triad nobody played. Only spectral peaks contribute, and
+each peak contributes to the pitch class of every fundamental it could be a
+harmonic of, decaying by 0.6 per harmonic. Unit-tested in both directions — a
+triad's three notes come out on top, and a lone note stands 1.5× clear of
+everything else.
+
+**The bass term had to be relative, and the first version quietly printed
+silence.** Scoring `(1 - w)·similarity + w·bassAgreement` scales every chord
+down by `w` when the bass says nothing — which is exactly what happens on a
+two-stem separation, in an intro, or anywhere the bass rests — while the
+no-chord state keeps its constant. The whole song came back as N.C., and the
+test caught it before the simulator did. The bass now contributes how much more
+it supports *this* chord than the average chord, which is zero when it is silent
+and zero when it is uninformative, and is the only thing a bass note can
+honestly settle anyway.
+
+**The extensions pay for themselves.** A seventh differs from its triad by one
+pitch class, so on a noisy beat the richer template wins on a coincidence and
+prints a chord nobody played. Major and minor score at par; sus4 pays 0.02,
+the sevenths 0.03, diminished 0.04. That is a tuned constant and it is honest
+about being one.
+
+**The decoder's costs are in score units, not log-probabilities.** Staying on a
+chord is free, changing costs 0.22, and changing to something outside the key
+costs 0.08 more. Cosine similarities are not calibrated likelihoods, so
+multiplying them by real transition probabilities would be arithmetic with no
+meaning behind it. Because the only alternative to staying is "the best other
+state", each step is linear in the number of states rather than quadratic, which
+is what makes 85 states over a four-minute song instant.
+
+**Two defects came out of the first simulator run, and both were about time
+rather than pitch.** The chords were right — C Am F G, in C major — and every
+change was landing a beat early. The chromagram's frames were not centred on
+their own timestamps, so each frame described the 186 ms that *followed* it and
+every frame in the last beat of a bar already contained a third of the next
+chord. Phase 7's beat detector centres its frames for the same reason and this
+did not; it does now, and the boundary error fell from ~600 ms to **5 ms**. The
+second was circular reasoning: bar snapping ran against the grid's existing
+downbeat phase, so the changes were pushed onto it and then agreed with it by
+construction, which meant the chord-derived phase correction could never fire.
+The phase is now read from the raw decoded path, before anything is moved.
+
+**Harmony is the third witness to where the bar starts.** Phase 7 estimated the
+downbeat from bass onsets and the full-band envelope and recorded that
+chord-change likelihood was owed by this phase. It is here: the phase that
+collects the most chord changes is handed to `BeatGridStore`, which takes it
+only when the grid is reliable, not the user's own work, and actually different,
+and says so when it does. On the seeded song it moved the bar line three beats
+and turned a chart of half-bars into sixteen bars of one chord each.
+
+**Holding a bar means one of two things, and the finger says which.** The plan
+asked for both long-press-to-correct and drag-across-bars-to-loop, and a
+`contextMenu` cannot coexist with the long-press-sequenced drag the lyrics
+reader already uses. So it is one gesture: hold one bar and let go to correct
+that chord, hold and drag across several to loop them. The loop goes through
+`setLoopBoundaryA`/`B` — the transport's own calls — so a loop set from the
+chart and one set by hand are the same loop, and it is bar-snapped by
+construction rather than by rounding.
+
+**A correction is stored in the song's key, not the key being heard.** The chart
+is transposed on display by `player.pitchSemitones`; a correction made at +2 is
+transposed back before it is written. Otherwise returning to the original key
+would show the user their own correction, wrong. Confirmed by entering Dsus4 at
++2 and finding Csus4 at 0.
+
+**Re-analysis is not all-or-nothing, unlike the beat grid.** A grid the user
+corrected wins outright because a tempo is one number; a chart is hundreds of
+independent facts, and someone who fixed the bridge should still get a better
+verse out of a rerun. The fresh analysis wins everywhere except the ranges the
+user has touched, which are written back over it, splitting neighbours rather
+than deleting them.
+
+**`RealFFT` is shared now.** It was file-private to `BeatDetector.swift`; chord
+analysis needs exactly the same thing at a different window length, so it is
+internal and there is no second copy.
+
+**Simulator verification.** Driven against two seeded 4-stem tracks built for
+this — 100 BPM in 4/4, first downbeat at 0.5 s, C–Am–F–G one chord per bar, with
+the vocal stem carrying a melody on the third to prove it is excluded. On the
+four-minute one: **100 of 100 bars correct**, key C major, confidence 0.98,
+boundary error 5 ms worst case, analysis in **8.9 s** with playback running
+through it. Also confirmed: the empty state naming the stems it will listen to;
+one tap running beat detection and chord analysis in order; the bar grid
+auto-scrolling and marking the current bar; the ribbon carrying the current
+chord under the now line; the next-chord preview counting down in beats; the
+chart reading D–Bm–G–A at +2 with the header saying "D major · as heard";
+correcting a chord and finding it in the song's own key; a held drag across four
+bars setting A 0:00 – B 0:10 with looping on; a rerun keeping the correction and
+saying so; and everything surviving a relaunch.
+
+**The Dynamic Type pass found one defect**, the same shape as Phase 4's: the now
+card's current chord was a fixed 40-point size while everything around it
+scaled, so at accessibility sizes the *next* chord was drawn larger than the
+chord being played — the one hierarchy that card has, inverted. Both it and the
+correction sheet's preview are text styles now.
+
+**No memory gate**, for the reason beat analysis has none: this is the tier with
+no model. It holds one mono copy of the analysis mix at 22.05 kHz, about twenty
+megabytes for a four-minute song, and a gate would refuse the work in every
+simulator, where `os_proc_available_memory()` reports zero.
+
+**Still unverified.** Real recorded material, which is where a chord detector
+earns its confidence figure: everything above is a synthetic fixture with
+unambiguous triads, and it says nothing about how the templates cope with a
+distorted guitar, a dense mix, or a song that modulates. Nothing here has had a
+device pass, so the 30-second budget is a simulator number and the haptic on a
+committed selection has never fired on a Taptic Engine. VoiceOver reading order
+across the bar grid is untested, and is now owed by the next device pass
+alongside Phase 4's.
 
 ---
 
