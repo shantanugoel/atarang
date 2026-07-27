@@ -359,17 +359,32 @@ struct ContentView: View {
         }
     }
 
+    /// While work is running this shows the work, because the action bar is
+    /// disabled anyway and progress is the only thing on the screen the user
+    /// still cares about.
+    ///
+    /// It used to sit at the bottom of the scroll, below four outcome cards
+    /// taller than a phone — so starting a separation replaced a visible button
+    /// with a progress bar nobody could see, and the screen looked like nothing
+    /// had happened.
+    @ViewBuilder
     private var importActionInset: some View {
-        ImportActionBar(
-            selectedModel: $model.selectedModel,
-            youtubeURL: youtubeURL,
-            isBusy: analysis.isBusy,
-            existingSeparation: existingSeparation,
-            existingModels: existingModels,
-            separate: { requestSeparation(force: false) },
-            separateAgain: { requestSeparation(force: true) },
-            openExisting: openExistingSeparation
-        )
+        Group {
+            if let job = analysis.active {
+                progressCard(job)
+            } else {
+                ImportActionBar(
+                    selectedModel: $model.selectedModel,
+                    youtubeURL: youtubeURL,
+                    isBusy: analysis.isBusy,
+                    existingSeparation: existingSeparation,
+                    existingModels: existingModels,
+                    separate: { requestSeparation(force: false) },
+                    separateAgain: { requestSeparation(force: true) },
+                    openExisting: openExistingSeparation
+                )
+            }
+        }
         .padding(.horizontal)
         .padding(.top, 10)
         .padding(.bottom, 6)
@@ -389,7 +404,6 @@ struct ContentView: View {
                     isBusy: analysis.isBusy,
                     existingModels: existingModels
                 )
-                if let job = analysis.active { progressCard(job) }
             }
             .padding()
             .frame(maxWidth: horizontalSizeClass == .regular ? 760 : .infinity)
@@ -447,13 +461,13 @@ struct ContentView: View {
                 Spacer()
                 Button("Cancel", role: .cancel) { analysis.cancelActive() }
                     .buttonStyle(.bordered)
+                    .frame(minHeight: 44)
             }
         }
-        .padding(18)
-        .background(
-            Color(.secondarySystemGroupedBackground),
-            in: RoundedRectangle(cornerRadius: 20)
-        )
+        // No card of its own: this is rendered into the pinned bar, which is
+        // already a surface. Two stacked backgrounds read as a floating panel
+        // rather than as part of the screen's furniture.
+        .padding(.vertical, 4)
     }
 
     private func noticeBanner(_ notice: StudioNotice) -> some View {

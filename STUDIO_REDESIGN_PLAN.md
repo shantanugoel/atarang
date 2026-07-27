@@ -1324,7 +1324,14 @@ was the last item in a card sitting under four outcome cards that are taller
 than a phone, so someone who had just pasted a link saw the choices and no way
 to act on them. `ImportActionBar` is pinned with `safeAreaInset` — the same
 place the transport occupies once a song is open, and now the same rule on both
-screens: the one thing to do next is never the thing below the fold. The URL
+screens: the one thing to do next is never the thing below the fold.
+
+The progress card had the same problem one step later, and worse: starting a
+separation replaced a visible button with a progress bar that was itself below
+the fold, so the screen looked as though nothing had happened. It shares the
+pinned bar now and *replaces* the action while a job runs, which costs nothing —
+the action is disabled during a job anyway — and means the only thing on the
+screen the user still cares about is the only thing pinned to it. The URL
 field also grew a clear button, which meant drawing the field rather than using
 `.roundedBorder`: overlaid on a system-styled field the button sits on top of
 the text, and a YouTube URL is long enough to run straight under it.
@@ -1738,6 +1745,34 @@ lyrics and chords; would slot in after Milestone C.
 - [ ] Validate against vibrato, slides, bends, octave errors, and background
       bleed.
 - [ ] Keep raw performance recordings usable without analysis.
+
+### Fetch captions during the separation's extraction
+
+Measured and viable; parked because it is a product decision, not a technical
+one.
+
+The separation already runs `yt-dlp` against the video to pick an audio format,
+and YouTube returns the caption listing **in the same player response** that
+extraction already fetches. Adding `--write-subs --write-auto-subs --sub-langs
+en --sub-format vtt` to that existing call would therefore cost one ~4 KB
+download and nothing else: measured at 2.83 s and 2.10 s for the call as it
+stands today against 2.34 s and 2.62 s with captions added — inside run-to-run
+noise.
+
+**It cannot endanger the separation.** `YoutubeDL.process_info` writes the
+`--print-to-file` metadata in `__forced_printings` *before* it calls
+`_write_subtitles`, so a 429, a stalled socket, or a video with no English track
+cannot cost the user their song. Confirmed against the bundled zipapp: with no
+matching caption track, yt-dlp reports "There are no subtitles for the requested
+languages", writes no `.vtt`, and `selection.json` is still complete.
+
+What is *not* settled is whether it should happen at all. It fetches captions for
+every separation, including for people who never open the Lyrics stage — one
+more request to a host the app is already downloading from, but a request nobody
+asked for, and a file written for a feature they may not use. If it is built, the
+result should be parked as a *candidate* the Lyrics stage offers with its preview
+intact, never as applied lyrics: "never present a guess as a fact" does not stop
+applying because the words arrived early.
 
 ### Parked candidates
 
