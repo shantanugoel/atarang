@@ -130,7 +130,11 @@ enum ChordDetector {
 
         static let all: [ChordState] = {
             var states = (0..<12).flatMap { root in
-                ChordQuality.allCases.map { ChordState(chord: Chord(root: root, quality: $0)) }
+                // `detectable` rather than every case: the power chord is two
+                // notes and its template fits almost anything, so it is a
+                // simplification the display may offer and never something the
+                // decoder may claim to have heard.
+                ChordQuality.detectable.map { ChordState(chord: Chord(root: root, quality: $0)) }
             }
             states.append(ChordState(chord: nil))
             return states

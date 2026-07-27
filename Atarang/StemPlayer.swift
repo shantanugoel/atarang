@@ -776,6 +776,37 @@ final class StemPlayer {
         persistPracticeSettings()
     }
 
+    /// How much of the chord chart to print. A display lens over the stored
+    /// chart, kept here because it is per-song state and this is where per-song
+    /// state is owned and persisted.
+    func setChordComplexity(_ complexity: ChordComplexity) {
+        guard practiceSettings.chordComplexity != complexity else { return }
+        practiceSettings.chordComplexity = complexity
+        persistPracticeSettings()
+    }
+
+    func setHidesChordInversions(_ hides: Bool) {
+        practiceSettings.hidesChordInversions = hides
+        persistPracticeSettings()
+    }
+
+    func setMergesRepeatedChords(_ merges: Bool) {
+        practiceSettings.mergesRepeatedChords = merges
+        persistPracticeSettings()
+    }
+
+    func setHidesPassingChords(_ hides: Bool) {
+        practiceSettings.hidesPassingChords = hides
+        persistPracticeSettings()
+    }
+
+    func setCapoFret(_ fret: Int) {
+        let clamped = min(max(0, fret), ChordPlayability.maximumCapo)
+        guard practiceSettings.capoFret != clamped else { return }
+        practiceSettings.capoFret = clamped
+        persistPracticeSettings()
+    }
+
     func setCountInClicks(_ clicks: Int) {
         guard SongPracticeSettings.supportedCountInClicks.contains(clicks) else { return }
         practiceSettings.countInClicks = clicks

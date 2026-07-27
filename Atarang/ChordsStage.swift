@@ -51,19 +51,34 @@ final class ChordPlayhead {
 
 /// The Chords stage: what to play, in time, in the key that is being heard.
 struct ChordsStage: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let player: StemPlayer
     let store: ChordStore
     let beats: BeatGridStore
 
     @AppStorage("chordChartView") private var chartView = ChordChartView.bars
+    /// Whether the shapes strip is on screen. A preference about how someone
+    /// reads chords rather than a property of the song, so it is global — the
+    /// same reasoning as the chart layout, and off by default because the strip
+    /// costs height a chart wants.
+    @AppStorage("showsChordShapes") private var showsShapes = false
     @State private var playhead = ChordPlayhead()
-    /// The transposed chart, recomputed when the chords or the key change
-    /// rather than on every redraw.
+    /// The chart as it is read: transposed to what is being heard, then put
+    /// through the song's simplification and capo. Recomputed when one of those
+    /// changes rather than on every redraw.
     @State private var displayed: SongChords?
+    /// The same chart transposed but not simplified — what was actually heard.
+    /// The correction sheet and the reveal both read this, so a simplification
+    /// can never be mistaken for the detector's answer.
+    @State private var heard: SongChords?
+    @State private var unplayable: [Chord] = []
     @State private var bars: [ChordBar] = []
     @State private var correcting: ChordSegment?
+    @State private var showsPlayability = false
 
     private var semitones: Int { Int(player.pitchSemitones.rounded()) }
+
+    private var options: ChordDisplayOptions { player.practiceSettings.chordDisplayOptions }
 
     private var job: AnalysisProgressCenter.Job? {
         AnalysisProgressCenter.shared.job(ofKind: .chordAnalysis)
@@ -82,9 +97,15 @@ struct ChordsStage: View {
                 ChordNowCard(
                     chords: displayed,
                     playhead: playhead,
-                    isTransposed: semitones != 0
+                    isTransposed: semitones != 0,
+                    capo: options.capo
                 )
                 .padding(.horizontal)
+
+                if showsShapes {
+                    ChordVocabularyStrip(chords: displayed, options: options)
+                        .padding(.horizontal)
+                }
 
                 switch chartView {
                 case .bars:
@@ -94,7 +115,8 @@ struct ChordsStage: View {
                         bars: bars,
                         playhead: playhead,
                         sections: player.practiceSettings.savedSections,
-                        correct: { correcting = $0 }
+                        mergesRepeats: options.mergesRepeatedChords,
+                        correct: { correcting = heardSegment(for: $0.id) ?? $0 }
                     )
                 case .ribbon:
                     ChordRibbon(player: player, chords: displayed)
@@ -117,14 +139,23 @@ struct ChordsStage: View {
         .background(ChordPlayheadDriver(player: player, chords: displayed, playhead: playhead, bars: bars, grid: beats.grid))
         .onChange(of: store.chords?.updatedAt, initial: true) { _, _ in refresh() }
         .onChange(of: semitones) { _, _ in refresh() }
+        .onChange(of: options) { _, _ in refresh() }
         .onChange(of: beats.grid) { _, _ in refresh() }
         .sheet(item: $correcting) { segment in
             ChordCorrectionSheet(
                 segment: segment,
-                prefersFlats: displayed?.prefersFlats ?? false
+                prefersFlats: heard?.prefersFlats ?? false
             ) { chord in
                 store.correct(segment.id, to: chord, displayedSemitones: semitones)
             }
+            .presentationDetents([.medium, .large])
+        }
+        .sheet(isPresented: $showsPlayability) {
+            ChordPlayabilitySheet(
+                player: player,
+                chords: store.chords ?? SongChords(),
+                unplayable: unplayable
+            )
             .presentationDetents([.medium, .large])
         }
         .alert(
@@ -140,14 +171,50 @@ struct ChordsStage: View {
         }
     }
 
+    /// Rebuilds both charts: what was heard, and what is to be played.
+    ///
+    /// Transposition first, because it is about the audio; simplification and
+    /// the capo second, because they are about the hands. Doing it the other way
+    /// round would have the beginner search looking for open shapes in a key
+    /// nobody is hearing.
     private func refresh() {
-        let transposed = store.chords?.transposed(by: semitones)
-        displayed = transposed
-        if let transposed, let grid = beats.grid {
-            bars = transposed.bars(using: grid, duration: player.duration)
+        guard let stored = store.chords else {
+            heard = nil
+            displayed = nil
+            unplayable = []
+            bars = []
+            return
+        }
+        let transposed = stored.transposed(by: semitones)
+        heard = transposed
+        let simplified = ChordPlayability.apply(
+            options,
+            to: transposed,
+            duration: player.duration,
+            beatDuration: beats.grid?.secondsPerBeat
+        )
+        displayed = simplified.chords
+        unplayable = simplified.unplayable
+        if let grid = beats.grid {
+            bars = simplified.chords.bars(using: grid, duration: player.duration)
         } else {
             bars = []
         }
+    }
+
+    /// The un-simplified segment a displayed one came from.
+    ///
+    /// Simplification preserves segment IDs, so a correction opened from a
+    /// simplified bar edits the chord that was heard rather than the shape
+    /// printed over it. Merging can drop an ID, in which case the segment
+    /// covering that moment is the honest answer.
+    private func heardSegment(for id: UUID) -> ChordSegment? {
+        guard let heard else { return nil }
+        if let match = heard.segments.first(where: { $0.id == id }) { return match }
+        guard let displayedSegment = displayed?.segments.first(where: { $0.id == id }) else {
+            return nil
+        }
+        return heard.segment(at: displayedSegment.start)
     }
 
     /// One tap, whatever state the song is in. Chord analysis is
@@ -166,12 +233,55 @@ struct ChordsStage: View {
 
     // MARK: - Header
 
+    /// The badges and the controls, on one row where they fit and on two where
+    /// they do not. At accessibility sizes the capsules and the 110-point
+    /// picker cannot share a line, and the first thing to go is the badge —
+    /// which is the one part that says the chart has been changed.
+    @ViewBuilder
     private var header: some View {
-        HStack(spacing: 8) {
-            if let displayed {
-                ChordSourceBadge(chords: displayed, isTransposed: semitones != 0)
+        if dynamicTypeSize.isAccessibilitySize {
+            VStack(alignment: .leading, spacing: 6) {
+                if let displayed {
+                    ChordSourceBadge(
+                        chords: displayed,
+                        isTransposed: semitones != 0,
+                        options: options
+                    )
+                }
+                headerControls
             }
+            .padding(.horizontal)
+        } else {
+            HStack(spacing: 8) {
+                if let displayed {
+                    ChordSourceBadge(
+                        chords: displayed,
+                        isTransposed: semitones != 0,
+                        options: options
+                    )
+                }
+                headerControls
+            }
+            .padding(.horizontal)
+        }
+    }
+
+    private var headerControls: some View {
+        HStack(spacing: 8) {
             Spacer(minLength: 0)
+            Button {
+                showsPlayability = true
+            } label: {
+                Image(systemName: "hand.raised.fingers.spread")
+                    .frame(width: 44, height: 44)
+                    .symbolVariant(options.changesAnything ? .fill : .none)
+            }
+            .accessibilityLabel("Playability")
+            .accessibilityValue(
+                options.changesAnything
+                    ? "\(options.complexity.title)\(options.capo > 0 ? ", capo \(options.capo)" : "")"
+                    : "Full chart"
+            )
             Picker("Chart", selection: $chartView) {
                 ForEach(ChordChartView.allCases) { view in
                     Image(systemName: view.icon).tag(view)
@@ -188,7 +298,6 @@ struct ChordsStage: View {
             }
             .accessibilityLabel("Chord actions")
         }
-        .padding(.horizontal)
     }
 
     @ViewBuilder
@@ -199,6 +308,14 @@ struct ChordsStage: View {
             Label("Analyse Again", systemImage: "arrow.clockwise")
         }
         .disabled(player.isRecording)
+        Button {
+            showsPlayability = true
+        } label: {
+            Label("Playability…", systemImage: "hand.raised.fingers.spread")
+        }
+        Toggle(isOn: $showsShapes) {
+            Label("Show Chord Shapes", systemImage: "guitars")
+        }
         if let displayed, !displayed.vocabulary.isEmpty {
             Section("This song uses") {
                 Text(
@@ -273,26 +390,59 @@ struct ChordNowCard: View {
     let chords: SongChords
     let playhead: ChordPlayhead
     let isTransposed: Bool
+    var capo = 0
+
+    /// Held while the user is looking at what was heard rather than at what to
+    /// play. A press, not a switch: revealing the detected chord is a question
+    /// asked once, and a mode that stayed on would quietly undo the
+    /// simplification they chose.
+    @State private var revealsDetected = false
 
     private var current: ChordSegment? {
         playhead.segmentIndex.flatMap { chords.segments.indices.contains($0) ? chords.segments[$0] : nil }
     }
 
+    private var symbol: String {
+        guard let current else { return "—" }
+        if revealsDetected, let detected = current.detected {
+            return detected.symbol(preferringFlats: chords.prefersFlats)
+        }
+        return current.symbol(preferringFlats: chords.prefersFlats)
+    }
+
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 14) {
-            Text(current?.symbol(preferringFlats: chords.prefersFlats) ?? "—")
-                // A text style rather than a point size: at accessibility sizes
-                // a fixed 40 point chord ends up *smaller* than the "next"
-                // chord beside it, which inverts the one hierarchy this card has.
-                .font(.system(.largeTitle, design: .rounded).weight(.bold))
-                .monospacedDigit()
-                .lineLimit(1)
-                .minimumScaleFactor(0.5)
-                .foregroundStyle(
-                    (current?.confidence ?? 1) < SongChords.confidentSegment
-                        ? AnyShapeStyle(.secondary)
-                        : AnyShapeStyle(Color.primary)
-                )
+            VStack(alignment: .leading, spacing: 1) {
+                Text(symbol)
+                    // A text style rather than a point size: at accessibility
+                    // sizes a fixed 40 point chord ends up *smaller* than the
+                    // "next" chord beside it, which inverts the one hierarchy
+                    // this card has.
+                    .font(.system(.largeTitle, design: .rounded).weight(.bold))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.5)
+                    .foregroundStyle(
+                        (current?.confidence ?? 1) < SongChords.confidentSegment
+                            ? AnyShapeStyle(.secondary)
+                            : AnyShapeStyle(Color.primary)
+                    )
+                if let footnote {
+                    Text(footnote)
+                        .font(.caption2)
+                        .foregroundStyle(revealsDetected ? .indigo : .secondary)
+                        .lineLimit(1)
+                }
+            }
+            // Tapping reveals what was heard, for as long as it is held. The
+            // chart says what to play; this is how the user asks what it was
+            // simplified from without leaving the chart.
+            .contentShape(Rectangle())
+            .onLongPressGesture(minimumDuration: 0.05, maximumDistance: 30) {
+            } onPressingChanged: { isPressing in
+                guard current?.detected != nil else { return }
+                revealsDetected = isPressing
+            }
             Spacer(minLength: 0)
             if let next = playhead.nextChord {
                 VStack(alignment: .trailing, spacing: 2) {
@@ -320,9 +470,24 @@ struct ChordNowCard: View {
         .accessibilityLabel(spokenLabel)
     }
 
+    /// The one line under the chord: what it was simplified from, or where the
+    /// capo has to be for this shape to be the right one.
+    private var footnote: String? {
+        if let detected = current?.detected {
+            return revealsDetected
+                ? "heard here"
+                : "simplified from \(detected.symbol(preferringFlats: chords.prefersFlats))"
+        }
+        return capo > 0 ? "shape · capo \(capo)" : nil
+    }
+
     private var spokenLabel: String {
         var value = "Now: "
         value += current?.chord?.spokenName(preferringFlats: chords.prefersFlats) ?? "no chord"
+        if let detected = current?.detected {
+            value += ", simplified from " + detected.spokenName(preferringFlats: chords.prefersFlats)
+        }
+        if capo > 0 { value += ", as a shape with the capo at fret \(capo)" }
         if let next = playhead.nextChord {
             value += ". Next: " + next.spokenName(preferringFlats: chords.prefersFlats)
             if let beats = playhead.beatsToNextChord {
@@ -338,10 +503,27 @@ struct ChordNowCard: View {
 struct ChordSourceBadge: View {
     let chords: SongChords
     let isTransposed: Bool
+    var options: ChordDisplayOptions = .none
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
             HStack(spacing: 6) {
+                if options.capo > 0 {
+                    Text("Capo \(options.capo)")
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 8)
+                        .frame(minHeight: 24)
+                        .background(Color.indigo.opacity(0.16), in: Capsule())
+                        .foregroundStyle(.indigo)
+                }
+                if options.complexity != .full {
+                    Text(options.complexity.title)
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 8)
+                        .frame(minHeight: 24)
+                        .background(Color.indigo.opacity(0.16), in: Capsule())
+                        .foregroundStyle(.indigo)
+                }
                 if !chords.isReliable {
                     Label("Uncertain", systemImage: "questionmark.circle")
                         .font(.caption2.weight(.semibold))
@@ -387,6 +569,9 @@ struct ChordBarGrid: View {
     let playhead: ChordPlayhead
     /// The song's saved sections, drawn as labels over the rows they start in.
     let sections: [SavedPracticeSection]
+    /// Whether a chord held over from the previous bar is printed again or
+    /// marked as still running.
+    var mergesRepeats = false
     let correct: (ChordSegment) -> Void
 
     @GestureState private var selection: LineSelection?
@@ -493,7 +678,10 @@ struct ChordBarGrid: View {
                     .foregroundStyle(.tertiary)
             } else {
                 ForEach(bar.entries) { entry in
-                    Text(entry.chord?.symbol(preferringFlats: chords.prefersFlats) ?? "N.C.")
+                    // A chord still ringing from the bar before is a repeat
+                    // mark, the way a chart written by hand would do it: the
+                    // same symbol four times says nothing the first one did not.
+                    Text(text(for: entry))
                         .font(
                             bar.entries.count > 2
                                 ? .subheadline.weight(.semibold)
@@ -505,11 +693,24 @@ struct ChordBarGrid: View {
                         // is still the best answer available, and a hole in the
                         // chart leaves the player with nothing at all.
                         .opacity(entry.confidence < SongChords.confidentSegment ? 0.45 : 1)
+                        .foregroundStyle(
+                            mergesRepeats && entry.isContinuation
+                                ? AnyShapeStyle(.tertiary)
+                                : AnyShapeStyle(Color.primary)
+                        )
                         .overlay(alignment: .topTrailing) {
                             if entry.isUserEdited {
                                 Circle()
                                     .fill(Color.indigo)
                                     .frame(width: 4, height: 4)
+                                    .offset(x: 6, y: 2)
+                            } else if entry.isSimplified {
+                                // Hollow, because it is not a fact the way a
+                                // correction is: it says this chord is standing
+                                // in for a more complicated one.
+                                Circle()
+                                    .strokeBorder(Color.indigo, lineWidth: 1)
+                                    .frame(width: 5, height: 5)
                                     .offset(x: 6, y: 2)
                             }
                         }
@@ -547,9 +748,18 @@ struct ChordBarGrid: View {
         }
     }
 
+    private func text(for entry: ChordBar.Entry) -> String {
+        if mergesRepeats, entry.isContinuation { return "𝄎" }
+        return entry.chord?.symbol(preferringFlats: chords.prefersFlats) ?? "N.C."
+    }
+
     private func label(for bar: ChordBar) -> String {
         let symbols = bar.entries
-            .map { $0.chord?.spokenName(preferringFlats: chords.prefersFlats) ?? "no chord" }
+            .map { entry -> String in
+                let name = entry.chord?.spokenName(preferringFlats: chords.prefersFlats) ?? "no chord"
+                guard let detected = entry.detected, entry.isSimplified else { return name }
+                return name + ", simplified from " + detected.spokenName(preferringFlats: chords.prefersFlats)
+            }
             .joined(separator: ", ")
         return "Bar \(bar.number), \(symbols.isEmpty ? "empty" : symbols)"
     }
@@ -706,6 +916,14 @@ struct ChordRibbon: View {
             .font(.title2.weight(isCurrent ? .bold : .semibold))
             .lineLimit(1)
             .minimumScaleFactor(0.6)
+            .overlay(alignment: .topTrailing) {
+                if segment.isSimplified {
+                    Circle()
+                        .strokeBorder(Color.indigo, lineWidth: 1)
+                        .frame(width: 5, height: 5)
+                        .offset(x: 6, y: 2)
+                }
+            }
             .padding(.horizontal, 10)
             .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
             .background(

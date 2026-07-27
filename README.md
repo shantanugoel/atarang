@@ -74,6 +74,14 @@ for each song, so the next session can pick up where the last one ended.
   bars or as a ribbon under a fixed "now" line, transposed to whatever key you
   have the backing in. Tap a bar to jump to it, hold and drag across bars to
   loop them, and hold one bar to fix a chord Atarang got wrong.
+- **Make the chords playable** — reduce the chart to plain triads, open-position
+  shapes, or power chords; hide slash chords and passing chords; and let Atarang
+  suggest a capo, or a key to shift the whole song into, that turns barre chords
+  into open ones. Every simplified chord is marked and the chord Atarang heard is
+  a press away.
+- **Read a chord sheet** — chord symbols placed over the words they land on,
+  exactly where the lyrics carry word timings and estimated across the line where
+  they do not, at whatever size reads from an arm's length.
 - **Record a predictable loop take** — hear the count-in, record exactly one
   pass from A to B, and quickly compare the latest take with the reference.
 - **Sing from synced lyrics** — paste the words or import an `.lrc`, time them
@@ -105,6 +113,13 @@ for each song, so the next session can pick up where the last one ended.
   stated, and any chord can be corrected by holding its bar. Corrections survive
   running the analysis again. Nothing is downloaded and nothing leaves the
   device.
+- **Chord shapes, a capo, and a sheet** — a chord box for every shape the song
+  asks for, open and barre voicings for each, four levels of simplification from
+  the full chart down to power chords, a capo search that scores every fret from
+  0 to 7 by how much of the song it turns into open shapes, and the same answer
+  as a key to shift the audio into. The Sheet stage sets the chords over the
+  lyrics they land on. All of it is per song and none of it changes the stored
+  chart.
 - **A detected beat grid** — tempo, downbeats, and bar lines found from the
   drums, driving the click, the count-in, and A–B loops that snap to bars. A
   wrong tempo is usually one tap to fix, and a grid Atarang is unsure of is

@@ -1726,29 +1726,137 @@ alongside Phase 4's.
 
 ### Work
 
-- [ ] Add a complexity level: **Full**, **Simple** (triads), **Beginner** (open
+- [x] Add a complexity level: **Full**, **Simple** (triads), **Beginner** (open
       shapes), **Power** (root and fifth). Persist per song.
-- [ ] Add independent toggles: hide slash/inversions, merge repeated chords,
+- [x] Add independent toggles: hide slash/inversions, merge repeated chords,
       hide sub-beat passing chords.
-- [ ] Implement capo suggestion: search capo 0–7 against an open-shape
+- [x] Implement capo suggestion: search capo 0–7 against an open-shape
       vocabulary, scoring by easy-shape coverage and barre penalty.
-- [ ] Mark every simplified chord; tap reveals the detected chord.
-- [ ] Add reverse transposition: choose a playable key and shift the audio to
+- [x] Mark every simplified chord; tap reveals the detected chord. A press on
+      the now card rather than a tap on a bar — see the outcome.
+- [x] Add reverse transposition: choose a playable key and shift the audio to
       match.
-- [ ] Bundle a chord-shape database keyed by root and quality, with open and
+- [x] Bundle a chord-shape database keyed by root and quality, with open and
       barre voicings.
-- [ ] Add a fretboard diagram sheet and a chord-vocabulary strip for the song.
-- [ ] Build the **Sheet** stage: chord symbols positioned over lyric syllables,
+- [x] Add a fretboard diagram sheet and a chord-vocabulary strip for the song.
+- [x] Build the **Sheet** stage: chord symbols positioned over lyric syllables,
       exact with word-level timing and interpolated otherwise.
 
 ### Acceptance criteria
 
-- [ ] Beginner level produces a chord set playable in open position, or states
-      that it cannot.
-- [ ] A capo suggestion, when accepted, yields chords that sound correct against
-      the transposed backing.
-- [ ] Simplified chords are always distinguishable from detected chords.
-- [ ] The Sheet view is legible at arm's length while holding an instrument.
+- [x] Beginner level produces a chord set playable in open position, or states
+      that it cannot. Both halves are unit-tested, and the sheet names the
+      chords it could not place in open position rather than implying the level
+      succeeded.
+- [~] A capo suggestion, when accepted, yields chords that sound correct against
+      the transposed backing. The arithmetic is unit-tested — capo 3 on B♭–E♭–F–Gm
+      returns exactly G–C–D–Em — and the chart, the sheet, and the shape sheet
+      all print shapes and name the sounding chord. **Not verified against a
+      guitar**, which is the only test that settles "sounds correct".
+- [x] Simplified chords are always distinguishable from detected chords. A
+      hollow ring on the bar, the ribbon chip, and the sheet symbol; the now card
+      says what it was simplified from and reveals it under a press.
+- [~] The Sheet view is legible at arm's length while holding an instrument.
+      Legible in the simulator at default and accessibility sizes, with its own
+      size control on top of Dynamic Type. **Arm's length is a device
+      judgement** and has not been made on hardware.
+
+### Outcome
+
+**New files.** `ChordShapes.swift` is the shape catalogue and the question
+"how hard is this chord?". `ChordPlayability.swift` is every transformation of
+a chart and both searches — capo and key. `ChordShapeViews.swift` draws chord
+boxes, the vocabulary strip, and the Playability sheet. `ChordSheet.swift` lays
+words and chords out together, and `SheetStage.swift` renders it, wrapping
+included.
+
+**Simplification is a lens, never an edit.** `chords.json` is untouched by all of
+it: the Chords stage transposes the stored chart to what is being heard, then
+puts the song's complexity, toggles, and capo over it, and each changed segment
+carries `detected` — the chord that was actually heard. `detected` is
+deliberately outside `ChordSegment.CodingKeys`, so a simplified chart *cannot*
+be persisted as though it were the analysis, and a test asserts the word never
+reaches the file. Corrections made on a simplified chart are opened against the
+un-simplified copy, so someone who fixes a bar that is printed as G is editing
+the G7 the detector heard.
+
+**The power chord is a quality the detector may not use.** `ChordQuality.power`
+exists so the Power level has something to *say*, and `ChordQuality.detectable`
+— everything except it — is what the decoder's state list is built from. A
+two-note template fits almost anything; offering it to the decoder would print
+fifths over a song full of triads.
+
+**The order of the transforms is the whole correctness argument.** Transposition
+is about the audio and comes first; simplification and the capo are about the
+hands and come second. Done the other way round, the Beginner search would look
+for open shapes in a key nobody is hearing. The capo is applied last and on its
+own — the shape a player grips is the sounding chord moved *down* by the capo —
+which is why the chart, the vocabulary strip, and the sheet all print shape
+names while the shape sheet says what each one sounds.
+
+**The shape catalogue is hand-written, and small on purpose.** About thirty open
+shapes plus two movable forms — the E shape on the sixth string and the A shape
+on the fifth — generated for any root. A generator would produce every
+mathematically valid voicing, most of which nobody plays; what a person learning
+a song needs is the shape a teacher would show them. Two tests hold it honest:
+every open shape sounds only notes of the chord it claims (with the fifth allowed
+to be missing, as the standard C7 grip drops it), and every entry in the open
+table really is open position.
+
+**Both searches are weighted by time, not by count.** A song with thirty seconds
+of G and two of B♭ is a G song, and a capo that fixes the B♭ at the cost of the G
+is the wrong answer — there is a test for exactly that. A capo pays 0.012 per
+fret and a key shift 0.015 per semitone, so neither is suggested for a rounding
+difference: fitting a capo is work, and shifting the audio smears the stems.
+
+**Beginner reports what it cannot do.** When no substitution has an open shape —
+B diminished, whose minor triad is also a barre — the chord is left as it was
+heard and named in the Playability sheet, in the same terms the chart is printed
+in. Printing an E in place of an F because E is easy would be the app lying about
+the song.
+
+**The reveal is a press, not a tap.** The plan asked for tap-to-reveal, and in
+the bar grid a tap already seeks — muscle memory Phase 8 signed off on. Holding
+the now card shows the chord that was heard for as long as it is held, and lets
+go of it afterwards; a mode that stayed on would quietly undo the simplification
+the user chose. The vocabulary strip's chord boxes and the correction sheet say
+the same thing in full.
+
+**`SheetFlow` exists because a chord sheet is two baselines that wrap together.**
+`HStack` cannot wrap and `Text` cannot carry a second row of type above itself,
+so the line is split into chunks at the chord positions and laid out by a
+`Layout` that measures each chunk against the row width. That last part was a
+defect first: measured unconstrained, a line with one chord at its head is a
+single chunk and ran off the page at accessibility sizes.
+
+**Simulator verification.** Driven against a seeded 16-bar 4-stem fixture at
+120 BPM — C, Am, Fmaj7, G7, with a slash chord in bar 6 and a quarter-second
+passing chord in bar 10 — with timed lyrics, two lines of them word-timed.
+Confirmed: the four levels and three toggles changing the chart; the passing
+chord disappearing and the slash chord losing its bass; capo 1 printing
+B–G♯m–E–F♯ with the capo badge, and the beginner warning naming the shapes that
+have none; "No capo — 100% of this song is already open shapes" for the
+untouched chart, and G major at −5 semitones offered as the alternative; the
+vocabulary strip drawing E open, F♯ and B barred at 2, and G♯m at 4; the shape
+sheet saying "with the capo at fret 1 this sounds F"; the now card reading
+"E, simplified from Emaj7"; the Sheet stage placing chords over the words with
+section labels and instrumental chords on their own row; and every one of these
+settings surviving a relaunch.
+
+**The Dynamic Type pass found four defects**, all of them at
+accessibility-extra-large and all fixed: the header's badges truncated to "…"
+beside a fixed 110-point picker (they now take their own row), the vocabulary
+strip was squeezed to half a chord box (its height is stated, and the boxes grow
+with the text), the chord boxes clipped their own open and muted marks at 54
+points (the marker row and the string inset scale with the box), and the sheet's
+lines ran off the right edge.
+
+**Not verified.** No device pass, so the haptic on accepting a capo has never
+fired on a Taptic Engine and "legible at arm's length" is still a simulator
+judgement. Nothing here has met a real guitar, which is the only way to settle
+whether an accepted capo suggestion sounds right against the transposed backing.
+VoiceOver reading order across the chord boxes and the sheet joins the debt
+Phases 4 and 8 already owe.
 
 ---
 

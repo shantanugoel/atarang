@@ -45,6 +45,14 @@ enum ChordQuality: String, Codable, CaseIterable, Sendable {
     case majorSeventh
     case suspendedFourth
     case diminished
+    /// Root and fifth, and nothing that says major or minor.
+    ///
+    /// Nothing detects this and nothing may: a template of two notes fits
+    /// almost anything, so offering it to the decoder would print fifths over
+    /// a song full of triads. It exists so the Power complexity level has
+    /// something to *say* — it is a simplification of a chord that was heard,
+    /// never a chord that was heard.
+    case power
 
     /// Semitones above the root.
     var intervals: [Int] {
@@ -56,6 +64,7 @@ enum ChordQuality: String, Codable, CaseIterable, Sendable {
         case .majorSeventh: [0, 4, 7, 11]
         case .suspendedFourth: [0, 5, 7]
         case .diminished: [0, 3, 6]
+        case .power: [0, 7]
         }
     }
 
@@ -69,6 +78,7 @@ enum ChordQuality: String, Codable, CaseIterable, Sendable {
         case .majorSeventh: "maj7"
         case .suspendedFourth: "sus4"
         case .diminished: "dim"
+        case .power: "5"
         }
     }
 
@@ -81,6 +91,7 @@ enum ChordQuality: String, Codable, CaseIterable, Sendable {
         case .majorSeventh: "major seven"
         case .suspendedFourth: "sus four"
         case .diminished: "diminished"
+        case .power: "five"
         }
     }
 
@@ -88,16 +99,32 @@ enum ChordQuality: String, Codable, CaseIterable, Sendable {
     /// Zero for the two the templates are built around.
     var prior: Double {
         switch self {
-        case .major, .minor: 0
+        case .major, .minor, .power: 0
         case .suspendedFourth: -0.02
         case .dominantSeventh, .minorSeventh, .majorSeventh: -0.03
         case .diminished: -0.04
         }
     }
 
+    /// The triad this quality reduces to when a seventh is more than the player
+    /// wants to read. Diminished and sus4 are already triads and stay as they
+    /// are — reducing them would print a chord that is audibly not the one
+    /// being played, which is a different thing from printing a simpler one.
+    var triad: ChordQuality {
+        switch self {
+        case .dominantSeventh, .majorSeventh: .major
+        case .minorSeventh: .minor
+        default: self
+        }
+    }
+
     /// The two the detector starts from, kept named so the vocabulary can be
     /// narrowed in a test without hard-coding indices.
     static let triads: [ChordQuality] = [.major, .minor]
+
+    /// The qualities the detector is allowed to consider. Everything except
+    /// `power`, which is display-only.
+    static let detectable: [ChordQuality] = allCases.filter { $0 != .power }
 }
 
 /// One chord: a root, a quality, and — when the bass says so — the note under
@@ -214,6 +241,16 @@ struct ChordSegment: Codable, Equatable, Sendable, Identifiable {
     /// Set by any correction. Re-analysis must never overwrite a chord the user
     /// has fixed — they played the song and the detector did not.
     var isUserEdited = false
+    /// What was actually heard, when `chord` has been simplified for display.
+    ///
+    /// Display-only and deliberately outside `CodingKeys`: simplification is a
+    /// lens the Chords stage puts over the stored chart, and writing the lens
+    /// into `chords.json` would turn a preference into a fact about the song.
+    var detected: Chord?
+
+    private enum CodingKeys: String, CodingKey {
+        case id, start, end, chord, confidence, isUserEdited
+    }
 
     init(
         id: UUID = UUID(),
@@ -221,7 +258,8 @@ struct ChordSegment: Codable, Equatable, Sendable, Identifiable {
         end: TimeInterval,
         chord: Chord?,
         confidence: Double = 0,
-        isUserEdited: Bool = false
+        isUserEdited: Bool = false,
+        detected: Chord? = nil
     ) {
         self.id = id
         self.start = start
@@ -229,9 +267,16 @@ struct ChordSegment: Codable, Equatable, Sendable, Identifiable {
         self.chord = chord
         self.confidence = confidence
         self.isUserEdited = isUserEdited
+        self.detected = detected
     }
 
     var duration: TimeInterval { max(0, end - start) }
+
+    /// True when what is printed is not what was heard.
+    var isSimplified: Bool {
+        guard let detected else { return false }
+        return detected != chord
+    }
 
     func symbol(preferringFlats: Bool) -> String {
         chord?.symbol(preferringFlats: preferringFlats) ?? "N.C."
@@ -245,11 +290,22 @@ struct ChordBar: Identifiable, Equatable, Sendable {
         /// find its way back to the right chord.
         let id: UUID
         let chord: Chord?
+        /// What was heard, when `chord` is a simplification of it.
+        let detected: Chord?
         let start: TimeInterval
         /// Which beat of the bar the chord lands on, 0 for the downbeat.
         let beatOffset: Int
         let confidence: Double
         let isUserEdited: Bool
+        /// True when this chord began in an earlier bar and is still being
+        /// held. What "merge repeated chords" acts on: the same symbol printed
+        /// four times in a row says nothing the first one did not.
+        let isContinuation: Bool
+
+        var isSimplified: Bool {
+            guard let detected else { return false }
+            return detected != chord
+        }
     }
 
     let id: Int
@@ -378,6 +434,7 @@ struct SongChords: AnalysisArtifact, Equatable {
         result.segments = segments.map { segment in
             var moved = segment
             moved.chord = segment.chord?.transposed(by: semitones)
+            moved.detected = segment.detected?.transposed(by: semitones)
             return moved
         }
         result.key = key?.transposed(by: semitones)
@@ -411,10 +468,12 @@ struct SongChords: AnalysisArtifact, Equatable {
                     ChordBar.Entry(
                         id: segment.id,
                         chord: segment.chord,
+                        detected: segment.detected,
                         start: entryStart,
                         beatOffset: beatOffset,
                         confidence: segment.confidence,
-                        isUserEdited: segment.isUserEdited
+                        isUserEdited: segment.isUserEdited,
+                        isContinuation: segment.start < start - 0.001
                     )
                 )
             }
@@ -507,6 +566,10 @@ struct SongChords: AnalysisArtifact, Equatable {
             // segments and every display has to merge them itself.
             if let last = cleaned.last,
                last.chord == segment.chord,
+               // Two simplified stretches that print the same symbol but came
+               // from different chords stay apart: merging them would make the
+               // reveal lie about the second half.
+               last.detected == segment.detected,
                last.isUserEdited == segment.isUserEdited,
                abs(last.end - segment.start) < 0.01 {
                 let weight = last.duration + segment.duration

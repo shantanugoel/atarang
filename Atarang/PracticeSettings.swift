@@ -4,10 +4,9 @@ import OSLog
 /// What the Stage is showing. Replaces the former Mix/Practice split: practice
 /// tools are chips now, so the Stage is free to be about the song itself.
 ///
-/// Three of the four are placeholders until Milestones C and D fill them in.
-/// They ship visible and empty on purpose — the selector is the shape of the
-/// screen, and hiding stages until their phase lands would mean rebuilding it
-/// three more times.
+/// All four are real as of Phase 9. They shipped visible and empty from Phase 4
+/// on purpose — the selector is the shape of the screen, and hiding stages until
+/// their phase landed would have meant rebuilding it three more times.
 enum StudioStage: String, Codable, CaseIterable, Identifiable, Sendable {
     case lyrics
     case chords
@@ -115,11 +114,10 @@ struct PracticeSettingsValidation: Equatable, Sendable {
 }
 
 struct SongPracticeSettings: Codable, Equatable, Sendable {
-    /// Bumped to 4 by Phase 7: the metronome can follow a detected beat grid
-    /// and loop boundaries can snap to its bar lines. Pre-release, so there is
-    /// no migration — settings written by an earlier build no longer decode and
-    /// the song starts from defaults.
-    static let currentSchemaVersion = 4
+    /// Bumped to 5 by Phase 9: how much of the chart to print, and where the
+    /// capo is. Pre-release, so there is no migration — settings written by an
+    /// earlier build no longer decode and the song starts from defaults.
+    static let currentSchemaVersion = 5
     static let supportedCountInClicks = [0, 2, 4]
     static let supportedBPMRange = 30...300
     static let supportedRepetitionPauseRange: ClosedRange<TimeInterval> = 0...10
@@ -165,6 +163,19 @@ struct SongPracticeSettings: Codable, Equatable, Sendable {
     /// boundary exactly where the finger is for the times it does not.
     var snapLoopsToBars = true
     var savedSections: [SavedPracticeSection] = []
+    /// How much of the chord chart to print, and how.
+    ///
+    /// Per song rather than global: which simplification a chart needs is a
+    /// property of that song's harmony, not of the player. A folk song needs
+    /// nothing and a jazz standard needs everything, and the same person plays
+    /// both.
+    var chordComplexity: ChordComplexity = .full
+    var hidesChordInversions = false
+    var mergesRepeatedChords = false
+    var hidesPassingChords = false
+    /// Where the capo is, 0 for none. Chord symbols are printed as the shapes
+    /// to grip with it fitted.
+    var capoFret = 0
     /// Per-stem mix levels, keyed by `StemKind.rawValue`.
     ///
     /// They used to be their own `UserDefaults` entry, written on every fader
@@ -177,6 +188,17 @@ struct SongPracticeSettings: Codable, Equatable, Sendable {
     var loopRange: (start: TimeInterval, end: TimeInterval)? {
         guard let loopStart, let loopEnd else { return nil }
         return (loopStart, loopEnd)
+    }
+
+    /// The chart lens, as the two stages that draw it need it.
+    var chordDisplayOptions: ChordDisplayOptions {
+        ChordDisplayOptions(
+            complexity: chordComplexity,
+            hidesInversions: hidesChordInversions,
+            mergesRepeatedChords: mergesRepeatedChords,
+            hidesPassingChords: hidesPassingChords,
+            capo: capoFret
+        )
     }
 
     func level(for stem: StemKind) -> Float {
@@ -227,6 +249,7 @@ struct SongPracticeSettings: Codable, Equatable, Sendable {
         countInClicks = Self.supportedCountInClicks.contains(countInClicks)
             ? countInClicks
             : 0
+        capoFret = min(max(0, capoFret), ChordPlayability.maximumCapo)
         lastPosition = lastPosition.isFinite
             ? min(max(0, lastPosition), max(0, duration))
             : 0
