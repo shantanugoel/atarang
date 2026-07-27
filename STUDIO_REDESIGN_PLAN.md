@@ -1400,17 +1400,19 @@ looping as well as enabling chords.
 - [x] Bar-snapped looping selects musically sensible boundaries. Verified in the
       simulator: A and B landed on 12.554 s and 24.613 s, both exactly detected
       downbeats, five bars apart.
-- [~] The count-in no longer drifts and matches the song's tempo. Every click is
+- [x] The count-in no longer drifts and matches the song's tempo. Every click is
       an exact multiple of the beat by construction and the music starts at the
-      end of the last one, both unit-tested; the four-click count-in was driven
-      in the simulator at the detected 100 BPM and playback began cleanly.
-      **Nobody has listened to it** — that is a device pass.
-- [~] Analysis failure leaves the manual metronome fully functional. True by
-      construction: with no grid, or one below the confidence bar, every
-      effective value falls back to the hand-set one and nothing snaps. The
-      fallbacks are not themselves unit-tested — they live on `StemPlayer`,
-      which the suite does not instantiate — and the "no steady beat found"
-      path has not been seen on real material.
+      end of the last one, both unit-tested; **confirmed by ear** against a real
+      song, counting in at that song's detected tempo and handing over to the
+      music in time.
+- [x] Analysis failure leaves the manual metronome fully functional. The click
+      itself was **confirmed by ear** on a real song, following the detected
+      grid. The failure half stays true by construction rather than by trial:
+      with no grid, or one below the confidence bar, every effective value falls
+      back to the hand-set one and nothing snaps. Those fallbacks are not
+      unit-tested — they live on `StemPlayer`, which the suite does not
+      instantiate — and the "no steady beat found" path has not been seen on
+      real material.
 
 ### Outcome
 
@@ -1510,11 +1512,18 @@ detection that fails had nowhere to say so, because the store's error was only
 readable inside a sheet the user may have closed while the job ran. It is a
 caution banner in Studio now, like the practice-target notice.
 
-**Not verified.** Nothing here has been heard. The count-in's timing, the click
-following a real song's downbeat, and the grid against real recorded material —
-where drift, rubato, and live drumming are the actual test — all need a device
-and real songs. Phase 4's haptics and VoiceOver reading order are still owed by
-the same pass.
+**Heard, on a real song.** The count-in counts in at the song's tempo and hands
+over to the music in time, and the click follows the detected grid. Those were
+the two things the simulator could show but not settle.
+
+**Still unverified.** The grid against a range of real recorded material —
+drift, rubato, live drumming, and sparse arrangements are where a detector
+earns its confidence figure, and one song is not a range. The click is also
+still a *steady* click: it takes the median tempo and the first downbeat from
+the grid and does not follow the beat list itself, so a genuinely drifting take
+will hear it walk away by the end. Bar lines and A–B snapping do follow the
+beat times, so a drifting song shows the difference between them on screen.
+Phase 4's haptics and VoiceOver reading order are still owed by a device pass.
 
 ---
 
