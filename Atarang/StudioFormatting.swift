@@ -28,6 +28,19 @@ enum StudioFormat {
         "\(Int((value * 100).rounded()))%"
     }
 
+    static func bpm(_ value: Int) -> String { "\(value) BPM" }
+
+    /// A playback rate, and what it means in the tempo the user is actually
+    /// counting in. "75%" says how far a slider has moved; "75% · 96 BPM" says
+    /// what the metronome will read, which is the number a practising musician
+    /// works to. Falls back to the percentage alone when the song's tempo is
+    /// unknown.
+    static func rate(_ value: Float, atOriginalBPM originalBPM: Int?) -> String {
+        guard let originalBPM, originalBPM > 0 else { return percent(value) }
+        let scaled = Int((Double(originalBPM) * Double(value)).rounded())
+        return "\(percent(value)) · \(bpm(scaled))"
+    }
+
     static func semitones(_ semitones: Float) -> String {
         let value = Int(semitones.rounded())
         if value == 0 { return "Original key" }

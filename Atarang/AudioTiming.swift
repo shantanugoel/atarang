@@ -93,8 +93,6 @@ struct MetronomeClick: Equatable, Sendable {
 /// synthesized for the whole remaining song, so enabling the metronome costs
 /// the same whether the loop is four bars or the track is nine minutes long.
 struct MetronomeClickPlan: Equatable, Sendable {
-    static let beatsPerAccent = 4
-
     /// Source seconds where this pass begins, matching the stems' range.
     var sourceStart: TimeInterval = 0
     /// Source seconds where this pass ends.
@@ -107,6 +105,10 @@ struct MetronomeClickPlan: Equatable, Sendable {
     var alignment: TimeInterval = 0
     var accentsEnabled = true
     var rate: Double = 1
+    /// How many beats there are between accents. Four unless a beat grid says
+    /// otherwise — a song in three accented every four is worse than no accent
+    /// at all, because it sounds like the song is wrong.
+    var beatsPerBar = 4
     /// The next click index still to be scheduled.
     private(set) var nextIndex = 0
 
@@ -144,9 +146,8 @@ struct MetronomeClickPlan: Equatable, Sendable {
             guard sourceTime >= sourceStart, renderTime >= 0 else { continue }
             let subdivision = ((index % clicksPerBeat) + clicksPerBeat) % clicksPerBeat
             let beat = Int(((sourceTime - alignment) / beatDuration).rounded(.down))
-            let isDownbeat = subdivision == 0
-                && ((beat % Self.beatsPerAccent) + Self.beatsPerAccent)
-                    % Self.beatsPerAccent == 0
+            let bar = max(1, beatsPerBar)
+            let isDownbeat = subdivision == 0 && ((beat % bar) + bar) % bar == 0
             result.append(
                 MetronomeClick(
                     index: index,
@@ -156,6 +157,48 @@ struct MetronomeClickPlan: Equatable, Sendable {
                 )
             )
         }
+    }
+}
+
+// MARK: - Count-in
+
+/// The clicks before playback or a take begins.
+///
+/// It is a plan rather than a loop because the clicks are scheduled into the
+/// audio graph at absolute times, all of them at once. Counting in with
+/// `Task.sleep` between clicks meant every click carried the previous click's
+/// scheduling error, so the count-in drifted — and, being one click per second
+/// regardless, it also counted a song in at the wrong tempo unless the song
+/// happened to be at 60 BPM.
+struct CountInPlan: Equatable, Sendable {
+    static let supportedBPMRange: ClosedRange<Double> = 30...300
+
+    let clicks: Int
+    let bpm: Double
+
+    init(clicks: Int, bpm: Double) {
+        self.clicks = max(0, clicks)
+        self.bpm = bpm.isFinite
+            ? min(
+                Self.supportedBPMRange.upperBound,
+                max(Self.supportedBPMRange.lowerBound, bpm)
+            )
+            : 120
+    }
+
+    var beatInterval: TimeInterval { 60 / bpm }
+
+    /// How long the count-in lasts, which is also how much later than the
+    /// clicks the music itself has to start.
+    var duration: TimeInterval { Double(clicks) * beatInterval }
+
+    var isEmpty: Bool { clicks == 0 }
+
+    /// Where each click sits, measured from the start of the count-in. Exact
+    /// multiples of the beat by construction: this is the whole reason the plan
+    /// exists.
+    var offsets: [TimeInterval] {
+        (0..<clicks).map { Double($0) * beatInterval }
     }
 }
 

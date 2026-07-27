@@ -199,6 +199,18 @@ final class MetronomeClickPlanTests: XCTestCase {
         XCTAssertEqual(clicks.filter(\.isAccented).map(\.sourceTime), [0])
     }
 
+    func testAccentsFollowTheBarLengthTheGridReports() {
+        // A song in three accented every four sounds like the song is wrong,
+        // which is why the accent interval is no longer a constant.
+        var plan = plan(end: 5)
+        plan.beatsPerBar = 3
+        plan.reset()
+
+        let clicks = plan.clicks(through: 100)
+
+        XCTAssertEqual(clicks.filter(\.isAccented).map(\.sourceTime), [0, 1.5, 3, 4.5])
+    }
+
     func testAccentsCanBeDisabled() {
         var plan = plan(end: 5, accents: false)
 

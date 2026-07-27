@@ -1365,30 +1365,156 @@ looping as well as enabling chords.
 
 ### Work
 
-- [ ] Compute a spectral-flux onset envelope from the drums stem.
-- [ ] Estimate tempo by autocorrelation or comb filtering, with a log-normal
-      prior centred near 120 BPM.
-- [ ] Track beats with Ellis-style dynamic programming.
-- [ ] Estimate the downbeat phase from bass-onset energy and chord-change
-      likelihood.
-- [ ] Store `BeatGrid` as an explicit beat list so tempo drift is representable.
-- [ ] Make BPM, first-downbeat offset, and beats-per-bar user-editable, with
-      `isUserEdited` respected on re-analysis.
-- [ ] Auto-align the metronome from the grid, replacing manual alignment as the
+- [x] Compute a spectral-flux onset envelope from the drums stem. Streamed and
+      downmixed at the file's own rate, so no whole-song resample is needed.
+- [x] Estimate tempo by autocorrelation or comb filtering, with a log-normal
+      prior centred near 120 BPM. **Autocorrelation and the prior only** — the
+      comb sum was built, measured, and removed; see the outcome.
+- [x] Track beats with Ellis-style dynamic programming.
+- [x] Estimate the downbeat phase from bass-onset energy and chord-change
+      likelihood. Bass-onset energy plus the full-band envelope at half weight;
+      chord-change likelihood waits for Phase 8, which is what computes it.
+- [x] Store `BeatGrid` as an explicit beat list so tempo drift is representable.
+- [x] Make BPM, first-downbeat offset, and beats-per-bar user-editable, with
+      `isUserEdited` respected on re-analysis. Halve and double are their own
+      controls, because they are the correction the detector actually needs.
+- [x] Auto-align the metronome from the grid, replacing manual alignment as the
       default while keeping manual override.
-- [ ] Snap A–B loop boundaries to bar lines, with a modifier to set them freely.
-- [ ] Derive count-in from the detected tempo and schedule it in the audio graph
+- [x] Snap A–B loop boundaries to bar lines, with a modifier to set them freely.
+- [x] Derive count-in from the detected tempo and schedule it in the audio graph
       instead of `Task.sleep`.
-- [ ] Express the tempo ramp in BPM as well as percentage.
-- [ ] Detect and report low-confidence grids rather than showing a wrong tempo.
+- [x] Express the tempo ramp in BPM as well as percentage. The transport's speed
+      menu too, which is where speed is usually changed.
+- [x] Detect and report low-confidence grids rather than showing a wrong tempo.
 
 ### Acceptance criteria
 
-- [ ] On steady-tempo material the grid is within ±15 ms of hand-tapped beats.
-- [ ] A wrong grid can be corrected in under three interactions.
-- [ ] Bar-snapped looping selects musically sensible boundaries.
-- [ ] The count-in no longer drifts and matches the song's tempo.
-- [ ] Analysis failure leaves the manual metronome fully functional.
+- [x] On steady-tempo material the grid is within ±15 ms of hand-tapped beats.
+      Measured against machine-placed beats, which is a stricter reference than
+      a hand-tapped one: **5.2 ms mean, 6.5 ms worst case** across a 20-second
+      click track, and 5.6 ms on the seeded song in the simulator. The error is
+      a consistent lead, not scatter — spectral flux starts rising before the
+      transient peaks.
+- [x] A wrong grid can be corrected in under three interactions. The wrong grid
+      this phase actually produced took **one**: Half Speed.
+- [x] Bar-snapped looping selects musically sensible boundaries. Verified in the
+      simulator: A and B landed on 12.554 s and 24.613 s, both exactly detected
+      downbeats, five bars apart.
+- [~] The count-in no longer drifts and matches the song's tempo. Every click is
+      an exact multiple of the beat by construction and the music starts at the
+      end of the last one, both unit-tested; the four-click count-in was driven
+      in the simulator at the detected 100 BPM and playback began cleanly.
+      **Nobody has listened to it** — that is a device pass.
+- [~] Analysis failure leaves the manual metronome fully functional. True by
+      construction: with no grid, or one below the confidence bar, every
+      effective value falls back to the hand-set one and nothing snaps. The
+      fallbacks are not themselves unit-tested — they live on `StemPlayer`,
+      which the suite does not instantiate — and the "no steady beat found"
+      path has not been seen on real material.
+
+### Outcome
+
+**New files.** `BeatGrid.swift` is the model and every question that can be
+asked of a grid — where the nearest bar is, what the tempo is, whether it
+drifts, what a correction does to it. `BeatDetector.swift` is the analysis, as
+plain functions over arrays. `BeatAnalysis.swift` holds the queue job and
+`BeatGridStore`, the per-song owner, in the shape Phase 6 established for
+lyrics.
+
+**The grid is a list of beats, not a tempo and an offset.** Real performances
+drift, and a grid that could only say "112 BPM from 0.31 s" would be a bar out
+by the end of a song that slows into its chorus, with no way to express it. The
+tempo the user sees is the median interval derived back out — the median
+because one missed beat moves a mean by several BPM and a median not at all.
+
+**Correcting the tempo regenerates the list, and that is the honest trade.** A
+user who says "it is 96, not 128" is rejecting the detected beats, not asking
+for them to be nudged; the grid becomes uniform at 96, anchored at the downbeat
+they already have. The consequence is visible in the simulator: halving 199.05
+gives a uniform grid at 99.5 BPM, and 0.5% is 120 ms of drift by the end of a
+four-minute song. Detecting again is the fix, and it is one tap away.
+
+**Double tempo is the failure mode, and the comb filter was making it worse.**
+The first implementation scored each candidate period with its own multiples —
+`acf(t) + 0.5·acf(2t) + 0.25·acf(3t)` — which reads as thorough and is
+systematically wrong in one direction: a song periodic at its beat is also
+periodic at every subdivision of that beat, so the faster reading always
+collects the same harmonics. Removing it left the log-normal prior, which
+penalises 200 BPM against 100 by about 25%, and that is not always enough:
+against a seeded track with hi-hats on every eighth, autocorrelation at the
+eighth still won and the app reported 199 BPM for a song at 100. Two things
+came out of that. `resolvedTempo` halves a tempo above 140 BPM when the placed
+beats *alternate* in strength — the signature of counting the hats rather than
+the beat — which fixes the clean cases and is unit-tested in both directions.
+And the sheet grew Half Speed and Double, because this is a known-hard research
+problem, it will keep being wrong on some songs, and the product answer to that
+is one tap rather than a better guess.
+
+**Ellis's dynamic program needed two things his paper assumes.** The score has
+to *accumulate* along the path rather than being blended with it; the first
+draft used a running average, whose maximum sits wherever the drummer hit
+hardest, so tracking a 20-second fixture stopped at 12.9 s and returned 22 of
+33 beats. And the trace has to be trimmed at both ends: the path has to start
+somewhere, and with nothing behind it the first frame of the song scores as
+well as anything, so every grid began with a beat at 0:00 that nothing was
+played on — 290 ms from the nearest real one. With the accumulating form and
+librosa's local-maximum rule for the last beat, the same fixture returns
+exactly 33 beats and the worst error falls from 290 ms to 6.5 ms.
+
+**Frames are centred on their own timestamps.** An uncentred STFT reports a
+transient up to a whole window late, which at a 23 ms window would spend the
+entire error budget before the tempo was even estimated. What remains is a
+consistent 5 ms *lead*, because flux rises as the transient enters the window
+rather than at its peak. It is inside the budget and it is systematic, so it
+could be compensated with a constant if a device pass says it is audible.
+
+**The count-in is scheduled, not slept through.** It used to be
+`AudioServicesPlaySystemSound` in a loop with `Task.sleep(1s)` between clicks:
+one click per second whatever the song's tempo, and every click carrying the
+previous one's scheduling error. It is now a `CountInPlan` placed into the audio
+graph at absolute times, at the song's own tempo, with the stems started exactly
+one count-in later on the same host-time line — so the music arrives where the
+last click said it would, rather than a moment after the app noticed the count
+had finished. Two consequences worth recording: the count-in got a player node
+of its own, because sharing the metronome's node means sharing its gain and a
+user who has turned the click down would be counted in silently; and the
+metronome node now starts when the count-in does, so the song's click plan is
+offset by the count-in's length on that node's clock.
+
+**A hand correction switches off following the grid.** Setting a BPM or aligning
+the click by hand sets `metronomeFollowsGrid` to false, because anything else
+would make the correction temporary — the next detection, or simply reopening
+the song, would put the detected number back. The toggle to follow again is in
+the same sheet.
+
+**No memory gate on this job.** Phase 5 built one for model-backed work, and
+this is the tier that has no model: it holds one mono copy of one stem at a
+time, about forty megabytes for a four-minute song, which is the same order as
+the waveform overview that has always run unguarded. A gate here would also
+refuse the work in every simulator, where `os_proc_available_memory()` reports
+zero.
+
+**Simulator verification.** Driven against a seeded 4-stem track built for this
+— 40 s at 100 BPM in 4/4, first downbeat at 0.5 s, kick and snare on the
+backbeat, hats on every eighth, bass on the one and the three. Confirmed:
+detection running through the shared queue and writing `beats.json`; the
+detected downbeat at 0.494 s against a true 0.500 s; Half Speed correcting
+199 BPM to 100 in one tap and marking the grid as the user's; bar lines drawn
+on the transport timeline; A and B snapping to exact downbeats; the Click sheet
+reporting "at 100 BPM, accenting every 4 beats, aligned to the song's first
+downbeat"; the count-in sheet reporting the same tempo, and a four-click count-in
+running into playback without a stall.
+
+**The simulator pass found one gap in the wiring**, not in the analysis: a
+detection that fails had nowhere to say so, because the store's error was only
+readable inside a sheet the user may have closed while the job ran. It is a
+caution banner in Studio now, like the practice-target notice.
+
+**Not verified.** Nothing here has been heard. The count-in's timing, the click
+following a real song's downbeat, and the grid against real recorded material —
+where drift, rubato, and live drumming are the actual test — all need a device
+and real songs. Phase 4's haptics and VoiceOver reading order are still owed by
+the same pass.
 
 ---
 

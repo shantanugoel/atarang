@@ -40,6 +40,10 @@ struct ContentView: View {
     /// the player: they are not audio, and the Stage, the sing-along mode, and
     /// an incoming `.lrc` file all need the same one.
     @State private var lyrics = LyricsStore()
+    /// Where this song's beats are. Owned here for the same reason the lyrics
+    /// are: the transport draws it, the click and the count-in run on it, and
+    /// the Click sheet corrects it.
+    @State private var beats = BeatGridStore()
     @State private var showsSingAlong = false
     private let debugURL: String?
 
@@ -182,7 +186,7 @@ struct ContentView: View {
                 .presentationDetents([.medium, .large])
             }
             .sheet(item: $selectedTool) { tool in
-                ToolSheet(tool: tool, player: player)
+                ToolSheet(tool: tool, player: player, beats: beats)
                     .presentationDetents([.medium, .large])
             }
             .fullScreenCover(isPresented: $showsSingAlong) {
@@ -191,6 +195,20 @@ struct ContentView: View {
                     store: lyrics,
                     requestRecording: requestRecording
                 )
+            }
+            // The store owns the grid; the player is given a copy because the
+            // click, the count-in, and loop snapping all run on it. A
+            // detection finishing or a correction landing is the only thing
+            // that moves it, so this costs nothing while a song plays.
+            .onChange(of: beats.grid) { _, grid in
+                player.applyBeatGrid(grid)
+            }
+            // A detection that failed has to say so where the user is, not only
+            // in the sheet they may already have closed — the job outlives it.
+            .onChange(of: beats.errorMessage) { _, message in
+                guard let message else { return }
+                studioNotice = .caution(message)
+                beats.errorMessage = nil
             }
             // A confirmation the user has already read stops being a
             // confirmation and starts being clutter. A caution is not on the
@@ -221,6 +239,7 @@ struct ContentView: View {
                     Divider()
                     ToolInspector(
                         player: player,
+                        beats: beats,
                         tool: $inspectorTool,
                         // In landscape the chips are already in the transport,
                         // and they are what drives this pane.
@@ -520,6 +539,8 @@ struct ContentView: View {
         hasUsedStudio = true
         loadedTrack = track
         lyrics.open(track: track, duration: player.duration)
+        beats.open(track: track, duration: player.duration)
+        player.applyBeatGrid(beats.grid)
         loadWaveform(for: track)
     }
 
@@ -645,6 +666,8 @@ struct ContentView: View {
         loadedTrack = nil
         waveform = nil
         lyrics.close()
+        beats.close()
+        player.applyBeatGrid(nil)
         showsSingAlong = false
         youtubeURL = ""
     }
@@ -837,6 +860,7 @@ struct StudioNotice: Equatable {
 /// nothing to reveal nothing.
 private struct ToolInspector: View {
     let player: StemPlayer
+    let beats: BeatGridStore
     @Binding var tool: StudioTool?
     /// False in landscape, where the chips live in the transport instead.
     var showsChips = true
@@ -865,7 +889,7 @@ private struct ToolInspector: View {
         case .speed: SpeedToolContent(player: player)
         case .key: KeyToolContent(player: player)
         case .target: TargetToolContent(player: player)
-        case .click: ClickToolContent(player: player)
+        case .click: ClickToolContent(player: player, beats: beats)
         case .reps: RepetitionToolContent(player: player)
         case .sections: SectionsToolContent(player: player)
         case .countIn: CountInToolContent(player: player)

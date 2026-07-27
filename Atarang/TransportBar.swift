@@ -150,6 +150,22 @@ struct TransportBar: View {
                 loopArmed = false
                 Haptics.boundarySet()
             }
+            // The modifier on bar snapping. A loop that has to start between
+            // two bars — a pickup, a phrase that begins on the "and" — is rare
+            // enough to live behind a long press and common enough that it has
+            // to be reachable without turning snapping off for the whole song.
+            if player.isSnappingLoopsToBars {
+                Button("Set A Here Exactly") {
+                    player.setLoopBoundaryA(snapping: false)
+                    loopArmed = true
+                    Haptics.boundarySet()
+                }
+                Button("Set B Here Exactly") {
+                    player.setLoopBoundaryB(snapping: false)
+                    loopArmed = false
+                    Haptics.boundarySet()
+                }
+            }
             if player.practiceSettings.loopRange != nil {
                 Button("Clear Loop", role: .destructive) {
                     player.clearLoop()
@@ -224,6 +240,11 @@ struct TransportBar: View {
 struct SpeedMenu: View {
     let player: StemPlayer
 
+    private var originalBPM: Int? {
+        guard let grid = player.beatGrid, grid.isReliable else { return nil }
+        return grid.bpm
+    }
+
     var body: some View {
         Menu {
             ForEach([1.0, 0.9, 0.75, 0.6, 0.5], id: \.self) { rate in
@@ -231,7 +252,11 @@ struct SpeedMenu: View {
                     player.setPlaybackRate(Float(rate))
                 } label: {
                     Label(
-                        StudioFormat.percent(Float(rate)),
+                        // The tempo each speed lands on, once the song's own
+                        // tempo is known. The chip stays a percentage: the
+                        // transport has six controls to fit and the menu is
+                        // where there is room to say what the number means.
+                        StudioFormat.rate(Float(rate), atOriginalBPM: originalBPM),
                         systemImage: abs(player.playbackRate - Float(rate)) < 0.001
                             ? "checkmark"
                             : "speedometer"
@@ -335,6 +360,17 @@ struct TransportTimeline: View {
                 WaveformOverviewShape(peaks: waveform?.peaks ?? [])
                     .fill(Color.secondary.opacity(waveform == nil ? 0.12 : 0.35))
                     .frame(height: trackHeight)
+
+                // Bar lines, when the grid is trusted enough to snap to. Drawn
+                // faintly and as one path: they are there so a bar-snapped
+                // boundary is visibly on a bar rather than to be read
+                // individually, and a four-minute song has a few hundred.
+                if let grid = player.beatGrid, grid.isReliable, player.duration > 0 {
+                    BarLineShape(times: grid.downbeatTimes, duration: player.duration)
+                        .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
+                        .frame(height: trackHeight)
+                        .accessibilityHidden(true)
+                }
 
                 if let loop = player.practiceSettings.loopRange, player.duration > 0 {
                     let startX = x(for: loop.start, in: width)
@@ -475,6 +511,24 @@ struct TransportTimeline: View {
         if abs(x - self.x(for: loop.start, in: width)) <= grabRadius { return .loopStart }
         if abs(x - self.x(for: loop.end, in: width)) <= grabRadius { return .loopEnd }
         return .playhead
+    }
+}
+
+/// The song's bar lines, as one path for the same reason the waveform is one:
+/// a hundred and twenty bars should not be a hundred and twenty views.
+struct BarLineShape: Shape {
+    let times: [TimeInterval]
+    let duration: TimeInterval
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        guard duration > 0, rect.width > 0 else { return path }
+        for time in times {
+            let x = CGFloat(min(1, max(0, time / duration))) * rect.width
+            path.move(to: CGPoint(x: x, y: rect.minY))
+            path.addLine(to: CGPoint(x: x, y: rect.maxY))
+        }
+        return path
     }
 }
 

@@ -115,11 +115,11 @@ struct PracticeSettingsValidation: Equatable, Sendable {
 }
 
 struct SongPracticeSettings: Codable, Equatable, Sendable {
-    /// Bumped to 3 by Phase 5: stem levels joined the settings, and the whole
-    /// file moved out of `UserDefaults` and beside the original. Pre-release, so
-    /// there is no migration — settings written by an earlier build no longer
-    /// decode and the song starts from defaults.
-    static let currentSchemaVersion = 3
+    /// Bumped to 4 by Phase 7: the metronome can follow a detected beat grid
+    /// and loop boundaries can snap to its bar lines. Pre-release, so there is
+    /// no migration — settings written by an earlier build no longer decode and
+    /// the song starts from defaults.
+    static let currentSchemaVersion = 4
     static let supportedCountInClicks = [0, 2, 4]
     static let supportedBPMRange = 30...300
     static let supportedRepetitionPauseRange: ClosedRange<TimeInterval> = 0...10
@@ -141,6 +141,14 @@ struct SongPracticeSettings: Codable, Equatable, Sendable {
     var metronomeAccentEnabled = true
     var metronomeLevel: Float = 0.7
     var metronomeAlignment: TimeInterval = 0
+    /// Whether the click takes its tempo and its first downbeat from the
+    /// detected beat grid.
+    ///
+    /// On by default, and switched off the moment the user sets a BPM or aligns
+    /// the click by hand — a manual correction that a later detection could
+    /// silently overwrite would not be a correction at all. Turning it back on
+    /// is one tap, and with no grid, or an unreliable one, it does nothing.
+    var metronomeFollowsGrid = true
     var metronomeOnly = false
     var repetitionTarget = 0
     var repetitionPause: TimeInterval = 0
@@ -149,6 +157,13 @@ struct SongPracticeSettings: Codable, Equatable, Sendable {
     var tempoRampStart: Float = 0.5
     var tempoRampIncrement: Float = 0.05
     var tempoRampTarget: Float = 1
+    /// Whether A and B land on bar lines when a reliable beat grid exists.
+    ///
+    /// On by default because a practice loop almost always wants to be a whole
+    /// number of bars, and a loop that starts an eighth of a beat late is
+    /// audibly wrong every time it wraps. The timeline's context menu sets a
+    /// boundary exactly where the finger is for the times it does not.
+    var snapLoopsToBars = true
     var savedSections: [SavedPracticeSection] = []
     /// Per-stem mix levels, keyed by `StemKind.rawValue`.
     ///

@@ -93,7 +93,9 @@ struct ToolChipRow: View {
         case .target:
             return settings.target?.title ?? "None"
         case .click:
-            return settings.metronomeEnabled ? "\(settings.metronomeBPM) BPM" : "Off"
+            return settings.metronomeEnabled
+                ? StudioFormat.bpm(player.effectiveMetronomeBPM)
+                : "Off"
         case .reps:
             if settings.repetitionTarget == 0 {
                 return settings.tempoRampEnabled ? "Ramp" : "Endless"
@@ -158,6 +160,7 @@ struct ToolSheet: View {
     @Environment(\.dismiss) private var dismiss
     let tool: StudioTool
     let player: StemPlayer
+    let beats: BeatGridStore
 
     var body: some View {
         NavigationStack {
@@ -167,7 +170,7 @@ struct ToolSheet: View {
                 case .speed: SpeedToolContent(player: player)
                 case .key: KeyToolContent(player: player)
                 case .target: TargetToolContent(player: player)
-                case .click: ClickToolContent(player: player)
+                case .click: ClickToolContent(player: player, beats: beats)
                 case .reps: RepetitionToolContent(player: player)
                 case .sections: SectionsToolContent(player: player)
                 case .countIn: CountInToolContent(player: player)
@@ -226,13 +229,28 @@ struct LoopToolContent: View {
                 Button("Clear Loop", role: .destructive) { player.clearLoop() }
                     .frame(minHeight: 44)
             }
+            if player.beatGrid?.isReliable == true {
+                Toggle(
+                    "Snap A and B to bars",
+                    isOn: Binding(
+                        get: { player.practiceSettings.snapLoopsToBars },
+                        set: { player.setSnapLoopsToBars($0) }
+                    )
+                )
+            }
         } footer: {
-            Text(
-                player.practiceSettings.loopRange == nil
-                    ? "Set A and B here, or tap Set A then Set B in the transport. Drag the A and B handles on the timeline to adjust. The minimum loop is \(PlaybackLoopRange.minimumDuration.formatted()) seconds."
-                    : "Drag the A and B handles on the timeline for coarse changes; nudge here for fine ones."
-            )
+            Text(loopFooter)
         }
+    }
+
+    private var loopFooter: String {
+        if player.practiceSettings.loopRange == nil {
+            return "Set A and B here, or tap Set A then Set B in the transport. Drag the A and B handles on the timeline to adjust. The minimum loop is \(PlaybackLoopRange.minimumDuration.formatted()) seconds."
+        }
+        if player.isSnappingLoopsToBars {
+            return "A and B land on the song's bar lines. Nudge here, or hold the transport's loop button, to place one exactly where you want it instead."
+        }
+        return "Drag the A and B handles on the timeline for coarse changes; nudge here for fine ones."
     }
 
     /// Nudges rather than a slider. Phase 1 recorded why: B spanned the whole
@@ -385,10 +403,174 @@ struct TargetToolContent: View {
     }
 }
 
-struct ClickToolContent: View {
+/// The song's time grid, and the click that runs on it.
+///
+/// Detection is offered here rather than on a stage of its own because the
+/// tempo is only ever wanted for something — the click, the count-in, where a
+/// loop starts — and all three are in this sheet or one tap from it.
+struct TempoToolContent: View {
     let player: StemPlayer
+    let beats: BeatGridStore
+
+    private var job: AnalysisProgressCenter.Job? {
+        AnalysisProgressCenter.shared.job(ofKind: .beatAnalysis)
+    }
 
     var body: some View {
+        Section {
+            if let job {
+                jobRow(job)
+            } else if let grid = beats.grid {
+                gridRows(grid)
+            } else {
+                Button("Detect Tempo") { beats.detect() }
+                    .frame(minHeight: 44)
+                    .disabled(player.isRecording)
+            }
+            if let notice = beats.notice {
+                Label(notice, systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("Tempo")
+        } footer: {
+            Text(footerText)
+        }
+    }
+
+    private var footerText: String {
+        if beats.grid == nil {
+            let stem = beats.rhythmStem?.title.lowercased() ?? "backing"
+            return "Atarang listens to the \(stem) stem and works out where the beats are. Nothing is downloaded and nothing leaves this device. It shares one queue with separation, so it waits if something else is running."
+        }
+        if let grid = beats.grid, !grid.isReliable {
+            return "The beats are a guess Atarang is not confident in, so nothing follows them yet. Play the song against the click, then use it or correct it."
+        }
+        return "The click, the count-in, and loop boundaries all follow this grid. Correcting anything here makes it yours, and a later detection will not overwrite it."
+    }
+
+    private func jobRow(_ job: AnalysisProgressCenter.Job) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if job.isWaiting {
+                ProgressView()
+            } else {
+                ProgressView(value: job.progress)
+            }
+            HStack {
+                Text(job.status)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Stop", role: .cancel) { beats.stopDetecting() }
+                    .buttonStyle(.bordered)
+                    .frame(minHeight: 44)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func gridRows(_ grid: BeatGrid) -> some View {
+        LabeledContent("Tempo") {
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(StudioFormat.bpm(grid.bpm ?? 0))
+                    .font(.subheadline.monospacedDigit().weight(.semibold))
+                if grid.hasTempoDrift {
+                    Text("Speeds up and slows down")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        // The two corrections that matter most, because they are the two
+        // mistakes the detector makes: hearing the hi-hats as the beat, and
+        // hearing a sparse song at half its tempo.
+        HStack {
+            Button("Half Speed") { beats.scaleTempo(by: 0.5) }
+            Spacer()
+            Button("Double") { beats.scaleTempo(by: 2) }
+        }
+        .buttonStyle(.bordered)
+        .frame(minHeight: 44)
+        LabeledContent("First downbeat", value: StudioFormat.preciseTime(grid.firstDownbeat ?? 0))
+            .monospacedDigit()
+        Picker(
+            "Beats per bar",
+            selection: Binding(
+                get: { grid.beatsPerBar },
+                set: { beats.setBeatsPerBar($0) }
+            )
+        ) {
+            ForEach(BeatGrid.supportedBeatsPerBar, id: \.self) { value in
+                Text("\(value)").tag(value)
+            }
+        }
+        .pickerStyle(.menu)
+
+        if !grid.isReliable {
+            // Said plainly rather than shown as a number: "confidence 0.41"
+            // means nothing to someone holding a guitar.
+            Label(
+                "Atarang is not sure about this tempo.",
+                systemImage: "exclamationmark.triangle.fill"
+            )
+            .font(.caption)
+            .foregroundStyle(.orange)
+            Button("Sounds Right — Use It") { beats.confirm() }
+                .frame(minHeight: 44)
+        }
+
+        Button("Set First Downbeat at Playhead") {
+            beats.setFirstDownbeat(at: player.position)
+            Haptics.boundarySet()
+        }
+        .frame(minHeight: 44)
+        HStack {
+            Button("Detect Again") { beats.detect() }
+                .buttonStyle(.bordered)
+            Button("Clear", role: .destructive) { beats.clear() }
+                .buttonStyle(.bordered)
+        }
+        .frame(minHeight: 44)
+        .disabled(player.isRecording)
+        Text(sourceDescription(grid))
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+    }
+
+    private func sourceDescription(_ grid: BeatGrid) -> String {
+        if grid.isUserEdited { return "Set by you." }
+        guard let stem = grid.sourceStems.first else { return "Detected." }
+        return stem == .drums
+            ? "Detected from the drums stem."
+            : "Detected from the \(stem.title.lowercased()) stem, which is harder to read than isolated drums."
+    }
+}
+
+struct ClickToolContent: View {
+    let player: StemPlayer
+    let beats: BeatGridStore
+
+    var body: some View {
+        TempoToolContent(player: player, beats: beats)
+        if beats.hasGrid {
+            Section {
+                Toggle(
+                    "Click follows the song",
+                    isOn: Binding(
+                        get: { player.practiceSettings.metronomeFollowsGrid },
+                        set: { player.setMetronomeFollowsGrid($0) }
+                    )
+                )
+                .disabled(!(beats.grid?.isReliable ?? false))
+            } footer: {
+                Text(
+                    player.isMetronomeFollowingGrid
+                        ? "The click is at \(StudioFormat.bpm(player.effectiveMetronomeBPM)), accenting every \(player.effectiveBeatsPerBar) beats, aligned to the song's first downbeat."
+                        : "The click is using the tempo set below. Turn this on to follow the detected grid instead."
+                )
+            }
+        }
         Section {
             Toggle(
                 "Metronome",
@@ -401,7 +583,10 @@ struct ClickToolContent: View {
                 TextField(
                     "BPM",
                     value: Binding(
-                        get: { player.practiceSettings.metronomeBPM },
+                        // The effective tempo, so the field shows what is
+                        // actually clicking. Typing in it is a correction, and
+                        // `setMetronomeBPM` stops following the grid.
+                        get: { player.effectiveMetronomeBPM },
                         set: { player.setMetronomeBPM($0) }
                     ),
                     format: .number
@@ -455,7 +640,11 @@ struct ClickToolContent: View {
             Button("Align First Downbeat Here") { player.alignMetronome() }
                 .frame(minHeight: 44)
         } footer: {
-            Text("Aligned at \(StudioFormat.time(player.practiceSettings.metronomeAlignment)). Atarang does not detect the song's tempo yet, so the click is aligned by hand.")
+            Text(
+                player.isMetronomeFollowingGrid
+                    ? "The click is aligned to the detected downbeat at \(StudioFormat.time(player.effectiveMetronomeAlignment)). Aligning by hand switches following off."
+                    : "Aligned at \(StudioFormat.time(player.practiceSettings.metronomeAlignment))."
+            )
         }
     }
 }
@@ -556,6 +745,13 @@ struct RepetitionToolContent: View {
         }
     }
 
+    /// The tempo the ramp is a percentage *of*, when the song's own tempo is
+    /// known. A guitarist works in BPM, not in percent of an unstated number.
+    private var originalBPM: Int? {
+        guard let grid = player.beatGrid, grid.isReliable else { return nil }
+        return grid.bpm
+    }
+
     private func rateMenu(
         _ title: String,
         value: Float,
@@ -570,10 +766,23 @@ struct RepetitionToolContent: View {
             selection: Binding(get: { value }, set: { set($0) })
         ) {
             ForEach(values, id: \.self) { rate in
-                Text("\(isIncrement ? "+" : "")\(StudioFormat.percent(rate))").tag(rate)
+                // An increment is a difference, so it reads in whole BPM added
+                // rather than as a tempo of its own.
+                Text(
+                    isIncrement
+                        ? incrementLabel(rate)
+                        : StudioFormat.rate(rate, atOriginalBPM: originalBPM)
+                )
+                .tag(rate)
             }
         }
         .pickerStyle(.menu)
+    }
+
+    private func incrementLabel(_ rate: Float) -> String {
+        guard let originalBPM else { return "+\(StudioFormat.percent(rate))" }
+        let step = Int((Double(originalBPM) * Double(rate)).rounded())
+        return "+\(StudioFormat.percent(rate)) · +\(step) BPM"
     }
 }
 
@@ -667,7 +876,7 @@ struct CountInToolContent: View {
             .pickerStyle(.segmented)
             .disabled(player.isCountingIn)
         } footer: {
-            Text("One click per second before playback or recording, with a tap you can feel. The count-in is never recorded.")
+            Text("One click per beat at \(StudioFormat.bpm(player.effectiveMetronomeBPM)) before playback or recording, with a tap you can feel. The clicks are placed in the audio graph, so they do not drift, and the song starts exactly where the last one said it would. The count-in is never recorded.")
         }
     }
 }

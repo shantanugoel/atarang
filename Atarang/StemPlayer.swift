@@ -26,6 +26,13 @@ final class StemPlayer {
     /// when it is loaded. Today that is only a practice target whose stem this
     /// separation does not have.
     private(set) var practiceNotice: String?
+    /// Where this song's beats are, when they are known.
+    ///
+    /// Owned by `BeatGridStore` and handed down here, because three things in
+    /// the audio layer need it — the click's tempo and downbeat, the count-in's
+    /// tempo, and where a loop boundary lands — and none of them should be
+    /// reaching into a view's model to ask.
+    private(set) var beatGrid: BeatGrid?
 
     /// Computed rather than stored so the `UserDefaults` write happens on
     /// assignment. `@Observable` rewrites stored properties into accessors, so
@@ -72,6 +79,37 @@ final class StemPlayer {
     var pitchSemitones: Float { playbackState.pitchSemitones }
     var loopRange: PlaybackLoopRange? { playbackState.loopRange }
     var isCountingIn: Bool { countInRemaining > 0 }
+
+    /// Whether the click is taking its tempo and downbeat from the grid rather
+    /// than from the numbers in the Click sheet.
+    var isMetronomeFollowingGrid: Bool {
+        practiceSettings.metronomeFollowsGrid && (beatGrid?.isReliable ?? false)
+    }
+
+    /// The tempo the click actually runs at, whichever source it came from.
+    var effectiveMetronomeBPM: Int {
+        guard isMetronomeFollowingGrid, let bpm = beatGrid?.bpm else {
+            return practiceSettings.metronomeBPM
+        }
+        return bpm
+    }
+
+    /// Where beat one sits, whichever source it came from.
+    var effectiveMetronomeAlignment: TimeInterval {
+        guard isMetronomeFollowingGrid, let downbeat = beatGrid?.firstDownbeat else {
+            return practiceSettings.metronomeAlignment
+        }
+        return downbeat
+    }
+
+    var effectiveBeatsPerBar: Int {
+        isMetronomeFollowingGrid ? (beatGrid?.beatsPerBar ?? 4) : 4
+    }
+
+    /// Whether loop boundaries are landing on bar lines right now.
+    var isSnappingLoopsToBars: Bool {
+        practiceSettings.snapLoopsToBars && (beatGrid?.isReliable ?? false)
+    }
     var remainingRepetitions: Int {
         guard practiceSettings.repetitionTarget > 0 else { return 0 }
         return max(0, practiceSettings.repetitionTarget - completedRepetitions)
@@ -127,6 +165,13 @@ final class StemPlayer {
     // no business redrawing because a tap-tempo date or a file handle changed.
     @ObservationIgnored private var engine = AVAudioEngine()
     @ObservationIgnored private var metronomeNode = AVAudioPlayerNode()
+    /// The count-in has a node of its own so it is always audible.
+    ///
+    /// Sharing the metronome node would mean sharing its gain, and a user who
+    /// has turned the click down to nothing — or off, which leaves the node at
+    /// whatever level it was — would be counted in silently. Two nodes cost one
+    /// object each and remove the coupling entirely.
+    @ObservationIgnored private var countInNode = AVAudioPlayerNode()
     @ObservationIgnored private var nodes: [StemKind: AVAudioPlayerNode] = [:]
     @ObservationIgnored private var timePitchNodes: [StemKind: AVAudioUnitTimePitch] = [:]
     @ObservationIgnored private var files: [StemKind: AVAudioFile] = [:]
@@ -215,17 +260,19 @@ final class StemPlayer {
             engine.attach(node)
             engine.attach(timePitch)
         }
-        engine.attach(metronomeNode)
-        engine.connect(
-            metronomeNode,
-            to: engine.mainMixerNode,
-            format: AVAudioFormat(
-                commonFormat: .pcmFormatFloat32,
-                sampleRate: Self.metronomeSampleRate,
-                channels: 1,
-                interleaved: false
+        for node in [metronomeNode, countInNode] {
+            engine.attach(node)
+            engine.connect(
+                node,
+                to: engine.mainMixerNode,
+                format: AVAudioFormat(
+                    commonFormat: .pcmFormatFloat32,
+                    sampleRate: Self.metronomeSampleRate,
+                    channels: 1,
+                    interleaved: false
+                )
             )
-        )
+        }
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleInterruption),
@@ -314,6 +361,10 @@ final class StemPlayer {
         title = track.title
         separationModel = track.separationModel
         currentTrackID = track.id
+        // The grid belongs to the song being opened, and arrives a moment later
+        // from `BeatGridStore`. Clearing it here is what stops the previous
+        // song's tempo driving this one's click in between.
+        beatGrid = nil
         let storage = track.songStorage
         songStorage = storage
         practiceSettings = practiceSettingsStore.load(from: storage)
@@ -354,36 +405,29 @@ final class StemPlayer {
         if isPlaying || isCountingIn {
             pause(source: source)
         } else {
-            startPlaybackWithCountIn(source: source)
-        }
-    }
-
-    private func startPlaybackWithCountIn(source: TransportSource) {
-        cancelCountIn()
-        guard practiceSettings.countInClicks > 0 else {
-            requestPlayback(source: source)
-            return
-        }
-        countInTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            let completed = await self.performCountIn()
-            guard completed else { return }
-            self.requestPlayback(source: source)
+            cancelCountIn()
+            requestPlayback(source: source, countingIn: true)
         }
     }
 
     /// Starts normal playback and retries once after a transient Core Audio I/O
     /// startup failure. Session category changes can briefly leave the hardware
     /// route unavailable even though activation itself succeeded.
-    func requestPlayback(source: TransportSource = .ui) {
+    ///
+    /// `countingIn` is only true for the user pressing play. Everything else
+    /// that resumes — a loop pass, an interruption ending, the end of a scrub —
+    /// is continuing something that is already under way, and counting that in
+    /// would be an interruption rather than a preparation.
+    func requestPlayback(source: TransportSource = .ui, countingIn: Bool = false) {
         transportSource = source
         playbackRequestID += 1
         let requestID = playbackRequestID
         alertMessage = nil
+        let plan = countingIn ? countInPlan() : CountInPlan(clicks: 0, bpm: 120)
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                try self.play()
+                try self.play(countIn: plan)
                 return
             } catch {
                 guard Self.isTransientAudioIOStartFailure(error),
@@ -410,7 +454,7 @@ final class StemPlayer {
                   self.isLoaded,
                   !self.isRecording else { return }
             do {
-                try self.play()
+                try self.play(countIn: plan)
                 self.alertMessage = nil
             } catch {
                 self.alertMessage = Self.playbackStartupMessage(for: error)
@@ -421,7 +465,14 @@ final class StemPlayer {
         }
     }
 
-    private func play() throws {
+    /// Starts the music, optionally after a count-in.
+    ///
+    /// The count-in is part of starting playback rather than something that
+    /// happens before it: its clicks and the first note of the song are placed
+    /// on the same host-time line, one plan apart, so the music arrives exactly
+    /// where the fourth click said it would. Counting in with a loop of
+    /// `Task.sleep` and *then* pressing play could not make that promise.
+    private func play(countIn: CountInPlan = CountInPlan(clicks: 0, bpm: 120)) throws {
         guard isLoaded else { return }
         if position >= duration { playbackState.seek(to: 0) }
         if let loopRange, (position < loopRange.start || position >= loopRange.end) {
@@ -431,6 +482,7 @@ final class StemPlayer {
         let generation = playbackState.beginNewGeneration()
         for node in nodes.values { node.stop() }
         metronomeNode.stop()
+        countInNode.stop()
         // Recording has already activated a play-and-record session. Switching
         // back to `.playback` here would silently drop microphone input just as
         // the take begins.
@@ -464,15 +516,28 @@ final class StemPlayer {
         refreshOutputLatency()
         let leadTime = 0.08
         let startHostTime = mach_absolute_time() + AVAudioTime.hostTime(forSeconds: leadTime)
-        let startTime = AVAudioTime(hostTime: startHostTime)
+        // The click nodes start when the count-in does; the stems start when it
+        // ends. With no count-in the two are the same instant.
+        let clickStart = AVAudioTime(hostTime: startHostTime)
+        let musicStart = AVAudioTime(
+            hostTime: startHostTime + AVAudioTime.hostTime(forSeconds: countIn.duration)
+        )
         renderAnchorPosition = position
-        scheduledRenderDuration = 0
+        // The metronome node has been running for the length of the count-in by
+        // the time the song starts, and its click plan is placed on its own
+        // clock — so the song's first click is one count-in later on it.
+        scheduledRenderDuration = countIn.duration
+        scheduleCountInClicks(countIn)
         schedulePass(from: position, generation: generation)
         for stem in activeStems {
             nodes[stem]?.volume = effectiveVolume(for: stem)
-            nodes[stem]?.play(at: startTime)
+            nodes[stem]?.play(at: musicStart)
         }
-        metronomeNode.play(at: startTime)
+        metronomeNode.play(at: clickStart)
+        if !countIn.isEmpty {
+            countInNode.play(at: clickStart)
+            beginCountInDisplay(countIn, startingIn: leadTime)
+        }
         isPlaying = true
         beginTimer()
         publishNowPlaying()
@@ -635,9 +700,17 @@ final class StemPlayer {
         if shouldResume { requestPlayback() }
     }
 
-    func setLoopBoundaryA(at value: TimeInterval? = nil) {
+    /// Sets A, on the nearest bar line when there is a grid to put it on.
+    ///
+    /// `snapping` is the modifier: passing `false` places the boundary exactly
+    /// where it was asked for, which is what the timeline's context menu and the
+    /// ±0.1 s nudges do. Everything else follows the song's own bar lines,
+    /// because a practice loop is nearly always a whole number of bars and one
+    /// that starts a fraction of a beat early is audibly wrong on every wrap.
+    func setLoopBoundaryA(at value: TimeInterval? = nil, snapping: Bool = true) {
+        let requested = snapped(value ?? position, snapping: snapping)
         let start = min(
-            max(0, value ?? position),
+            max(0, requested),
             max(0, duration - PlaybackLoopRange.minimumDuration)
         )
         let proposedEnd = max(
@@ -647,16 +720,29 @@ final class StemPlayer {
         updateSavedLoop(start: start, end: proposedEnd)
     }
 
-    func setLoopBoundaryB(at value: TimeInterval? = nil) {
+    func setLoopBoundaryB(at value: TimeInterval? = nil, snapping: Bool = true) {
+        let requested = snapped(value ?? position, snapping: snapping)
         let end = min(
             duration,
-            max(PlaybackLoopRange.minimumDuration, value ?? position)
+            max(PlaybackLoopRange.minimumDuration, requested)
         )
         let proposedStart = min(
             practiceSettings.loopStart ?? end,
             max(0, end - max(2, PlaybackLoopRange.minimumDuration))
         )
         updateSavedLoop(start: proposedStart, end: end)
+    }
+
+    /// The bar line a boundary belongs on, or the time itself when there is no
+    /// grid, the grid is not trusted, or the caller asked for an exact time.
+    private func snapped(_ time: TimeInterval, snapping: Bool) -> TimeInterval {
+        guard snapping, isSnappingLoopsToBars, let beatGrid else { return time }
+        return beatGrid.snapped(time, to: .bar)
+    }
+
+    func setSnapLoopsToBars(_ snaps: Bool) {
+        practiceSettings.snapLoopsToBars = snaps
+        persistPracticeSettings()
     }
 
     func adjustLoopBoundaryA(by delta: TimeInterval) {
@@ -702,12 +788,43 @@ final class StemPlayer {
         persistAndRestartIfPlaying()
     }
 
+    /// Hands the click a new beat grid, or takes one away.
+    ///
+    /// Restarting the pass is what makes a newly detected tempo audible in a
+    /// song that is already playing: clicks are queued three seconds ahead on a
+    /// timeline built from the old tempo, and a player node cannot unschedule a
+    /// buffer.
+    func applyBeatGrid(_ grid: BeatGrid?) {
+        guard beatGrid != grid else { return }
+        let wasFollowing = isMetronomeFollowingGrid
+        beatGrid = grid
+        guard !isRecording else { return }
+        if wasFollowing || isMetronomeFollowingGrid, practiceSettings.metronomeEnabled {
+            restartIfPlaying()
+        }
+    }
+
+    /// Turns following the grid on or off. Everything else about the click is
+    /// unchanged, so switching it off restores the hand-set tempo rather than
+    /// freezing the detected one.
+    func setMetronomeFollowsGrid(_ follows: Bool) {
+        guard !isRecording else { return }
+        practiceSettings.metronomeFollowsGrid = follows
+        persistAndRestartIfPlaying()
+    }
+
+    /// Sets the tempo by hand, which also stops the click following the grid.
+    ///
+    /// Anything else would make the correction temporary: the next detection,
+    /// or simply reopening the song, would put the detected number back and the
+    /// user would have to fix it again.
     func setMetronomeBPM(_ bpm: Int) {
         guard !isRecording else { return }
         practiceSettings.metronomeBPM = min(
             max(bpm, SongPracticeSettings.supportedBPMRange.lowerBound),
             SongPracticeSettings.supportedBPMRange.upperBound
         )
+        practiceSettings.metronomeFollowsGrid = false
         persistAndRestartIfPlaying()
     }
 
@@ -749,12 +866,15 @@ final class StemPlayer {
         persistPracticeSettings()
     }
 
+    /// Aligns the click by hand, which — like setting the BPM — stops it
+    /// following the grid.
     func alignMetronome(at position: TimeInterval? = nil) {
         guard !isRecording else { return }
         practiceSettings.metronomeAlignment = min(
             max(0, position ?? self.position),
             duration
         )
+        practiceSettings.metronomeFollowsGrid = false
         persistAndRestartIfPlaying()
     }
 
@@ -1051,6 +1171,7 @@ final class StemPlayer {
         songStorage = nil
         practiceSettings = SongPracticeSettings()
         practiceNotice = nil
+        beatGrid = nil
         isLoaded = false
         recordedTake = nil
         activeTimingStem = nil
@@ -1256,6 +1377,7 @@ final class StemPlayer {
         playbackState.beginNewGeneration()
         for node in nodes.values { node.stop() }
         metronomeNode.stop()
+        countInNode.stop()
         engine.stop()
         timer?.invalidate()
         timer = nil
@@ -1431,6 +1553,7 @@ final class StemPlayer {
 
         let replacement = AVAudioEngine()
         let replacementMetronome = AVAudioPlayerNode()
+        let replacementCountIn = AVAudioPlayerNode()
         var replacementNodes: [StemKind: AVAudioPlayerNode] = [:]
         var replacementTimePitchNodes: [StemKind: AVAudioUnitTimePitch] = [:]
         for stem in StemKind.allCases {
@@ -1441,17 +1564,19 @@ final class StemPlayer {
             replacement.attach(node)
             replacement.attach(timePitch)
         }
-        replacement.attach(replacementMetronome)
-        replacement.connect(
-            replacementMetronome,
-            to: replacement.mainMixerNode,
-            format: AVAudioFormat(
-                commonFormat: .pcmFormatFloat32,
-                sampleRate: Self.metronomeSampleRate,
-                channels: 1,
-                interleaved: false
+        for node in [replacementMetronome, replacementCountIn] {
+            replacement.attach(node)
+            replacement.connect(
+                node,
+                to: replacement.mainMixerNode,
+                format: AVAudioFormat(
+                    commonFormat: .pcmFormatFloat32,
+                    sampleRate: Self.metronomeSampleRate,
+                    channels: 1,
+                    interleaved: false
+                )
             )
-        )
+        }
         for stem in activeStems {
             guard let node = replacementNodes[stem],
                   let timePitch = replacementTimePitchNodes[stem],
@@ -1466,6 +1591,7 @@ final class StemPlayer {
 
         engine = replacement
         metronomeNode = replacementMetronome
+        countInNode = replacementCountIn
         nodes = replacementNodes
         timePitchNodes = replacementTimePitchNodes
         applyPlaybackTransform()
@@ -1537,6 +1663,7 @@ final class StemPlayer {
         playbackState.beginNewGeneration()
         for node in nodes.values { node.stop() }
         metronomeNode.stop()
+        countInNode.stop()
         timer?.invalidate()
         timer = nil
         // Pause the engine, not just the player nodes. A live engine keeps the
@@ -1561,6 +1688,7 @@ final class StemPlayer {
         playbackState.beginNewGeneration()
         for node in nodes.values { node.stop() }
         metronomeNode.stop()
+        countInNode.stop()
         engine.stop()
         engine.reset()
         timer?.invalidate()
@@ -1924,31 +2052,128 @@ final class StemPlayer {
         countInGeneration &+= 1
         countInTask?.cancel()
         countInTask = nil
+        countInNode.stop()
         countInRemaining = 0
     }
 
-    private func performCountIn() async -> Bool {
-        let clicks = practiceSettings.countInClicks
-        guard clicks > 0 else { return true }
+    /// The count-in for this song, at this song's tempo.
+    ///
+    /// A count-in exists to put the player in time before the first note, so it
+    /// has to be in that time. It follows the same tempo the click does — the
+    /// detected grid when one is trusted, and the hand-set BPM otherwise —
+    /// rather than the one click per second it used to be, which was only ever
+    /// right for a song at 60.
+    private func countInPlan() -> CountInPlan {
+        CountInPlan(
+            clicks: practiceSettings.countInClicks,
+            bpm: Double(effectiveMetronomeBPM)
+        )
+    }
+
+    /// Places every click of the count-in at once, on the count-in node's own
+    /// clock, which starts when that node does.
+    private func scheduleCountInClicks(_ plan: CountInPlan) {
+        guard !plan.isEmpty,
+              let normal = clickBuffers[false],
+              let accented = clickBuffers[true] else { return }
+        for (index, offset) in plan.offsets.enumerated() {
+            let time = AVAudioTime(
+                sampleTime: AVAudioFramePosition((offset * Self.metronomeSampleRate).rounded()),
+                atRate: Self.metronomeSampleRate
+            )
+            // The first click is the accented one, so a count of four is
+            // audibly "one, two, three, four" rather than four identical taps.
+            countInNode.scheduleBuffer(index == 0 ? accented : normal, at: time, options: [])
+        }
+    }
+
+    /// Drives the number on screen and the taps under the finger.
+    ///
+    /// Display only: the audio is already placed. If this task is late by a few
+    /// milliseconds the count still sounds exactly on the beat, which is the
+    /// point of scheduling and counting separately.
+    private func beginCountInDisplay(_ plan: CountInPlan, startingIn lead: TimeInterval) {
+        countInTask = Task { @MainActor [weak self] in
+            _ = await self?.runCountInDisplay(plan, startingIn: lead)
+            self?.countInTask = nil
+        }
+    }
+
+    /// Counts down against absolute deadlines, so a late tick does not push
+    /// every later one back with it.
+    @discardableResult
+    private func runCountInDisplay(
+        _ plan: CountInPlan,
+        startingIn lead: TimeInterval
+    ) async -> Bool {
+        guard !plan.isEmpty else { return true }
         countInGeneration &+= 1
         let generation = countInGeneration
-        for remaining in stride(from: clicks, through: 1, by: -1) {
+        let start = Date().addingTimeInterval(lead)
+        for (index, offset) in plan.offsets.enumerated() {
+            let delay = start.addingTimeInterval(offset).timeIntervalSinceNow
+            if delay > 0 {
+                do { try await Task.sleep(for: .seconds(delay)) }
+                catch {
+                    countInRemaining = 0
+                    return false
+                }
+            }
             guard !Task.isCancelled, generation == countInGeneration else {
                 countInRemaining = 0
                 return false
             }
-            countInRemaining = remaining
-            AudioServicesPlaySystemSound(1104)
+            countInRemaining = plan.clicks - index
             Haptics.countInTick()
-            do {
-                try await Task.sleep(for: .seconds(1))
-            } catch {
+        }
+        let remainder = start
+            .addingTimeInterval(plan.duration)
+            .timeIntervalSinceNow
+        if remainder > 0 {
+            do { try await Task.sleep(for: .seconds(remainder)) }
+            catch {
                 countInRemaining = 0
                 return false
             }
         }
         countInRemaining = 0
         return !Task.isCancelled && generation == countInGeneration
+    }
+
+    /// The count-in that runs before a take, which is not part of any playback
+    /// pass and is deliberately outside the recording: the clicks are for the
+    /// player, not for the performance.
+    private func performCountIn() async -> Bool {
+        let plan = countInPlan()
+        guard !plan.isEmpty else { return true }
+        countInNode.stop()
+        do { try configurePlaybackSession() }
+        catch {
+            logger.warning(
+                "Could not start the count-in session: \(error.localizedDescription, privacy: .public)"
+            )
+        }
+        if !engine.isRunning {
+            engine.prepare()
+            do { try engine.start() }
+            catch {
+                // A count-in that cannot be heard is not a reason to refuse the
+                // take. Count it silently and let recording begin.
+                logger.warning(
+                    "Counting in without audio: \(error.localizedDescription, privacy: .public)"
+                )
+            }
+        }
+        let lead = 0.08
+        scheduleCountInClicks(plan)
+        countInNode.play(
+            at: AVAudioTime(
+                hostTime: mach_absolute_time() + AVAudioTime.hostTime(forSeconds: lead)
+            )
+        )
+        let completed = await runCountInDisplay(plan, startingIn: lead)
+        countInNode.stop()
+        return completed
     }
 
     private func restoreStemLevels() {
@@ -1961,7 +2186,11 @@ final class StemPlayer {
 
     private func persistAndRestartIfPlaying() {
         persistPracticeSettings()
-        guard isPlaying else { return }
+        restartIfPlaying()
+    }
+
+    private func restartIfPlaying() {
+        guard isPlaying, !isCountingIn else { return }
         let resumePosition = position
         pausePlayback()
         playbackState.seek(to: resumePosition)
@@ -1986,6 +2215,7 @@ final class StemPlayer {
             guard let self else { return }
             self.forEachPlaybackNode { $0.stop() }
             self.metronomeNode.stop()
+            self.countInNode.stop()
             self.timer?.invalidate()
             self.timer = nil
             self.isPlaying = false
@@ -2061,11 +2291,16 @@ final class StemPlayer {
             sourceStart: start,
             sourceEnd: end,
             renderOrigin: scheduledRenderDuration,
-            bpm: Double(practiceSettings.metronomeBPM),
+            // Tempo, downbeat, and bar length all come from the grid when there
+            // is a trustworthy one, which is what replaces aligning the click
+            // by ear as the default. The hand-set values are still there, one
+            // toggle away, and are what a song with no grid uses.
+            bpm: Double(effectiveMetronomeBPM),
             clicksPerBeat: practiceSettings.metronomeSubdivision.clicksPerBeat,
-            alignment: practiceSettings.metronomeAlignment,
+            alignment: effectiveMetronomeAlignment,
             accentsEnabled: practiceSettings.metronomeAccentEnabled,
-            rate: Double(playbackState.rate)
+            rate: Double(playbackState.rate),
+            beatsPerBar: effectiveBeatsPerBar
         )
         metronomePlan.reset()
         guard practiceSettings.metronomeEnabled else { return }
