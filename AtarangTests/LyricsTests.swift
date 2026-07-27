@@ -143,6 +143,30 @@ final class LyricsFormatTests: XCTestCase {
         XCTAssertEqual(lines.map(\.text), ["first part", "and more"])
     }
 
+    /// A real manual caption track: cues wrapped over two lines, and a first
+    /// cue that is punctuation in brackets rather than a section name.
+    func testWrappedCuesJoinAndMusicMarkersAreNotSections() {
+        let lines = LyricsFormat.parseWebVTT("""
+        WEBVTT
+        Kind: captions
+        Language: en
+
+        00:00:01.360 --> 00:00:03.040
+        [♪♪♪]
+
+        00:00:22.640 --> 00:00:26.960
+        ♪ You know the rules
+        and so do I ♪
+
+        00:00:30.000 --> 00:00:33.000
+        [Chorus]
+        """)
+        XCTAssertEqual(lines.count, 3)
+        XCTAssertNil(lines[0].sectionLabel, "a run of note glyphs names nothing")
+        XCTAssertEqual(lines[1].text, "♪ You know the rules and so do I ♪")
+        XCTAssertEqual(lines[2].sectionLabel, "Chorus")
+    }
+
     func testTimestampParsingRejectsNonTimes() {
         XCTAssertNil(LyricsFormat.parseTimestamp("Chorus"))
         XCTAssertNil(LyricsFormat.parseTimestamp("ar:Somebody"))

@@ -302,7 +302,11 @@ enum LyricsFormat {
               let openIndex = opens.firstIndex(of: first),
               closes.firstIndex(of: last) == openIndex else { return nil }
         let body = trimmed.dropFirst().dropLast().trimmingCharacters(in: .whitespaces)
-        guard !body.isEmpty, !body.contains(first), body.split(separator: " ").count <= 3 else {
+        guard !body.isEmpty, !body.contains(first), body.split(separator: " ").count <= 3,
+              // A caption track's very first cue is routinely `[♪♪♪]` or
+              // `[MUSIC]`; the second of those is a section name and the first
+              // is punctuation. A label has to be able to name something.
+              body.rangeOfCharacter(from: .alphanumerics) != nil else {
             return nil
         }
         return body

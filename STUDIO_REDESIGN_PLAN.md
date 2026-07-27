@@ -1267,9 +1267,26 @@ transport, and the status bar hidden; the LRCLIB sheet refusing to show a search
 field until the preference is on, and the same disclosure sentence in both
 places; and everything surviving a relaunch, including the resumed playhead.
 
-**Not verified.** Fetching a real caption track needs a real video and a network
-run of the bundled `yt-dlp`; the parser is unit-tested against a rolling
-auto-caption fixture, but the yt-dlp invocation and file discovery are not. An
+**The caption fetch shipped hung, and the argument list was why.** `--sub-langs
+"en.*,en"` reads as thorough and is the opposite: the wildcard matches every
+auto-translated variant a video carries — seven of them on the first song it was
+tried against, `en` through `en-es-419` — so yt-dlp downloaded all seven in
+sequence, YouTube answered `429 Too Many Requests`, and the retries left the
+sheet spinning indefinitely. Requesting plain `en` gets the same file the app
+would have kept, in one download and 2.6 seconds. Two further guards went in with
+it, because the failure was unbounded rather than merely slow: Python's `urllib`
+has no default timeout, and `BundledYTDLP` is an actor, so one stalled socket
+holds up every later yt-dlp call including a separation. `--socket-timeout 15`,
+`--retries 2`, and `--extractor-retries 1` bound it. The fetch also logs at
+`.info` now rather than only through yt-dlp's `.debug` channel, which is not
+persisted — there was nothing in the device log to read when this was reported.
+The same real caption file showed the section-label rule calling `[♪♪♪]` a
+section named "♪♪♪"; a label now has to contain something alphanumeric.
+
+**Not verified.** The caption path was diagnosed and fixed by running the exact
+argument list against the bundled `yt-dlp` on a Mac, not through the embedded
+interpreter on device; the parser is unit-tested against both a rolling
+auto-caption fixture and the real manual track that exposed the `[♪♪♪]` case. An
 LRCLIB search *was* run and round-tripped its way to "no matches" — request,
 headers, and decode are exercised, but the path where a match comes back and is
 applied is not. Sing-along in landscape draws, but the simulator's rotated

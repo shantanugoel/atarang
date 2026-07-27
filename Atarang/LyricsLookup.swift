@@ -39,6 +39,7 @@ enum LyricsLookup {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(at: folder) }
 
+            logger.info("Fetching captions for \(url.absoluteString, privacy: .public)")
             try await BundledYTDLP.shared.run(argv: [
                 "--no-playlist",
                 "--no-check-certificates",
@@ -46,8 +47,22 @@ enum LyricsLookup {
                 "--skip-download",
                 "--write-subs",
                 "--write-auto-subs",
-                "--sub-langs", "en.*,en",
+                // Exactly one track. `en.*` looked like the thorough choice and
+                // is the opposite: it matches every auto-translated variant a
+                // video carries — seven of them on the first song this was tried
+                // against — so yt-dlp downloads all seven in a row, YouTube
+                // answers 429, and the retries leave the sheet spinning. Plain
+                // `en` is the manual English track when there is one and the
+                // automatic one otherwise, which is the file we would have kept.
+                "--sub-langs", "en",
                 "--sub-format", "vtt",
+                // These are the difference between a slow fetch and one that
+                // never ends. Python's urllib has no default timeout, and
+                // `BundledYTDLP` is an actor, so one stalled socket would hold
+                // up every later yt-dlp call — a separation included.
+                "--socket-timeout", "15",
+                "--retries", "2",
+                "--extractor-retries", "1",
                 "-o", folder.appendingPathComponent("captions.%(ext)s").path,
                 url.absoluteString,
             ])
@@ -60,10 +75,14 @@ enum LyricsLookup {
             )) ?? []
             guard let vtt = files.first(where: { $0.pathExtension.lowercased() == "vtt" }),
                   let text = try? String(contentsOf: vtt, encoding: .utf8) else {
+                logger.info("No caption track was written for this video")
                 return nil
             }
             let lines = LyricsFormat.parseWebVTT(text)
-            guard !lines.isEmpty else { return nil }
+            guard !lines.isEmpty else {
+                logger.info("The caption track contained no readable cues")
+                return nil
+            }
             await context.report("Captions ready", progress: 1)
             logger.info("Parsed \(lines.count, privacy: .public) caption lines")
             return SongLyrics(
