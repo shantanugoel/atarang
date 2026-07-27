@@ -65,14 +65,14 @@ struct StageContainer: View {
                 stage: .chords,
                 headline: "Chords",
                 detail: "A bar grid that follows the playhead, transposed to match the key you are playing in.",
-                availability: "Arrives with the chords milestone."
+                availability: "Coming soon."
             )
         case .sheet:
             StagePlaceholder(
                 stage: .sheet,
                 headline: "Sheet",
                 detail: "Chord symbols placed over the lyric they land on, sized to read at arm's length.",
-                availability: "Arrives once lyrics and chords are both in place."
+                availability: "Coming soon."
             )
         }
     }
