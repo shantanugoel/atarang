@@ -22,23 +22,38 @@
 | <img src="docs/images/studio.png" alt="The Atarang Studio with the Mixer stage, the practice tool chips, and the persistent transport showing an A–B loop" width="300"> | <img src="docs/images/studio-recording.png" alt="Atarang recording a take, with the microphone meter, levels, and one explanation above a dimmed chip row" width="300"> |
 | The transport never scrolls: timeline, A–B loop, playback, and the tools that state their current value. | One red strip carries the meter, the levels, and what is locked — instead of a dozen disabled controls. |
 
+Four **stages** share that one transport, and switching between them never stops
+playback.
+
+| Lyrics | Chords | Sheet |
+| :---: | :---: | :---: |
+| <img src="docs/images/stage-lyrics.png" alt="The Lyrics stage with the current line large and centred, the word being sung highlighted, and section markers between verses" width="230"> | <img src="docs/images/stage-chords.png" alt="The Chords stage showing E-flat major in bars four to a row, the current bar marked, and the next chord counted in beats" width="230"> | <img src="docs/images/stage-sheet.png" alt="The Sheet stage with chord symbols set over the words they land on" width="230"> |
+| The word being sung, at arm's length. | The bar you are in, and the next chord in beats. | Chords over the words they land on. |
+
+| Make the chords playable | The beat, found on the device |
+| :---: | :---: |
+| <img src="docs/images/tool-playability.png" alt="The Playability sheet with four simplification levels, tidying switches, and a capo suggestion" width="300"> | <img src="docs/images/tool-click.png" alt="The Click sheet showing a tempo of 96 BPM detected from the drums stem, the first downbeat, beats per bar, and a click that follows the song" width="300"> |
+| Reduce the chart to triads or power chords, and let Atarang find the capo that turns barre chords into open ones. | Tempo, downbeat, and bar lines read off the drums — then driving the click, the count-in, and bar-snapped loops. |
+
 | Choose the part you play | Build up repetitions |
 | :---: | :---: |
-| <img src="docs/images/tool-target.png" alt="The Target sheet offering Learn, Guide, and Play Along for the selected stem" width="300"> | <img src="docs/images/tool-reps.png" alt="The Reps sheet with a repetition target, a pause between passes, and a tempo ramp" width="300"> |
+| <img src="docs/images/tool-target.png" alt="The Target sheet offering Learn, Guide, and Play Along for the selected stem" width="300"> | <img src="docs/images/tool-reps.png" alt="The Reps sheet with a repetition target, a pause between passes, and a tempo ramp in percent and BPM" width="300"> |
 | Hear your part alone, keep it quiet under the band, or mute it and take its place. | Count passes, breathe between them, and ramp from comfortable to full tempo. |
 
 | Separate a song | App-level choices |
 | :---: | :---: |
-| <img src="docs/images/import.png" alt="The Atarang import screen listing Balanced 4-stem, Detailed 6-stem, and Vocals + Backing with their stems, speed, and download size" width="300"> | <img src="docs/images/settings.png" alt="Atarang Settings with recording defaults, a default separation, and About" width="300"> |
-| Pick by outcome, with the stems, speed, download size, and device fit shown before you commit. | Recording defaults, the separation Studio offers first, and the bundled notices. |
+| <img src="docs/images/import.png" alt="The Atarang import screen listing Balanced 4-stem, Detailed 6-stem, and Vocals + Backing with their stems, speed, and download size" width="300"> | <img src="docs/images/settings.png" alt="Atarang Settings with recording defaults, a default separation, the opt-in online lyrics lookup, and About" width="300"> |
+| Pick by outcome, with the stems, speed, download size, and device fit shown before you commit. | Recording defaults, the separation Studio offers first, the opt-in lyrics lookup, and the bundled notices. |
 
 | Originals | Separated tracks | Performances |
 | :---: | :---: | :---: |
 | <img src="docs/images/library-originals.png" alt="Original songs in the Atarang Library" width="230"> | <img src="docs/images/library-separated.png" alt="Separated tracks in the Atarang Library" width="230"> | <img src="docs/images/library-performances.png" alt="Recorded performances in the Atarang Library" width="230"> |
 | Reuse downloaded audio. | Reopen, play, record, or separate again. | Play, edit, share, or record another take. |
 
-<sub>Captured on iPhone 17 Pro Max in dark mode. The songs are synthetic demo
-tracks, so no copyrighted audio appears in the shots.</sub>
+<sub>Captured in the iPhone 17 Pro Max simulator in dark mode. The loaded song is
+a synthetic demo track — additive synthesis over an E♭-major progression at 96
+BPM — so no copyrighted audio appears in the shots, and the key, tempo, chords,
+and capo suggestion are all Atarang's own analysis of it.</sub>
 
 ## Make any song yours
 
@@ -146,8 +161,9 @@ for each song, so the next session can pick up where the last one ended.
   and only enter the Library once complete and readable, so an interrupted
   operation leaves the previous state rather than a broken entry.
 - **Settings that own app-level choices** — default microphone and backing
-  levels for new takes, a remembered default separation, the app's version and
-  source, and the bundled third-party notices.
+  levels for new takes, a remembered default separation, the opt-in online
+  lyrics lookup, the app's version and source, and the bundled third-party
+  notices.
 - **Private by design** — extraction, separation, mixing, playback, and
   recording happen on the iPhone. There is no Atarang backend or account.
 
