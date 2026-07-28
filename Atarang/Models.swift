@@ -232,7 +232,11 @@ struct OriginalMetadata: Codable, Sendable {
     let id: UUID
     let title: String
     let createdAt: Date
-    let sourceURL: URL
+    /// Where the audio came from, or `nil` for an original whose metadata was
+    /// reconstructed by `LibraryIntegrity`. An ID, a filename, a duration, and
+    /// a date can all be derived from what is on disk; a URL cannot, and
+    /// inventing one would make the app offer to re-download from nowhere.
+    let sourceURL: URL?
     let sourceKey: String?
     let audioFilename: String
 
@@ -240,7 +244,7 @@ struct OriginalMetadata: Codable, Sendable {
         id: UUID,
         title: String,
         createdAt: Date,
-        sourceURL: URL,
+        sourceURL: URL?,
         sourceKey: String? = nil,
         audioFilename: String
     ) {

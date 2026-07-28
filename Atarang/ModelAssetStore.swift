@@ -98,6 +98,33 @@ actor ModelAssetStore {
             )
     }
 
+    /// What an installed optional model occupies, or zero when it is not
+    /// installed. Read from disk rather than from the manifest, so a partially
+    /// removed install reports what is actually still there.
+    nonisolated static func installedByteCount(_ model: SeparationModelKind) -> Int64 {
+        guard model != .htdemucs, let root = try? modelsDirectory() else { return 0 }
+        return LibraryStaging.byteCount(
+            of: root.appendingPathComponent(model.rawValue, isDirectory: true)
+        )
+    }
+
+    /// Removes an installed optional model, manifest first.
+    ///
+    /// The manifest is what makes a model count as installed, so unlinking it
+    /// before the artifact means an interrupted removal leaves a model that
+    /// reports as absent and will be downloaded again — rather than one that
+    /// claims to be installed and fails at load time.
+    func remove(_ model: SeparationModelKind) throws {
+        guard model != .htdemucs else { return }
+        let directory = try Self.modelsDirectory()
+            .appendingPathComponent(model.rawValue, isDirectory: true)
+        let manifest = directory.appendingPathComponent(ModelInstallManifest.filename)
+        try? FileManager.default.removeItem(at: manifest)
+        if FileManager.default.fileExists(atPath: directory.path) {
+            try FileManager.default.removeItem(at: directory)
+        }
+    }
+
     private nonisolated static func artifactName(for model: SeparationModelKind) -> String {
         switch model {
         case .htdemucs: "" // Bundled; never installed into Models.
@@ -214,6 +241,11 @@ actor ModelAssetStore {
     }
 
     private func download(_ url: URL, for model: SeparationModelKind) async throws -> URL {
+        // The install footprint, not the download size: MDX23C's archive, its
+        // extracted package, and the compiled model all exist at once.
+        if let footprint = model.installFootprintBytes {
+            try StorageCapacity.require(footprint, for: .modelDownload(model))
+        }
         let (temporary, response) = try await URLSession.shared.download(from: url)
         guard let http = response as? HTTPURLResponse,
               (200..<300).contains(http.statusCode),

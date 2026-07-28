@@ -3,6 +3,13 @@ import Foundation
 
 enum RecordingExporter {
     static func export(take: RecordedTake) async throws -> URL {
+        // The boosted microphone copy alone is the size of the take again, so
+        // an export is checked like anything else that writes audio.
+        try StorageCapacity.require(
+            StorageEstimate.export(duration: take.duration)
+                + StorageEstimate.recording(duration: take.duration) / 2,
+            for: .export
+        )
         let processedMicrophoneURL = try boostedMicrophone(for: take)
         defer {
             if processedMicrophoneURL != take.microphoneURL {

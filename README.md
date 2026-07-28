@@ -197,6 +197,8 @@ SHA-256 checksums, stored in Application Support, and excluded from iCloud
 backup. An install is published atomically and recorded in a manifest, so a
 download interrupted part way is re-fetched rather than reported as installed.
 After a model has been downloaded, its separation work remains on-device.
+Every installed model is listed with its size in **Settings → Downloads &
+Models**, and can be removed there and downloaded again later.
 
 ## Install on your iPhone
 
@@ -280,6 +282,44 @@ bundled `yt-dlp` and the same YouTube connection as the audio download.
 
 The Library is stored locally on the device. It can permanently delete
 originals, separations, and performances.
+
+**Diagnostics stay anonymous.** The library report you can export from
+**Settings → Diagnostics** lists folder identifiers, sizes, and what was wrong
+with each entry. It never contains song titles, source URLs, or media
+filenames.
+
+## Storage and backup
+
+Atarang checks that an operation can finish before it starts one. A download,
+separation, take, or export that would not fit is refused with the amount of
+space it is short by, rather than failing part way through — separated stems
+are 32-bit float WAV, so a four-minute song costs roughly 340 MB at four stems
+and 500 MB at six. **Settings → Storage** shows the totals by Originals,
+Separations, Performances, Models, and temporary data.
+
+What is backed up to iCloud is decided by whether anything could reproduce it:
+
+| Category | Backed up | Why |
+| --- | --- | --- |
+| Performances | Yes | Your recordings. Nothing can reproduce them. |
+| Practice state and analysis | Yes | Loops, settings, lyrics, chords, beats, and your corrections. |
+| Downloaded originals | No | Re-fetchable from their source URL. |
+| Separated stems | No | Reproducible by separating again. |
+| Optional models | No | Re-downloadable and checksum-verified. |
+
+Because downloaded originals are a cache, their audio can be reclaimed from
+**Settings → Storage** without losing the song: the practice settings, loops,
+and analysis stay, and separating the song again downloads its audio.
+
+At launch the app checks every library folder and sorts it into valid,
+recoverable, incomplete, or unrecoverable. A folder whose description is
+missing or damaged has it rebuilt from the files themselves where that can be
+done reliably — the folder's own name is the entry's ID, the audio holds its
+duration, and the set of stem files names the separation model that produced
+them. A source URL and a title cannot be derived and are not invented, so a
+recovered entry is titled as recovered and has no source. Anything that cannot
+be rebuilt is moved to a quarantine folder rather than deleted or silently
+skipped, and every finding is in the diagnostics report.
 
 > [!IMPORTANT]
 > Only download audio you have permission to use and follow YouTube's terms.

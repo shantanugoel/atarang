@@ -108,8 +108,13 @@ actor LibraryIndexer {
                 OriginalMetadata.self,
                 from: folder.appendingPathComponent(LibraryMetadata.originalFilename)
             ) else { return nil }
-            let audioURL = folder.appendingPathComponent(metadata.audioFilename)
-            guard FileManager.default.fileExists(atPath: audioURL.path) else { return nil }
+            // An original whose audio has been evicted is still an original:
+            // the folder holds practice state and analysis that no download can
+            // reproduce. Only its audio is cache, so only its audio goes.
+            let candidate = folder.appendingPathComponent(metadata.audioFilename)
+            let audioURL = FileManager.default.fileExists(atPath: candidate.path)
+                ? candidate
+                : nil
             reachable.insert(key(for: folder))
             let measured = measure(folder, audioAt: audioURL)
             return HistoryOriginal(

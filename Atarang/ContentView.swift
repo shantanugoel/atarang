@@ -78,7 +78,7 @@ struct ContentView: View {
             .tabItem { Label("Library", systemImage: "music.note.house") }
             .tag(AppTab.history)
 
-            SettingsView(player: player, separationModel: model)
+            SettingsView(player: player, separationModel: model, history: history)
                 .tabItem { Label("Settings", systemImage: "gearshape") }
                 .tag(AppTab.settings)
         }

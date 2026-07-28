@@ -90,13 +90,23 @@ final class SeparationModel: ObservableObject {
             return nil
         }
         selectedModel = separationModel
+        // An evicted original has no audio to separate. It still has a source,
+        // which is the whole point of eviction being safe: the URL path
+        // downloads it again and carries on.
+        guard let audioURL = original.audioURL else {
+            guard let sourceURL = original.sourceURL else {
+                errorMessage = "The audio for this song is no longer on this device, and there is no source to download it from again."
+                return nil
+            }
+            return await separate(youtubeURL: sourceURL.absoluteString, force: force)
+        }
         let savedOriginal = SavedOriginal(
             id: original.id,
             title: original.title,
             sourceURL: original.sourceURL,
             sourceKey: original.sourceKey
-                ?? YouTubeSource.canonicalKey(for: original.sourceURL),
-            audioURL: original.audioURL
+                ?? original.sourceURL.flatMap(YouTubeSource.canonicalKey(for:)),
+            audioURL: audioURL
         )
         return await runSeparationJob(
             title: original.title,
@@ -170,6 +180,12 @@ final class SeparationModel: ObservableObject {
             original = existing
             context.report("Using saved original…", progress: 0.17)
         } else {
+            // Checked before yt-dlp is even prepared: a download that cannot
+            // land is not worth the extraction that precedes it.
+            try StorageCapacity.require(
+                StorageEstimate.download(duration: nil),
+                for: .download
+            )
             context.report("Preparing bundled yt-dlp…", progress: 0.05)
             try await BundledYTDLP.shared.install()
             context.report("Reading video information…", progress: 0.09)
@@ -226,6 +242,17 @@ final class SeparationModel: ObservableObject {
         guard separationModel.isAvailableOnCurrentDevice else {
             throw StemSeparatorError.modelUnavailable(separationModel)
         }
+        // Stems are float WAV, so they are far larger than the song they came
+        // from: roughly 85 MB per stem for a four-minute track. Refusing here
+        // costs the user nothing; running out of room on the last chunk costs
+        // them the entire separation.
+        try StorageCapacity.require(
+            StorageEstimate.separation(
+                duration: LibraryStaging.audioDuration(at: original.audioURL) ?? 0,
+                stemCount: separationModel.stems.count
+            ),
+            for: .separation(stemCount: separationModel.stems.count)
+        )
         context.report(
             separationModel == .htdemucs
                 ? "Loading \(separationModel.title)…"
@@ -290,6 +317,9 @@ final class SeparationModel: ObservableObject {
                 metadata,
                 to: output.staging.appendingPathComponent(LibraryMetadata.trackFilename)
             )
+            // Applied while staging, so the committed folder is never briefly
+            // in the wrong backup state.
+            SongStorage.applyBackupPolicy(toSeparation: output.staging)
             try LibraryStaging.commit(output.staging, to: output.destination)
             files = stagedFiles.mapValues {
                 output.destination.appendingPathComponent($0.lastPathComponent)
@@ -476,7 +506,7 @@ final class SeparationModel: ObservableObject {
             ) else { continue }
             let requestedKey = YouTubeSource.canonicalKey(for: sourceURL)
             let metadataKey = metadata.sourceKey
-                ?? YouTubeSource.canonicalKey(for: metadata.sourceURL)
+                ?? metadata.sourceURL.flatMap(YouTubeSource.canonicalKey(for:))
             guard metadata.sourceURL == sourceURL
                     || (requestedKey != nil && requestedKey == metadataKey) else { continue }
             let audioURL = folder.appendingPathComponent(metadata.audioFilename)
@@ -568,7 +598,7 @@ final class SeparationModel: ObservableObject {
 private struct SavedOriginal: Sendable {
     let id: UUID
     let title: String
-    let sourceURL: URL
+    let sourceURL: URL?
     let sourceKey: String?
     let audioURL: URL
 }

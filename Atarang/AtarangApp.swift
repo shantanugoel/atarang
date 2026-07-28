@@ -22,7 +22,19 @@ struct AtarangApp: App {
                         // itself. Pre-release, so the keys earlier builds wrote
                         // are dropped rather than migrated.
                         SongStorage.purgeLegacyPerSongDefaults()
+                        // Ordered after the sweep so an abandoned staging
+                        // directory is not inspected as a damaged entry, and
+                        // before the first snapshot so a folder repaired here
+                        // is in the Library on this launch rather than the next.
+                        LibraryIntegrity.runPass()
+                        // The backup rule now covers derived stems, which
+                        // earlier builds did not exclude.
+                        SongStorage.applyBackupPolicyAcrossLibrary()
                     }.value
+                    NotificationCenter.default.post(
+                        name: .atarangLibraryDidChange,
+                        object: nil
+                    )
                 }
         }
     }

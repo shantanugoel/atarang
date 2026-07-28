@@ -5,15 +5,25 @@ struct HistoryOriginal: Identifiable, Sendable {
     let id: UUID
     let title: String
     let createdAt: Date
-    let sourceURL: URL
+    /// `nil` once the metadata has been reconstructed without a known source.
+    let sourceURL: URL?
     let sourceKey: String?
     let folderURL: URL
-    let audioURL: URL
+    /// `nil` when the downloaded audio has been evicted to reclaim space. The
+    /// entry stays in the Library because the folder still holds the user's own
+    /// work — practice settings, loops, corrections — which is not cache and is
+    /// not regenerable. Only the audio is.
+    let audioURL: URL?
     let duration: TimeInterval
     let byteCount: Int64
     /// Practice state and analysis results stored beside this song, in bytes.
     /// Part of `byteCount`, reported separately for storage accounting.
     let songDataByteCount: Int64
+
+    /// Whether the audio is gone but the song is still here. Re-separating
+    /// downloads it again, which is only possible while the source is known.
+    var isEvicted: Bool { audioURL == nil }
+    var canRedownload: Bool { sourceURL != nil }
 }
 
 struct HistoryTrack: Identifiable, Sendable {
@@ -110,6 +120,15 @@ final class HistoryStore: ObservableObject {
                 self?.snapshot = next
             } while self?.needsAnotherPass == true
         }
+    }
+
+    /// Rebuilds the snapshot and waits for it.
+    ///
+    /// `refresh()` is fire-and-forget, which is right for a notification and
+    /// wrong for a caller that is about to *measure* the library: it would read
+    /// the totals from before its own change. Storage settings uses this.
+    func refreshNow() async {
+        snapshot = await LibraryIndexer.shared.snapshot()
     }
 
     /// A user-initiated refresh distrusts the cached measurements as well as the

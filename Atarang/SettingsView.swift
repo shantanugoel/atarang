@@ -8,14 +8,16 @@ import UIKit
 /// notices. The Library keeps owning user *content*, so nothing here deletes a
 /// song or a take.
 ///
-/// Sections appear when the phase that needs them lands. Downloads, storage,
-/// privacy, and diagnostics are deliberately absent until there is something
-/// true to put in them.
+/// Sections appear when the phase that needs them lands. The four that depend
+/// on downloadable assets and on-disk accounting arrived with Phase 10 and live
+/// in `SettingsStorage.swift`.
 struct SettingsView: View {
     let player: StemPlayer
     @ObservedObject var separationModel: SeparationModel
+    @ObservedObject var history: HistoryStore
     @AppStorage(LyricsLookup.onlineLookupDefaultsKey)
     private var isOnlineLyricsLookupEnabled = false
+    @State private var storage = StorageSettingsModel()
 
     var body: some View {
         NavigationStack {
@@ -23,9 +25,57 @@ struct SettingsView: View {
                 recordingDefaults
                 separationDefaults
                 lyrics
+                deviceAndData
                 about
             }
             .navigationTitle("Settings")
+            .task { await storage.refresh(store: history) }
+        }
+    }
+
+    // MARK: - Device and data
+
+    /// The app-level concerns that need a screen of their own: what is
+    /// downloaded, what it costs, what leaves the device, and what the app
+    /// found when it last checked the library.
+    private var deviceAndData: some View {
+        Section {
+            NavigationLink {
+                ModelsSettingsView(separationModel: separationModel)
+            } label: {
+                Label("Downloads & Models", systemImage: "shippingbox")
+            }
+            NavigationLink {
+                StorageSettingsView(store: history, model: storage)
+            } label: {
+                LabeledContent {
+                    Text(StorageCapacity.formatted(storage.breakdown.total))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                } label: {
+                    Label("Storage", systemImage: "internaldrive")
+                }
+            }
+            NavigationLink {
+                PrivacySettingsView()
+            } label: {
+                Label("Privacy & Data", systemImage: "hand.raised")
+            }
+            NavigationLink {
+                DiagnosticsSettingsView(store: history, model: storage)
+            } label: {
+                LabeledContent {
+                    if let problems = storage.report?.problems.count, problems > 0 {
+                        Text("\(problems)")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.orange)
+                    }
+                } label: {
+                    Label("Diagnostics", systemImage: "stethoscope")
+                }
+            }
+        } header: {
+            Text("This device")
         }
     }
 

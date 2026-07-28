@@ -1870,57 +1870,187 @@ Absorbs `IMPROVEMENTS_PLAN.md` items 4, 6, and the required slice of 19.
 
 ### 1. Capacity and storage policy (item 4)
 
-- [ ] Estimate required space before downloading, separating, recording,
+- [x] Estimate required space before downloading, separating, recording,
       exporting, and analysing, including staging overhead.
-- [ ] Block operations that cannot safely complete, using system capacity APIs
+- [x] Block operations that cannot safely complete, using system capacity APIs
       and keeping a reserve rather than consuming all free space.
-- [ ] State how much additional space is needed in the error copy.
-- [ ] Exclude reproducible assets from backup: optional models, derived stems,
+- [x] State how much additional space is needed in the error copy.
+- [x] Exclude reproducible assets from backup: optional models, derived stems,
       **and downloaded originals**, which are re-fetchable from their source URL
       and are therefore cache. Performances are user data and are preserved.
-- [ ] Allow originals to be evicted under storage pressure, with clear copy that
-      re-separating will re-download.
-- [ ] Show storage totals by Originals, Separations, Performances, Models,
+- [x] Allow originals to be evicted under storage pressure, with clear copy that
+      re-separating will re-download. Offered as an explicit action rather than
+      done automatically — see the outcome.
+- [x] Show storage totals by Originals, Separations, Performances, Models,
       Analysis, and temporary data.
 
 ### 2. Library integrity and recovery (item 6)
 
-- [ ] Distinguish valid, recoverable, incomplete, and corrupt library folders,
+- [x] Distinguish valid, recoverable, incomplete, and corrupt library folders,
       now including `lyrics.json`, `chords.json`, and `beats.json`.
-- [ ] Reconstruct safe metadata where IDs, filenames, duration, or dates can be
+- [x] Reconstruct safe metadata where IDs, filenames, duration, or dates can be
       derived reliably.
-- [ ] Quarantine unrecoverable entries rather than silently skipping them.
-- [ ] Never let a damaged analysis file make its song unopenable.
-- [ ] Record structured diagnostics without exposing private media metadata.
+- [x] Quarantine unrecoverable entries rather than silently skipping them.
+- [x] Never let a damaged analysis file make its song unopenable.
+- [x] Record structured diagnostics without exposing private media metadata.
 
 ### 3. Settings, completed (item 19)
 
 The skeleton landed in Phase 4 and the lyrics preferences in Phase 6. This
 phase adds everything that depends on downloadable assets.
 
-- [ ] **Downloads & Models**: list every installed optional asset — four
+- [x] **Downloads & Models**: list every installed optional asset — four
       separation models, plus the Whisper and chord models from Milestone E —
       with size, install state, and a delete action.
-- [ ] **Storage**: totals by Originals, Separations, Performances, Models,
+- [x] **Storage**: totals by Originals, Separations, Performances, Models,
       Analysis, and temporary data, with cleanup actions.
-- [ ] Expose cached-originals eviction here, with copy explaining that
+- [x] Expose cached-originals eviction here, with copy explaining that
       re-separating will re-download.
-- [ ] **Privacy & data**: what leaves the device and when, and the backup policy
+- [x] **Privacy & data**: what leaves the device and when, and the backup policy
       per category. Keep it consistent with the README.
-- [ ] **Diagnostics**: export the structured library-integrity report from
+- [x] **Diagnostics**: export the structured library-integrity report from
       section 2 without exposing private media metadata.
-- [ ] Keep per-item content deletion in Library; Settings owns aggregates and
+- [x] Keep per-item content deletion in Library; Settings owns aggregates and
       app-level assets, not individual songs or takes.
 
 ### Acceptance criteria
 
-- [ ] Operations fail before starting when capacity is insufficient, with copy
-      stating the shortfall.
-- [ ] A partial model directory is never reported as installed.
-- [ ] Corrupt fixtures produce explicit recoverable/unrecoverable results, and
-      no item disappears without a diagnostic record.
-- [ ] Every downloadable asset can be inspected and deleted from Settings.
-- [ ] Storage totals match on-disk usage within an agreed tolerance.
+- [x] Operations fail before starting when capacity is insufficient, with copy
+      stating the shortfall. Unit-tested against an injected reading at, above,
+      and below the threshold, including that exactly enough space is still
+      refused because of the reserve.
+- [x] A partial model directory is never reported as installed. Already true
+      from Phase 2's manifest; this phase adds the removal path, which unlinks
+      the manifest before the artifact so an interrupted removal fails the same
+      way.
+- [x] Corrupt fixtures produce explicit recoverable/unrecoverable results, and
+      no item disappears without a diagnostic record. Sixteen fixtures cover
+      all four states across the three entry kinds; every quarantine writes a
+      finding with its reason into the stored report.
+- [x] Every downloadable asset can be inspected and deleted from Settings.
+      Confirmed in the simulator against a seeded install: size and state shown,
+      removed on confirmation, row back to "Not downloaded".
+- [~] Storage totals match on-disk usage within an agreed tolerance. The totals
+      are the library index's own byte counts plus a direct walk of Models,
+      quarantine, and staging, and they moved by the expected amount on every
+      simulator action. **No tolerance was agreed or measured against `du`**,
+      which is why this is not `[x]`.
+
+### Outcome
+
+**New files.** `StorageCapacity.swift` holds the gate — free space, the
+reserve, the per-operation estimates, the refusal, and `CachedOriginals`.
+`LibraryIntegrity.swift` holds the four-state classification, the
+reconstruction rules, quarantine, the storage breakdown, and the diagnostics
+text. `SettingsStorage.swift` holds the four screens and the one object behind
+them. `StorageCapacityTests.swift` and `LibraryIntegrityTests.swift` cover both.
+
+**The gate is a refusal, not a failure, and it says the number that helps.**
+`StorageCapacity.require(bytes:for:)` compares against
+`volumeAvailableCapacityForImportantUsage` — larger than raw free space,
+because it counts what iOS will purge for something the user asked for — and
+subtracts a 300 MB reserve that the app will not spend whatever it is asked to
+do. The message names the operation, the size it needs, and the shortfall:
+"free up about 420 MB and try again" rather than "the operation could not be
+completed". It is wired into the download, the separation, the model install,
+the take, the export, and every analysis write.
+
+**The estimates come from what the app writes, not from a guess.** Separated
+stems are 32-bit float stereo WAV at 44.1 kHz — 352,800 bytes per second per
+stem — which is why a separation is the one worth checking: a four-minute song
+arrives as a few megabytes and leaves as 340 MB, or 500 MB at six stems. A
+model asks for its *install* footprint rather than its download size, because
+MDX23C's archive, its extracted package, and the compiled model all exist at
+once.
+
+**Eviction is an action, not a policy.** The plan says to allow originals to be
+evicted "under storage pressure". Doing it automatically would mean deleting
+the user's downloads on a schedule they cannot see, so Settings offers it
+instead, in two scopes: the originals that already have a separation, which is
+the cheapest thing in the library to give up, and all of them. What makes it
+defensible at all is that it takes only the audio: the folder, its metadata,
+its practice settings, its loops, and its corrected analysis stay exactly where
+they were, and `HistoryOriginal.audioURL` became optional so an evicted song is
+still a song in the Library rather than an entry that vanishes. `LibraryIndexer`
+no longer requires the audio file to exist, and Studio's `separate(original:)`
+falls back to the URL path when it is gone.
+
+**Backup was only half applied, and the missing half was the expensive half.**
+Downloaded originals and models were excluded; separated stems never were,
+which put hundreds of megabytes per song into the user's iCloud quota to save
+work a re-separation redoes. `applyBackupPolicy(toSeparation:)` excludes the
+stems and the waveform overview and nothing else, so a `practice.json` that
+fell back to living in a track folder is still backed up. Because the rule
+changed, `applyBackupPolicyAcrossLibrary()` re-applies it across the whole
+library at launch rather than only to entries written from now on.
+
+**Discovery used to answer one question and give one answer.** A folder whose
+metadata would not decode returned `nil`, vanished from the Library, and left
+nothing anywhere saying it had existed — the Phase 0 outcome recorded exactly
+this as something Phase 10 would replace. There are four answers now, and the
+rule for each is what the *files* can be made to say:
+
+- A separation names its own model. No two models this app runs produce the
+  same set of stems, so a lost `track.json` is rebuildable from the directory
+  listing: the folder's name is the ID, the file dates are the date, and
+  `{vocals, instrumental}` is unambiguously the two-stem output.
+- A performance's duration is in its microphone file, so a lost
+  `recording.json` costs its title and its source track, not its audio.
+- An original with no metadata keeps its audio and its ID and loses its
+  provenance. A source URL is not derivable and is not invented — which is why
+  `OriginalMetadata.sourceURL` became optional rather than being filled with a
+  plausible guess that the app would then offer to re-download from.
+- Anything with neither a description nor content is moved to `Quarantine/`
+  rather than deleted, and appears in the report with the reason it went.
+
+**"Incomplete" is the distinction that keeps this safe.** A separation missing
+one stem, or an original whose audio has been evicted, is short rather than
+damaged, and quarantining either would take something working away from the
+user. Those stay exactly where they are and are reported. An evicted original
+is `valid`, not `incomplete`, whenever its source is known: that is a cache
+behaving as designed, and calling it a fault would put a permanent orange badge
+on Settings for anyone who used the reclaim button.
+
+**A damaged analysis file could never stop a song opening — that was already
+true.** Reads are non-throwing by construction from Phase 5, so a truncated
+`chords.json` reads as no result. What it could do is sit there forever
+suppressing the analysis the app would otherwise redo, so the pass removes it
+and names it in the report. The report names *files*, which are the app's own
+output; it never names a song.
+
+**The diagnostics report describes the library without describing its
+contents.** Every entry is a folder UUID, a kind, a size, a file count, a
+status, and a reason. A test asserts that a seeded title, source URL, and media
+filename are all absent from the exported text, because the whole point of the
+export is that the user can send it somewhere.
+
+**Found by the simulator pass.** The storage totals lagged by one refresh:
+`StorageSettingsModel` measured the snapshot it was handed, which was taken
+before its own eviction, so the first tap freed 2 MB and reported the same
+total as before. It takes the `HistoryStore` now and awaits a fresh snapshot
+first — `refreshNow()` exists for exactly this, because `refresh()` is
+fire-and-forget and that is wrong for a caller that is about to measure.
+
+**Simulator verification.** Driven against a seeded library holding a healthy
+original with practice state, an evicted original, a healthy 4-stem separation,
+a separation with no metadata, a separation missing a stem beside a truncated
+`chords.json`, an unparseable folder, and a performance. Confirmed: the launch
+pass repairing the metadata-less separation and quarantining the unparseable
+folder; the repaired entry appearing in the Library as "Recovered separation";
+Diagnostics reporting 16 entries, 2 problems, 1 repaired, 1 quarantined with
+both reasons; Storage showing the six totals and the free figure; reclaiming
+the already-separated originals dropping the total by the right amount and the
+Library showing them as "Audio removed · separating downloads it again" with
+their play and share actions explained rather than merely dimmed; a seeded
+model install listed with its size and removed on confirmation; and the privacy
+screen's per-category backup table.
+
+**Not verified on device.** Nothing here has run on hardware. The two things
+that would behave differently are the ones that matter most: the simulator's
+volume is the Mac's, so `volumeAvailableCapacityForImportantUsage` says nothing
+about what an iPhone would report, and a real low-space refusal has therefore
+never been seen. VoiceOver reading order for the four new screens is untested,
+as it is for Phase 4's.
 
 ---
 

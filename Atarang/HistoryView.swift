@@ -231,18 +231,26 @@ struct HistoryView: View {
         return VStack(spacing: 0) {
             libraryRowHeader(
                 title: original.title,
+                subtitle: original.isEvicted
+                    ? (original.canRedownload
+                        ? "Audio removed · separating downloads it again"
+                        : "Audio removed · no source to download it from")
+                    : nil,
                 date: original.createdAt,
                 duration: original.duration,
                 bytes: original.byteCount,
-                systemImage: "arrow.down.circle.fill",
+                systemImage: original.isEvicted ? "arrow.down.circle" : "arrow.down.circle.fill",
                 color: .blue,
                 item: item,
                 primaryIcon: playIcon(for: original.id),
                 primaryLabel: audioPlayer.playingID == original.id && audioPlayer.isPlaying
                     ? "Pause original"
-                    : "Play original"
+                    : "Play original",
+                primaryEnabled: original.audioURL != nil
             ) {
-                audioPlayer.toggle(id: original.id, url: original.audioURL)
+                if let url = original.audioURL {
+                    audioPlayer.toggle(id: original.id, url: url)
+                }
             }
 
             if !isSelecting, expandedItem == item {
@@ -251,18 +259,40 @@ struct HistoryView: View {
                     inlineDeletion
                 } else {
                     HStack(spacing: 3) {
-                        LibraryAction(title: "Play", systemImage: playIcon(for: original.id)) {
-                            audioPlayer.toggle(id: original.id, url: original.audioURL)
+                        LibraryAction(
+                            title: "Play",
+                            systemImage: playIcon(for: original.id),
+                            unavailableReason: original.audioURL == nil
+                                ? "This song's audio was removed to save space. Separating it downloads it again."
+                                : nil
+                        ) {
+                            if let url = original.audioURL {
+                                audioPlayer.toggle(id: original.id, url: url)
+                            }
                         }
-                        LibraryAction(title: "Separate", systemImage: "waveform.path.ecg") {
+                        LibraryAction(
+                            title: "Separate",
+                            systemImage: "waveform.path.ecg",
+                            unavailableReason: original.audioURL == nil && !original.canRedownload
+                                ? "This song's audio was removed and there is no source to download it from again."
+                                : nil
+                        ) {
                             requestSeparation(for: original)
                         }
-                        LibraryAction(title: "Share", systemImage: "square.and.arrow.up") {
-                            share([original.audioURL])
+                        LibraryAction(
+                            title: "Share",
+                            systemImage: "square.and.arrow.up",
+                            unavailableReason: original.audioURL == nil
+                                ? "This song's audio was removed to save space, so there is nothing to share."
+                                : nil
+                        ) {
+                            if let url = original.audioURL { share([url]) }
                         }
                         Menu {
-                            Link(destination: original.sourceURL) {
-                                Label("View Source", systemImage: "safari")
+                            if let sourceURL = original.sourceURL {
+                                Link(destination: sourceURL) {
+                                    Label("View Source", systemImage: "safari")
+                                }
                             }
                             Button(role: .destructive) {
                                 requestDeletion(
@@ -777,7 +807,7 @@ struct HistoryView: View {
             title: original.title,
             source: .original(original),
             initialModel: .htdemucs,
-            requiresDownload: false
+            requiresDownload: original.isEvicted
         )
     }
 

@@ -1221,6 +1221,19 @@ final class StemPlayer {
             throw PlayerError.microphoneDenied
         }
 
+        // Before the count-in rather than after it: a take refused for space
+        // should be refused while the user is still deciding to record, not
+        // three clicks into one.
+        do {
+            try StorageCapacity.require(
+                StorageEstimate.recording(duration: duration),
+                for: .recording
+            )
+        } catch {
+            isLoopTakeRecording = false
+            throw error
+        }
+
         if isLoopTakeRecording, let loop = playbackState.loopRange {
             seek(to: loop.start)
         }
