@@ -5,6 +5,30 @@ import XCTest
 /// when they are: what a hostile file parses into, which line the playhead is
 /// inside, and whether a round trip through `.lrc` says the same thing twice.
 final class LyricsFormatTests: XCTestCase {
+    func testYouTubeDownloaderMessagesBecomeUsefulCaptionProgress() {
+        XCTAssertEqual(
+            LyricsLookup.captionStatus(
+                forYTDLPMessage: "[youtube] abc: Downloading webpage"
+            ),
+            "Contacting YouTube…"
+        )
+        XCTAssertEqual(
+            LyricsLookup.captionStatus(
+                forYTDLPMessage: "[youtube] abc: Downloading player API JSON"
+            ),
+            "Reading video information…"
+        )
+        XCTAssertEqual(
+            LyricsLookup.captionStatus(
+                forYTDLPMessage: "[info] abc: Downloading subtitles: en"
+            ),
+            "Downloading English captions…"
+        )
+        XCTAssertNil(
+            LyricsLookup.captionStatus(forYTDLPMessage: "unrelated debug detail")
+        )
+    }
+
     // MARK: - LRC
 
     func testParsesLineTagsAndText() {

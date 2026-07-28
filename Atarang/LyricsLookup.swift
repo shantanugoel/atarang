@@ -72,12 +72,21 @@ enum LyricsLookup {
                 // never ends. Python's urllib has no default timeout, and
                 // `BundledYTDLP` is an actor, so one stalled socket would hold
                 // up every later yt-dlp call — a separation included.
-                "--socket-timeout", "15",
-                "--retries", "2",
+                "--socket-timeout", "10",
+                "--retries", "1",
                 "--extractor-retries", "1",
+                "--fragment-retries", "1",
+                "--file-access-retries", "1",
                 "-o", folder.appendingPathComponent("captions.%(ext)s").path,
                 url.absoluteString,
-            ])
+            ]) { _, message in
+                guard let status = captionStatus(forYTDLPMessage: message) else {
+                    return
+                }
+                Task { @MainActor in
+                    context.report(status, progress: 0.45)
+                }
+            }
             try Task.checkCancellation()
             await context.report("Reading the caption track…", progress: 0.85)
 
@@ -103,6 +112,26 @@ enum LyricsLookup {
                 attribution: "YouTube caption track"
             )
         }
+    }
+
+    /// Turns yt-dlp's implementation-facing log into the handful of phases a
+    /// person waiting on captions can act on. Late reports are harmless because
+    /// the progress center drops updates from a token that has been cancelled.
+    static func captionStatus(forYTDLPMessage message: String) -> String? {
+        let message = message.lowercased()
+        if message.contains("downloading webpage")
+            || message.contains("downloading initial data") {
+            return "Contacting YouTube…"
+        }
+        if message.contains("player api json")
+            || message.contains("extracting url") {
+            return "Reading video information…"
+        }
+        if message.contains("downloading subtitles")
+            || message.contains("writing video subtitles") {
+            return "Downloading English captions…"
+        }
+        return nil
     }
 
     // MARK: - LRCLIB

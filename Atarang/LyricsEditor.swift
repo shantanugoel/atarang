@@ -443,6 +443,8 @@ struct CaptionsImportSheet: View {
     @State private var candidate: SongLyrics?
     @State private var isLoading = false
     @State private var message: String?
+    @State private var fetchID: UUID?
+    @State private var fetchTask: Task<Void, Never>?
 
     var body: some View {
         NavigationStack {
@@ -481,7 +483,10 @@ struct CaptionsImportSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button("Cancel") {
+                        stopFetch()
+                        dismiss()
+                    }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Use These") {
@@ -492,6 +497,7 @@ struct CaptionsImportSheet: View {
                 }
             }
         }
+        .onDisappear { stopFetch() }
     }
 
     /// The job's own status, rather than a spinner that says nothing for
@@ -515,7 +521,7 @@ struct CaptionsImportSheet: View {
                 .multilineTextAlignment(.center)
             if let job {
                 Button("Stop", role: .cancel) {
-                    AnalysisProgressCenter.shared.cancel(job.token)
+                    stopFetch(job: job)
                 }
                 .buttonStyle(.bordered)
                 .frame(minHeight: 44)
@@ -524,16 +530,25 @@ struct CaptionsImportSheet: View {
     }
 
     private func fetch() {
-        guard let url = store.captionSourceURL else { return }
+        guard fetchTask == nil, let url = store.captionSourceURL else { return }
+        let id = UUID()
+        fetchID = id
         isLoading = true
         message = nil
-        Task {
-            defer { isLoading = false }
+        fetchTask = Task { @MainActor in
+            defer {
+                if fetchID == id {
+                    fetchID = nil
+                    fetchTask = nil
+                    isLoading = false
+                }
+            }
             do {
                 let outcome = try await LyricsLookup.youTubeCaptions(
                     for: url,
                     title: store.song?.title ?? "Captions"
                 )
+                guard fetchID == id, !Task.isCancelled else { return }
                 switch outcome {
                 case .cancelled:
                     // The user stopped it. They know; saying so would be the
@@ -547,9 +562,18 @@ struct CaptionsImportSheet: View {
                     }
                 }
             } catch {
+                guard fetchID == id, !Task.isCancelled else { return }
                 message = error.localizedDescription
             }
         }
+    }
+
+    private func stopFetch(job: AnalysisProgressCenter.Job? = nil) {
+        job.map { AnalysisProgressCenter.shared.cancel($0.token) }
+        fetchTask?.cancel()
+        fetchTask = nil
+        fetchID = nil
+        isLoading = false
     }
 }
 

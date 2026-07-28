@@ -155,6 +155,38 @@ final class AnalysisQueueTests: XCTestCase {
         XCTAssertFalse(ranAfterGateOpened)
     }
 
+    /// A blocking dependency can take a moment to unwind after cancellation.
+    /// Stop still has to remove its progress surface immediately, and the value
+    /// that eventually comes back must not be published as a success.
+    func testCancellingByTokenRespondsBeforeBlockingWorkUnwinds() async throws {
+        let queue = AnalysisQueue()
+        let started = Latch()
+        let release = SuspensionGate()
+        let job = Task {
+            try await queue.submit(kind: .captions, title: "captions") { _ in
+                await started.open()
+                await release.wait()
+                return 42
+            }
+        }
+
+        await started.wait()
+        let visibleToken = await MainActor.run {
+            AnalysisProgressCenter.shared.job(ofKind: .captions)?.token
+        }
+        let token = try XCTUnwrap(visibleToken)
+        await queue.cancel(token.id)
+
+        let visibleAfterStop = await AnalysisProgressCenter.shared.jobs.contains {
+            $0.token == token
+        }
+        XCTAssertFalse(visibleAfterStop)
+
+        await release.open()
+        let outcome = try await job.value
+        XCTAssertTrue(outcome.wasCancelled)
+    }
+
     func testAFailureThrowsAndTheQueueKeepsGoing() async throws {
         let queue = AnalysisQueue()
 
@@ -229,6 +261,24 @@ private actor Mutable<Value: Sendable> {
     init(_ value: Value) { self.value = value }
 
     func set(_ newValue: Value) { value = newValue }
+}
+
+private actor SuspensionGate {
+    private var continuations: [CheckedContinuation<Void, Never>] = []
+    private var isOpen = false
+
+    func wait() async {
+        guard !isOpen else { return }
+        await withCheckedContinuation { continuation in
+            continuations.append(continuation)
+        }
+    }
+
+    func open() {
+        isOpen = true
+        continuations.forEach { $0.resume() }
+        continuations.removeAll()
+    }
 }
 
 private actor OverlapTracker {

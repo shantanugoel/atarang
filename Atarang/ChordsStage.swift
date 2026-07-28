@@ -82,12 +82,13 @@ struct ChordsStage: View {
 
     private var job: AnalysisProgressCenter.Job? {
         AnalysisProgressCenter.shared.job(ofKind: .chordAnalysis)
+            ?? AnalysisProgressCenter.shared.job(ofKind: .beatAnalysis)
     }
 
     var body: some View {
         VStack(spacing: 8) {
             if let job, store.hasChords {
-                ChordJobRow(job: job, stop: store.stopDetecting)
+                ChordJobRow(job: job, stop: stopAnalysis)
                     .padding(.horizontal)
             } else if store.hasChords {
                 header
@@ -131,7 +132,7 @@ struct ChordsStage: View {
                     beats: beats,
                     player: player,
                     job: job,
-                    stop: store.stopDetecting,
+                    stop: stopAnalysis,
                     analyze: analyze
                 )
             }
@@ -229,6 +230,11 @@ struct ChordsStage: View {
                 store.detect(using: grid)
             }
         }
+    }
+
+    private func stopAnalysis() {
+        beats.stopDetecting()
+        store.stopDetecting()
     }
 
     // MARK: - Header

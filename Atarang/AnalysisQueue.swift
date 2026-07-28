@@ -272,6 +272,8 @@ actor AnalysisQueue {
     private var tail: Task<Void, Never>?
     private var generationCounter = 0
     private var cancellations: [UUID: @Sendable () -> Void] = [:]
+    private var tokens: [UUID: AnalysisJobToken] = [:]
+    private var pendingCancellations: Set<UUID> = []
     /// Whether a take is currently holding every job back.
     private(set) var isRecording = false
 
@@ -307,6 +309,10 @@ actor AnalysisQueue {
         generationCounter += 1
         let token = AnalysisJobToken(id: UUID(), generation: generationCounter)
         let context = AnalysisJobContext(token: token, kind: kind)
+        // Register identity before crossing to the main actor. A very fast tap
+        // on Stop can otherwise arrive after the progress row appears but
+        // before this actor has installed the task handle, and be lost.
+        tokens[token.id] = token
         await AnalysisProgressCenter.shared.add(
             token: token,
             kind: kind,
@@ -328,7 +334,11 @@ actor AnalysisQueue {
                 let signpostID = signposter.makeSignpostID()
                 let interval = signposter.beginInterval(kind.signpostName, id: signpostID)
                 defer { signposter.endInterval(kind.signpostName, interval) }
-                return .finished(try await work(context))
+                let value = try await work(context)
+                // A blocking dependency may only notice cancellation as it
+                // returns. The cancelled job must not publish that late result.
+                try Task.checkCancellation()
+                return .finished(value)
             } catch is CancellationError {
                 return .cancelled
             } catch let error as URLError where error.code == .cancelled {
@@ -337,10 +347,13 @@ actor AnalysisQueue {
                 return .cancelled
             }
         }
-        // Everything below runs before the job can re-enter this actor, so the
-        // handle is always in place before the job could need cancelling.
+        // Install the handle, then honour a Stop tap that landed while the
+        // progress center was being updated on the main actor.
         tail = Task { _ = try? await job.value }
         cancellations[token.id] = { job.cancel() }
+        if pendingCancellations.remove(token.id) != nil {
+            job.cancel()
+        }
 
         return try await withTaskCancellationHandler {
             do {
@@ -358,8 +371,17 @@ actor AnalysisQueue {
 
     /// Asks a job to stop. Unknown IDs — a job that has already ended — do
     /// nothing, rather than reaching into whatever is running now.
-    func cancel(_ id: UUID) {
-        cancellations[id]?()
+    func cancel(_ id: UUID) async {
+        guard let token = tokens[id] else { return }
+        if let cancel = cancellations[id] {
+            cancel()
+        } else {
+            pendingCancellations.insert(id)
+        }
+        // A cooperative job may need a moment to reach its cancellation
+        // checkpoint. Its control should still respond immediately, and any
+        // late report is rejected once this token leaves the progress center.
+        await AnalysisProgressCenter.shared.remove(token)
     }
 
     /// Recording owns the audio hardware and the user's attention, and a take
@@ -401,6 +423,8 @@ actor AnalysisQueue {
     /// state or the handle of the job that replaced it.
     private func retire(_ token: AnalysisJobToken, cancelled: Bool) async {
         cancellations[token.id] = nil
+        tokens[token.id] = nil
+        pendingCancellations.remove(token.id)
         await AnalysisProgressCenter.shared.remove(token)
         if cancelled {
             logger.info("Analysis job cancelled (generation \(token.generation, privacy: .public))")

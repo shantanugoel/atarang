@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 import OSLog
 // `YoutubeDL` predates Swift concurrency and exposes `pythonModuleURL` as a
@@ -37,18 +38,49 @@ actor BundledYTDLP {
     /// have written something must check that it did, and these lines are the
     /// only account of why it did not.
     @discardableResult
-    func run(argv: [String]) async throws -> [String] {
+    func run(
+        argv: [String],
+        onLog: (@Sendable (_ level: String, _ message: String) -> Void)? = nil
+    ) async throws -> [String] {
         try install()
         let extractionLogger = extractionLogger
         let collector = YTDLPLogCollector()
-        try await yt_dlp(argv: argv, log: { level, message in
-            extractionLogger.debug("[\(level, privacy: .public)] \(message, privacy: .public)")
-            collector.record(level: level, message: message)
-        })
+        do {
+            try await withTaskCancellationHandler {
+                try await yt_dlp(argv: argv, log: { level, message in
+                    extractionLogger.debug("[\(level, privacy: .public)] \(message, privacy: .public)")
+                    collector.record(level: level, message: message)
+                    onLog?(level, message)
+                })
+            } onCancel: {
+                // `yt_dlp` enters Python synchronously after its initial async
+                // setup, so cancelling the surrounding Swift task alone cannot
+                // reach it. Ask the interpreter to raise KeyboardInterrupt at
+                // its next safe checkpoint instead.
+                Self.interruptPython()
+            }
+        } catch {
+            if Task.isCancelled { throw CancellationError() }
+            throw error
+        }
+        try Task.checkCancellation()
         for message in collector.errors {
             logger.error("yt-dlp: \(message, privacy: .public)")
         }
         return collector.errors
+    }
+
+    /// `PyErr_SetInterrupt` is part of Python's stable C ABI and is explicitly
+    /// safe to call without the GIL. The dependency does not expose it in
+    /// Swift, so resolve the already-linked symbol at runtime.
+    private nonisolated static func interruptPython() {
+        typealias PyErrSetInterrupt = @convention(c) () -> Void
+        guard let symbol = dlsym(
+            UnsafeMutableRawPointer(bitPattern: -2),
+            "PyErr_SetInterrupt"
+        ) else { return }
+        let interrupt = unsafeBitCast(symbol, to: PyErrSetInterrupt.self)
+        interrupt()
     }
 
     func install() throws {
