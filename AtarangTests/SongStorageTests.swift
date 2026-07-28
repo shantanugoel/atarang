@@ -113,31 +113,39 @@ final class SongStorageTests: XCTestCase {
     /// The audio can be downloaded again; the practice state cannot be
     /// reconstructed by anything, so the two sides of the folder get opposite
     /// answers from the same rule.
-    func testBackupExcludesTheAudioAndKeepsTheSongsOwnData() throws {
+    /// The folder holds two kinds of thing and they get different answers, so
+    /// it is never excluded as a whole. The audio is cache and always goes;
+    /// the song's own data follows the Phase 10 preference, and this asserts
+    /// the shape of the rule with that preference turned on. Its default — off
+    /// — and the flip in both directions are covered in
+    /// `StorageCapacityTests`.
+    func testBackupExcludesTheAudioAndNeverTheFolderItself() throws {
         let folder = library.folder(named: "song")
         let audioURL = folder.appendingPathComponent("source.m4a")
         try Data(repeating: 0, count: 16).write(to: audioURL)
         let storage = SongStorage(folderURL: folder)
         PracticeSettingsStore().save(SongPracticeSettings(), to: storage)
 
+        let defaults = UserDefaults.standard
+        let previous = defaults.object(forKey: SongStorage.userDataBackupDefaultsKey)
+        defaults.set(true, forKey: SongStorage.userDataBackupDefaultsKey)
+        defer { defaults.set(previous, forKey: SongStorage.userDataBackupDefaultsKey) }
         SongStorage.applyBackupPolicy(to: folder, audioFilename: "source.m4a")
 
-        XCTAssertEqual(
-            try audioURL.resourceValues(forKeys: [.isExcludedFromBackupKey])
-                .isExcludedFromBackup,
-            true
-        )
+        XCTAssertEqual(isExcluded(audioURL), true)
         XCTAssertNotEqual(
-            try storage.url(for: SongStorage.practiceFilename)
-                .resourceValues(forKeys: [.isExcludedFromBackupKey])
-                .isExcludedFromBackup,
+            isExcluded(storage.url(for: SongStorage.practiceFilename)),
             true
         )
-        XCTAssertNotEqual(
-            try folder.resourceValues(forKeys: [.isExcludedFromBackupKey])
-                .isExcludedFromBackup,
-            true
-        )
+        XCTAssertNotEqual(isExcluded(folder), true)
+    }
+
+    /// Reads through a freshly built URL, because a `URL` already asked for a
+    /// resource value can answer from its own cache.
+    private func isExcluded(_ url: URL) -> Bool? {
+        let fresh = URL(fileURLWithPath: url.path)
+        return (try? fresh.resourceValues(forKeys: [.isExcludedFromBackupKey]))?
+            .isExcludedFromBackup
     }
 
     func testLegacyPerSongDefaultsArePurged() {

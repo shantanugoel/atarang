@@ -1878,6 +1878,9 @@ Absorbs `IMPROVEMENTS_PLAN.md` items 4, 6, and the required slice of 19.
 - [x] Exclude reproducible assets from backup: optional models, derived stems,
       **and downloaded originals**, which are re-fetchable from their source URL
       and are therefore cache. Performances are user data and are preserved.
+- [x] Put the user's own work behind an explicit preference, off by default.
+      Added after the phase's first pass, on the user's call — see "Backup
+      became a preference" below.
 - [x] Allow originals to be evicted under storage pressure, with clear copy that
       re-separating will re-download. Offered as an explicit action rather than
       done automatically — see the outcome.
@@ -1907,7 +1910,8 @@ phase adds everything that depends on downloadable assets.
 - [x] Expose cached-originals eviction here, with copy explaining that
       re-separating will re-download.
 - [x] **Privacy & data**: what leaves the device and when, and the backup policy
-      per category. Keep it consistent with the README.
+      per category, plus the toggle that decides two of those categories. Keep
+      it consistent with the README.
 - [x] **Diagnostics**: export the structured library-integrity report from
       section 2 without exposing private media metadata.
 - [x] Keep per-item content deletion in Library; Settings owns aggregates and
@@ -1975,6 +1979,23 @@ still a song in the Library rather than an entry that vanishes. `LibraryIndexer`
 no longer requires the audio file to exist, and Studio's `separate(original:)`
 falls back to the URL path when it is gone.
 
+**Backup became a preference, off by default.** The first pass shipped the
+policy as a constant: performances and practice state backed up, everything
+reproducible excluded. Asked whether the user should get a say, the answer was
+yes and off by default, and that was the call taken over a recommendation to
+default it on. The reason for the recommendation is worth keeping in the record
+rather than losing with the argument: performances are the one thing in the
+library nothing can reproduce, so a restore that happens before anyone finds
+the toggle loses every take. Settings therefore says so in the footer rather
+than describing the toggle neutrally, and turning it on re-applies across the
+existing library rather than governing only what is recorded afterwards —
+`isExcludedFromBackup` is written as `false` as deliberately as it is written
+as `true`, or the switch would only go one way.
+
+What the preference does **not** do, and cannot: switch iCloud Backup itself.
+The app only marks its own files. iOS already has a per-app backup switch that
+covers the whole container, and the privacy screen points at it.
+
 **Backup was only half applied, and the missing half was the expensive half.**
 Downloaded originals and models were excluded; separated stems never were,
 which put hundreds of megabytes per song into the user's iCloud quota to save
@@ -2023,6 +2044,14 @@ contents.** Every entry is a folder UUID, a kind, a size, a file count, a
 status, and a reason. A test asserts that a seeded title, source URL, and media
 filename are all absent from the exported text, because the whole point of the
 export is that the user can send it somewhere.
+
+**Found by the tests.** The backup toggle looked like it would not turn off
+again: flipping the preference on and re-reading the flag still said excluded.
+The write was correct and the *read* was stale — a `URL` that has already been
+asked for a resource value can answer from its own cache, so the test was
+measuring its last question rather than the file. Only the test read back, so
+nothing shipped wrong, but it is the kind of thing that would have looked like
+a real bug on device.
 
 **Found by the simulator pass.** The storage totals lagged by one refresh:
 `StorageSettingsModel` measured the snapshot it was handed, which was taken

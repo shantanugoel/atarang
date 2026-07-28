@@ -253,6 +253,7 @@ final class HistoryStore: ObservableObject {
                 metadata,
                 to: workingFolder.appendingPathComponent(LibraryMetadata.recordingFilename)
             )
+            SongStorage.applyBackupPolicy(toRecording: workingFolder)
             if asNew {
                 try LibraryStaging.commit(workingFolder, to: destinationFolder)
             }

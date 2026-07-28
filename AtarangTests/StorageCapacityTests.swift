@@ -225,6 +225,115 @@ final class StorageCapacityTests: XCTestCase {
         )
     }
 
+    // MARK: - Backup policy
+
+    /// The preference governs the user's own work and nothing else. Stems and
+    /// downloaded audio are reproducible, so they stay out of iCloud whichever
+    /// way the toggle is set — that is what keeps a library of songs off the
+    /// user's quota.
+    func testReproducibleFilesAreExcludedWhicheverWayThePreferenceIsSet() throws {
+        let original = library.folder(named: "Originals/\(UUID().uuidString)")
+        try writeSilence(to: original.appendingPathComponent("source.m4a"))
+        let separation = library.folder(named: "Tracks/\(UUID().uuidString)")
+        try writeSilence(to: separation.appendingPathComponent("vocals.wav"))
+
+        for backsUp in [true, false] {
+            withUserDataBackup(backsUp) {
+                SongStorage.applyBackupPolicy(to: original, audioFilename: "source.m4a")
+                SongStorage.applyBackupPolicy(toSeparation: separation)
+            }
+            XCTAssertTrue(
+                isExcluded(original.appendingPathComponent("source.m4a")),
+                "Downloaded audio is cache with the preference \(backsUp)"
+            )
+            XCTAssertTrue(
+                isExcluded(separation.appendingPathComponent("vocals.wav")),
+                "Stems are derived with the preference \(backsUp)"
+            )
+        }
+    }
+
+    func testPracticeStateFollowsThePreference() throws {
+        let folder = library.folder(named: "Originals/\(UUID().uuidString)")
+        try writeSilence(to: folder.appendingPathComponent("source.m4a"))
+        let storage = SongStorage(folderURL: folder)
+        let practiceURL = folder.appendingPathComponent(SongStorage.practiceFilename)
+
+        withUserDataBackup(false) {
+            PracticeSettingsStore().save(SongPracticeSettings(), to: storage)
+        }
+        XCTAssertTrue(isExcluded(practiceURL))
+
+        // And turning it on has to undo the exclusion, not merely stop adding
+        // it — the whole point of a toggle is that it goes both ways.
+        withUserDataBackup(true) {
+            SongStorage.applyBackupPolicy(to: folder, audioFilename: "source.m4a")
+        }
+        XCTAssertFalse(isExcluded(practiceURL))
+    }
+
+    private func rawExclusion(_ url: URL) -> Bool? {
+        let fresh = URL(fileURLWithPath: url.path)
+        return (try? fresh.resourceValues(forKeys: [.isExcludedFromBackupKey]))?
+            .isExcludedFromBackup
+    }
+
+    /// A performance is the one folder where everything is the user's own work,
+    /// so it is marked as a whole rather than file by file.
+    func testAPerformanceFolderFollowsThePreference() throws {
+        let folder = library.folder(named: "Recordings/\(UUID().uuidString)")
+        try writeSilence(to: folder.appendingPathComponent("microphone.caf"))
+
+        withUserDataBackup(false) {
+            SongStorage.applyBackupPolicy(toRecording: folder)
+        }
+        XCTAssertTrue(isExcluded(folder))
+
+        withUserDataBackup(true) {
+            SongStorage.applyBackupPolicy(toRecording: folder)
+        }
+        XCTAssertFalse(isExcluded(folder))
+    }
+
+    /// A file written after the last library-wide pass still has to carry the
+    /// answer, or the first loop set after turning backup off would go to
+    /// iCloud anyway.
+    func testAnalysisWrittenLaterStillCarriesThePreference() throws {
+        let folder = library.folder(named: "Originals/\(UUID().uuidString)")
+        let storage = SongStorage(folderURL: folder)
+
+        withUserDataBackup(false) {
+            try? storage.writeAnalysis(StubBackupArtifact(text: "verse"))
+        }
+
+        XCTAssertTrue(isExcluded(folder.appendingPathComponent(StubBackupArtifact.filename)))
+    }
+
+    func testBackupIsOffUntilTheUserAsksForIt() {
+        let defaults = UserDefaults.standard
+        let previous = defaults.object(forKey: SongStorage.userDataBackupDefaultsKey)
+        defaults.removeObject(forKey: SongStorage.userDataBackupDefaultsKey)
+        defer { defaults.set(previous, forKey: SongStorage.userDataBackupDefaultsKey) }
+
+        XCTAssertFalse(SongStorage.backsUpUserData)
+    }
+
+    private func withUserDataBackup(_ enabled: Bool, _ body: () -> Void) {
+        let defaults = UserDefaults.standard
+        let previous = defaults.object(forKey: SongStorage.userDataBackupDefaultsKey)
+        defaults.set(enabled, forKey: SongStorage.userDataBackupDefaultsKey)
+        body()
+        defaults.set(previous, forKey: SongStorage.userDataBackupDefaultsKey)
+    }
+
+    /// Reads through a freshly built URL every time. A `URL` that has already
+    /// been asked for a resource value can answer from its own cache, which in
+    /// a test that flips the flag and reads it again is the difference between
+    /// measuring the file and measuring the last question about it.
+    private func isExcluded(_ url: URL) -> Bool {
+        rawExclusion(url) == true
+    }
+
     // MARK: - Fixtures
 
     private func makeHistoryOriginal(
@@ -274,4 +383,13 @@ final class StorageCapacityTests: XCTestCase {
         buffer.frameLength = 4_410
         try file.write(from: buffer)
     }
+}
+
+/// A stand-in analysis result, so the backup tests do not depend on the shape
+/// of any real one.
+private struct StubBackupArtifact: AnalysisArtifact {
+    static let currentAnalysisVersion = 1
+    static let filename = SongStorage.chordsFilename
+    var analysisVersion = 1
+    var text: String
 }

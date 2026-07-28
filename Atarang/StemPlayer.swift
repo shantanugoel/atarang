@@ -1484,6 +1484,9 @@ final class StemPlayer {
                 metadata,
                 to: stagingFolder.appendingPathComponent(LibraryMetadata.recordingFilename)
             )
+            // Applied while staging, so the committed take is never briefly in
+            // the wrong backup state.
+            SongStorage.applyBackupPolicy(toRecording: stagingFolder)
             try LibraryStaging.commit(stagingFolder, to: destination)
             take = RecordedTake(
                 id: metadata.id,

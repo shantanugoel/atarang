@@ -297,15 +297,27 @@ are 32-bit float WAV, so a four-minute song costs roughly 340 MB at four stems
 and 500 MB at six. **Settings → Storage** shows the totals by Originals,
 Separations, Performances, Models, and temporary data.
 
-What is backed up to iCloud is decided by whether anything could reproduce it:
+What reaches iCloud is decided by whether anything could reproduce it, and by
+one preference:
 
 | Category | Backed up | Why |
 | --- | --- | --- |
-| Performances | Yes | Your recordings. Nothing can reproduce them. |
-| Practice state and analysis | Yes | Loops, settings, lyrics, chords, beats, and your corrections. |
-| Downloaded originals | No | Re-fetchable from their source URL. |
-| Separated stems | No | Reproducible by separating again. |
-| Optional models | No | Re-downloadable and checksum-verified. |
+| Performances | Only if you turn it on | Your recordings. Nothing can reproduce them. |
+| Practice state and analysis | Only if you turn it on | Loops, settings, lyrics, chords, beats, and your corrections. |
+| Downloaded originals | Never | Re-fetchable from their source URL. |
+| Separated stems | Never | Reproducible by separating again. |
+| Optional models | Never | Re-downloadable and checksum-verified. |
+
+**Backup of your own work is off by default.** Nothing you record or tune
+leaves the device until you turn on *Back up my recordings and practice* in
+**Settings → Privacy & Data**. The trade is worth stating plainly: while it is
+off, restoring to a new device brings back no performances and no practice
+state, and nothing can reproduce either. Turning it on applies to what is
+already on the device, not just to what you record afterwards.
+
+Atarang cannot switch iCloud Backup itself on or off — it only marks its own
+files as included or excluded. To leave the app out of backups entirely, use
+Settings › your name › iCloud › Manage Account Storage › Backups.
 
 Because downloaded originals are a cache, their audio can be reclaimed from
 **Settings → Storage** without losing the song: the practice settings, loops,

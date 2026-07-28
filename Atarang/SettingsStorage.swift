@@ -387,6 +387,10 @@ struct StorageSettingsView: View {
 /// the README's privacy section on purpose — two statements of the same policy
 /// that disagree are worse than one.
 struct PrivacySettingsView: View {
+    @AppStorage(SongStorage.userDataBackupDefaultsKey)
+    private var backsUpUserData = false
+    @State private var isApplying = false
+
     var body: some View {
         Form {
             Section("What leaves this device") {
@@ -413,16 +417,42 @@ struct PrivacySettingsView: View {
                 Text("Diagnostics you export from Settings contain folder identifiers, sizes, and faults — never song titles, source URLs, or filenames.")
             }
 
-            Section("iCloud backup") {
-                backupRow("Performances", true, "Your recordings. Nothing can reproduce them.")
-                backupRow("Practice & analysis", true, "Loops, settings, lyrics, chords, beats, and your corrections to them.")
+            Section {
+                Toggle("Back up my recordings and practice", isOn: $backsUpUserData)
+                    .disabled(isApplying)
+            } header: {
+                Text("iCloud backup")
+            } footer: {
+                Text(
+                    backsUpUserData
+                        ? "Your performances, and the practice settings, loops, and analysis stored beside each song, are included in your device's iCloud backup. Everything else Atarang stores can be reproduced and is left out."
+                        : "Off by default. Nothing you record or tune is included in your device's iCloud backup — which also means restoring to a new device brings back none of it, and nothing can reproduce it. Turn this on to keep it."
+                )
+            }
+
+            Section {
+                backupRow("Performances", backsUpUserData, "Your recordings. Nothing can reproduce them.")
+                backupRow("Practice & analysis", backsUpUserData, "Loops, settings, lyrics, chords, beats, and your corrections to them.")
                 backupRow("Downloaded originals", false, "Re-fetchable from their source.")
                 backupRow("Separated stems", false, "Reproducible by separating again.")
                 backupRow("Optional models", false, "Re-downloadable and checksum-verified.")
+            } footer: {
+                Text("Atarang cannot switch iCloud Backup itself on or off — it only marks its own files. To leave the app out entirely, use Settings › your name › iCloud › Manage Account Storage › Backups.")
             }
         }
         .navigationTitle("Privacy & Data")
         .navigationBarTitleDisplayMode(.inline)
+        .onChange(of: backsUpUserData) { _, _ in
+            // The answer has to reach the files that already exist, or the
+            // preference would govern only what is recorded after it is set.
+            isApplying = true
+            Task {
+                await Task.detached(priority: .utility) {
+                    SongStorage.applyBackupPolicyAcrossLibrary()
+                }.value
+                isApplying = false
+            }
+        }
     }
 
     private func privacyRow(_ title: String, _ systemImage: String, _ detail: String) -> some View {
