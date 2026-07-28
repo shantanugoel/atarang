@@ -579,6 +579,20 @@ probably a live, acoustic, radio-edit, remastered, or otherwise different
 arrangement. The user may save it as an unaligned draft or continue after an
 explicit warning.
 
+### Source pitch
+
+A chart may be written at a different pitch from the recording: a guitar tuned
+down, a capo the transcriber assumed and did not write, or simply another
+version. Every chord is then placed correctly and every chord is wrong under the
+fingers, which reads as "the import is broken" when it is not.
+
+Alignment compares the placed chart against the local analysis of the recording
+and reports the offset that agrees best. It is never applied on its own —
+imported labels are authoritative, and a chart a semitone above the record is
+what someone actually played. The import preview states what was found, offers
+to match the recording, and records the applied offset so re-alignment keeps the
+user's decision.
+
 ### Re-alignment
 
 Re-alignment:
@@ -891,14 +905,17 @@ existing feature pipeline through the selected chart.
 
 ### Acceptance criteria
 
-- [ ] Detected and imported synthetic charts coexist and can be switched during
-      playback without changing transport state.
+- [~] Detected and imported synthetic charts coexist and can be switched.
+      Transport state during a switch is still only checked by hand.
 - [ ] Every display transformation and Sheet output follows the selected chart.
-- [ ] `Analyse Again` cannot alter any user chart.
-- [ ] Correcting one chart cannot alter another.
-- [ ] Removing one chart cannot delete another source.
-- [ ] Relaunch restores the selected source per song.
-- [ ] Existing libraries with only `chords.json` behave exactly as before.
+- [~] `Analyse Again` cannot alter any user chart. The mutation surface is
+      tested — correction, removal, and detected writes cannot reach a user
+      chart — but a full detector run is not exercised in tests.
+- [x] Correcting one chart cannot alter another.
+- [x] Removing one chart cannot delete another source.
+- [x] Relaunch restores the selected source per song, and repairs a
+      selection whose chart is gone.
+- [x] Existing libraries with only `chords.json` behave exactly as before.
 
 ## Phase 3 — Smart Paste and ChordPro import
 
@@ -926,12 +943,13 @@ without yet requiring the strongest audio-guided alignment.
 ### Acceptance criteria
 
 - [ ] Valid ChordPro fixtures parse deterministically.
-- [ ] Common chords-over-lyrics paste preserves chord-to-character placement.
+- [x] Common chords-over-lyrics paste preserves chord-to-character placement.
 - [ ] Bar grids preserve bars, beats, holds, and supported repeats.
-- [ ] Capo conversion produces correct sounding chords.
-- [ ] Guitar tablature is not mistaken for hundreds of chord events.
+- [x] Capo conversion produces correct sounding chords, wherever in the file
+      the capo is declared, and in prose as well as a directive.
+- [x] Guitar tablature is not mistaken for hundreds of chord events.
 - [ ] Every ignored directive or unknown chord is surfaced in preview.
-- [ ] Adding a chart never changes detected chords or active lyrics.
+- [x] Adding a chart never changes detected chords or active lyrics.
 - [ ] Paste and file import work with airplane mode enabled.
 
 ## Phase 4 — Lyric, beat, and audio alignment
@@ -942,8 +960,11 @@ using all local evidence while keeping the supplied chord labels intact.
 ### Work
 
 - [x] Implement ordered fuzzy alignment between imported lyric anchors and
-      active `SongLyrics`.
-- [x] Implement character-to-word timestamp mapping.
+      active `SongLyrics`. Global sequence alignment, not greedy per line, so a
+      repeated chorus reaches its own occurrence.
+- [x] Implement character-to-word timestamp mapping, through a word-level
+      alignment of the chart's line to the recording's line rather than a raw
+      character offset.
 - [x] Implement labelled line-time interpolation.
 - [x] Map explicit grid bars/cells to reliable detected beats and downbeats.
 - [ ] Expand supported repeats and section occurrences into a candidate linear
@@ -954,22 +975,27 @@ using all local evidence while keeping the supplied chord labels intact.
 - [ ] Support holds, advances, bounded skips, repeated sections, and unmatched
       instrumental regions.
 - [x] Calculate parse, placement, anchor, audio-agreement, and overall metrics.
-- [~] Detect likely arrangement mismatches.
+- [x] Detect likely arrangement mismatches, by duration, anchor coverage, and
+      audio agreement.
+- [x] Detect a chart written at another pitch, report it, and let the user
+      match the recording without editing the chart text.
 - [x] Build result preview with warnings and disagreement markers.
 - [~] Implement non-destructive re-alignment and correction preservation.
-- [ ] Make long alignment work cancellable through the shared analysis queue
-      without blocking playback or recording.
+- [~] Make long alignment work cancellable. The import preview runs off the
+      main actor and cancels on the next keystroke; it does not yet go through
+      the shared analysis queue.
 
 ### Acceptance criteria
 
-- [ ] Word-timed fixtures place source chords on the correct words.
-- [ ] Bar-grid fixtures place changes on the correct beats.
-- [ ] Repeated chorus fixtures align to distinct occurrences rather than the
+- [x] Word-timed fixtures place source chords on the correct words, including
+      where the chart's wording differs from the recording's.
+- [x] Bar-grid fixtures place changes on the correct beats.
+- [x] Repeated chorus fixtures align to distinct occurrences rather than the
       first matching text.
 - [ ] A condensed chart can expand marked repeats into the recording.
-- [ ] Audio scoring improves timing without changing imported chord labels.
+- [x] Audio scoring improves timing without changing imported chord labels.
 - [ ] Strong source/audio disagreements are visible and testable.
-- [ ] Wrong-version fixtures produce a warning rather than false high
+- [x] Wrong-version fixtures produce a warning rather than false high
       confidence.
 - [ ] Re-alignment preserves edits and requires confirmation before replacing
       prior derived timing.
@@ -1002,6 +1028,31 @@ using all local evidence while keeping the supplied chord labels intact.
 - [ ] The feature works without a network connection.
 - [ ] Physical-device testing confirms that importing or aligning cannot
       destabilize audio playback or recording.
+
+## Known gaps
+
+Carried deliberately rather than forgotten. None of them changes what is stored,
+so each can be closed without a migration.
+
+- **Instrumental bars are placed by proportion, not by bar number.** A
+  written-out interlude in a chart that also has words is spread across the gap
+  between the lines around it. Absolute bar numbers are only trusted for a chart
+  that is nothing but bars, because a chart's bar 1 is its section's bar 1, not
+  the recording's.
+- **Beat evidence is session-only.** `ChordDetector` publishes it into
+  `ChordStore` in memory and it is cleared when the song closes, so a chart
+  imported after a relaunch aligns without audio evidence until analysis runs
+  again. Only matters when a song has no lyrics; the import preview says so.
+- **ChordPro export is a chord list.** Lyrics, sections, and grids are dropped,
+  so the file re-imports to the same sounding chords but does not read like the
+  chart it came from.
+- **`user-chords.json` is written without a storage-capacity check**, unlike
+  every artifact that goes through `writeAnalysis`. Chart count and size are
+  also not shown in chart management.
+- **Source metadata is shown but not editable** in the import preview, so a
+  chart with a wrong printed key or capo has to be corrected in the text.
+- **Repeats are not expanded.** `%` and `%%` inside a grid are, but a chart that
+  writes a chorus once and marks it `x3` still contributes one occurrence.
 
 ## Testing strategy
 

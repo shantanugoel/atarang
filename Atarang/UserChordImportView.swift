@@ -19,6 +19,16 @@ struct UserChordImportSheet: View {
     @State private var document: ImportedChordDocument
     @State private var chartName: String
     @State private var updateChartID: UUID?
+    /// The alignment shown in the preview, and the one `Add Chart` uses.
+    ///
+    /// Held rather than recomputed inside `body`: aligning a chart is a
+    /// dynamic program over every chord and every beat, and running it during
+    /// view evaluation meant running it again on every keystroke.
+    @State private var alignedPreview: UserChordAligner.Result?
+    @State private var isAligning = false
+    @State private var alignmentTask: Task<Void, Never>?
+    /// Semitones the user has chosen to move the chart by, if any.
+    @State private var pitchOffset = 0
 
     init(
         store: ChordStore,
@@ -58,12 +68,14 @@ struct UserChordImportSheet: View {
                         .disabled(document.events.isEmpty)
                 }
             }
-            .onChange(of: text) { _, value in
+            .onChange(of: text, initial: true) { _, value in
                 document = UserChordParser.parse(value)
                 if chartName == "My chart", let title = document.metadata.title {
                     chartName = title
                 }
+                realign()
             }
+            .onDisappear { alignmentTask?.cancel() }
         }
     }
 
@@ -110,13 +122,13 @@ struct UserChordImportSheet: View {
             if document.metadata.sourceCapo > 0 {
                 LabeledContent("Source capo", value: "\(document.metadata.sourceCapo)")
             }
-            if let result = UserChordAligner.align(
-                document,
-                lyrics: lyrics.lyrics,
-                grid: beats.grid,
-                duration: store.song?.duration ?? 0,
-                evidence: store.beatEvidence
-            ) {
+            if isAligning {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("Aligning to this recording…")
+                        .foregroundStyle(.secondary)
+                }
+            } else if let result = alignedPreview {
                 LabeledContent(
                     "Alignment",
                     value: result.alignment.statusLabel.capitalized
@@ -125,13 +137,102 @@ struct UserChordImportSheet: View {
                     "Placement",
                     value: "\(Int((result.alignment.confidence * 100).rounded()))%"
                 )
+                LabeledContent(
+                    "Lines matched to lyrics",
+                    value: "\(Int((result.alignment.lyricAnchorCoverage * 100).rounded()))%"
+                )
+                pitch(for: result)
                 if let agreement = result.alignment.audioAgreement {
                     LabeledContent(
                         "Audio agreement",
                         value: "\(Int((agreement * 100).rounded()))%"
                     )
+                } else if !document.lyricAnchors.isEmpty, lyrics.lyrics == nil {
+                    Text("This song has no lyrics yet, so chords were placed by order alone. Adding lyrics and re-aligning will place them on the words.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
+        }
+    }
+
+    /// Says when the chart is in a different key from the recording, and offers
+    /// to move it.
+    ///
+    /// Never applied silently. A chart a semitone above the record is not a
+    /// mistake in the chart — it is what someone playing a tuned-down guitar
+    /// wrote down — so the user is told what was found and chooses.
+    @ViewBuilder
+    private func pitch(for result: UserChordAligner.Result) -> some View {
+        if let agreement = result.alignment.pitchAgreement {
+            LabeledContent(
+                "Matches the recording",
+                value: "\(Int((agreement * 100).rounded()))%"
+            )
+        }
+        if let suggested = result.alignment.suggestedPitchOffset,
+           suggested != pitchOffset {
+            VStack(alignment: .leading, spacing: 8) {
+                Label(
+                    "This chart reads \(abs(suggested - pitchOffset)) semitone\(abs(suggested - pitchOffset) == 1 ? "" : "s") \(suggested < pitchOffset ? "above" : "below") this recording.",
+                    systemImage: "tuningfork"
+                )
+                .font(.caption)
+                .foregroundStyle(.orange)
+                Text("The chords are placed correctly; only their pitch differs. A guitar tuned down, or a capo the transcriber assumed.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Button("Match This Recording") {
+                    pitchOffset = suggested
+                    realign()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            }
+        } else if pitchOffset != 0 {
+            LabeledContent(
+                "Pitch",
+                value: "Moved \(abs(pitchOffset)) semitone\(abs(pitchOffset) == 1 ? "" : "s") \(pitchOffset < 0 ? "down" : "up")"
+            )
+            Button("Keep the Chart as Written") {
+                pitchOffset = 0
+                realign()
+            }
+            .controlSize(.small)
+        }
+    }
+
+    /// Re-runs the alignment off the main actor, cancelling whatever the
+    /// previous keystroke started.
+    private func realign() {
+        alignmentTask?.cancel()
+        guard !document.events.isEmpty, let duration = store.song?.duration else {
+            alignedPreview = nil
+            isAligning = false
+            return
+        }
+        let document = document
+        let songLyrics = lyrics.lyrics
+        let grid = beats.grid
+        let evidence = store.beatEvidence
+        let reference = store.detectedChords
+        let offset = pitchOffset
+        isAligning = true
+        alignmentTask = Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                UserChordAligner.align(
+                    document,
+                    lyrics: songLyrics,
+                    grid: grid,
+                    duration: duration,
+                    evidence: evidence,
+                    reference: reference,
+                    pitchOffset: offset
+                )
+            }.value
+            guard !Task.isCancelled else { return }
+            alignedPreview = result
+            isAligning = false
         }
     }
 
@@ -157,7 +258,9 @@ struct UserChordImportSheet: View {
                 origin: origin,
                 name: chartName,
                 lyrics: lyrics.lyrics,
-                grid: beats.grid
+                grid: beats.grid,
+                aligned: alignedPreview,
+                pitchOffset: pitchOffset
             )
         } else {
             succeeded = store.addUserChart(
@@ -165,7 +268,9 @@ struct UserChordImportSheet: View {
                 origin: origin,
                 name: chartName,
                 lyrics: lyrics.lyrics,
-                grid: beats.grid
+                grid: beats.grid,
+                aligned: alignedPreview,
+                pitchOffset: pitchOffset
             ) != nil
         }
         guard succeeded else { return }
@@ -242,6 +347,11 @@ struct UserChordManagerSheet: View {
                                 store.removeUserChart(id: chart.id)
                             }
                         }
+                        if let alignment = chart.alignment,
+                           let suggested = alignment.suggestedPitchOffset,
+                           suggested != alignment.pitchOffset {
+                            pitchNotice(for: chart, suggested: suggested, from: alignment.pitchOffset)
+                        }
                     }
                     Button(action: addChart) {
                         Label("Add another chart", systemImage: "plus")
@@ -271,6 +381,38 @@ struct UserChordManagerSheet: View {
                     .presentationDetents([.medium, .large])
             }
         }
+    }
+
+    /// The same offer the import preview makes, for a chart that is already
+    /// saved — including one imported before Atarang could notice this.
+    private func pitchNotice(
+        for chart: UserChordChart,
+        suggested: Int,
+        from applied: Int
+    ) -> some View {
+        let distance = abs(suggested - applied)
+        return VStack(alignment: .leading, spacing: 8) {
+            Label(
+                "Reads \(distance) semitone\(distance == 1 ? "" : "s") \(suggested < applied ? "above" : "below") this recording",
+                systemImage: "tuningfork"
+            )
+            .font(.caption)
+            .foregroundStyle(.orange)
+            Text("The chords are in the right places; only their pitch differs.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Button("Match This Recording") {
+                store.realignUserChart(
+                    id: chart.id,
+                    lyrics: lyrics.lyrics,
+                    grid: beats.grid,
+                    pitchOffset: suggested
+                )
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+        }
+        .padding(.vertical, 2)
     }
 
     private func sourceRow(title: String, detail: String, selected: Bool) -> some View {

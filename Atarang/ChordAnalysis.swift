@@ -302,21 +302,30 @@ final class ChordStore {
         saveUserCollection()
     }
 
+    /// Adds an imported chart and selects it.
+    ///
+    /// `aligned` is the result the import preview already computed. Passing it
+    /// back means the chart the user confirmed is the chart they were shown,
+    /// and the alignment is not run a second time on the main actor.
     @discardableResult
     func addUserChart(
         document: ImportedChordDocument,
         origin: UserChordOrigin,
         name: String,
         lyrics: SongLyrics?,
-        grid: BeatGrid?
+        grid: BeatGrid?,
+        aligned: UserChordAligner.Result? = nil,
+        pitchOffset: Int = 0
     ) -> UserChordChart? {
         guard let song,
-              let result = UserChordAligner.align(
+              let result = aligned ?? UserChordAligner.align(
                 document,
                 lyrics: lyrics,
                 grid: grid,
                 duration: song.duration,
-                evidence: beatEvidence
+                evidence: beatEvidence,
+                reference: detectedChords,
+                pitchOffset: pitchOffset
               ) else {
             errorMessage = "This text did not contain a chord chart Atarang could add."
             return nil
@@ -350,16 +359,20 @@ final class ChordStore {
         origin: UserChordOrigin,
         name: String,
         lyrics: SongLyrics?,
-        grid: BeatGrid?
+        grid: BeatGrid?,
+        aligned: UserChordAligner.Result? = nil,
+        pitchOffset: Int = 0
     ) -> Bool {
         guard let song,
               let index = userCollection.charts.firstIndex(where: { $0.id == id }),
-              let result = UserChordAligner.align(
+              let result = aligned ?? UserChordAligner.align(
                 document,
                 lyrics: lyrics,
                 grid: grid,
                 duration: song.duration,
-                evidence: beatEvidence
+                evidence: beatEvidence,
+                reference: detectedChords,
+                pitchOffset: pitchOffset
               ) else { return false }
         var fresh = result.chords
         if let existing = userCollection.charts[index].chords, existing.hasUserEdits {
@@ -377,7 +390,16 @@ final class ChordStore {
         return true
     }
 
-    func realignUserChart(id: UUID, lyrics: SongLyrics?, grid: BeatGrid?) {
+    /// Rebuilds one chart's timing from its stored document.
+    ///
+    /// `pitchOffset` defaults to whatever the user already settled on, so a
+    /// re-align does not quietly undo their decision about the chart's key.
+    func realignUserChart(
+        id: UUID,
+        lyrics: SongLyrics?,
+        grid: BeatGrid?,
+        pitchOffset: Int? = nil
+    ) {
         guard let song,
               let index = userCollection.charts.firstIndex(where: { $0.id == id }),
               let result = UserChordAligner.align(
@@ -385,7 +407,11 @@ final class ChordStore {
                 lyrics: lyrics,
                 grid: grid,
                 duration: song.duration,
-                evidence: beatEvidence
+                evidence: beatEvidence,
+                reference: detectedChords,
+                pitchOffset: pitchOffset
+                    ?? userCollection.charts[index].alignment?.pitchOffset
+                    ?? 0
               ) else { return }
         var fresh = result.chords
         if let existing = userCollection.charts[index].chords, existing.hasUserEdits {
