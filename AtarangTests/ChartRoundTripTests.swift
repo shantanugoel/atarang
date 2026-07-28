@@ -109,11 +109,11 @@ struct ChartRenderer {
                         max(0, text.count - 1)
                     )
                     let symbol = printed(chords.segments[offset].chord, shift: printedShift)
-                    if chordLine.count > column {
-                        chordLine += " " + symbol
-                    } else {
-                        chordLine += String(repeating: " ", count: column - chordLine.count) + symbol
-                    }
+                    // At least one space always, or two symbols run together
+                    // into a token that is neither of them.
+                    let padding = max(1, column - chordLine.count)
+                    chordLine += String(repeating: " ", count: chordLine.isEmpty ? max(0, column) : padding)
+                        + symbol
                 }
                 lines.append(chordLine)
                 lines.append(text)
@@ -132,6 +132,42 @@ struct ChartRenderer {
             }
         }
         return lines.joined(separator: lineEnding) + lineEnding
+    }
+
+    /// The same chart written as bars alone, the way an instrumental or a
+    /// jazz chart is. `skippingBars` leaves off the front, standing in for the
+    /// intro a transcriber did not write down.
+    func barChart(
+        chords: SongChords,
+        grid: BeatGrid,
+        skippingBars: Int = 0
+    ) -> String {
+        let beats = grid.beats.map(\.time)
+        let downbeatIndices = grid.beats.indices.filter { grid.beats[$0].isDownbeat }
+        var bars: [String] = []
+        for (number, start) in downbeatIndices.enumerated() where number >= skippingBars {
+            let end = number + 1 < downbeatIndices.count
+                ? downbeatIndices[number + 1]
+                : beats.count
+            var cells: [String] = []
+            for slot in start..<end {
+                let from = beats[slot]
+                let to = slot + 1 < beats.count ? beats[slot + 1] : from + 1
+                if let chord = chords.segments.first(
+                    where: { $0.start >= from - 0.05 && $0.start < to - 0.05 }
+                )?.chord {
+                    cells.append(printed(chord, shift: transpose - capo))
+                } else if cells.isEmpty, slot == start,
+                          let held = chords.segment(at: from)?.chord {
+                    cells.append(printed(held, shift: transpose - capo))
+                } else {
+                    cells.append(".")
+                }
+            }
+            guard !cells.isEmpty else { continue }
+            bars.append(cells.joined(separator: " "))
+        }
+        return "| " + bars.joined(separator: " | ") + " |"
     }
 
     private func printed(_ chord: Chord?, shift: Int) -> String {
@@ -553,6 +589,107 @@ final class ChartRoundTripTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(wordTimed.accuracy, lineTimed.accuracy - 0.02)
         XCTAssertGreaterThan(wordTimed.accuracy, 0.80)
         XCTAssertGreaterThan(lineTimed.accuracy, 0.80)
+    }
+
+    // MARK: - Bar charts
+
+    private func barSong() -> SyntheticSong {
+        SyntheticSong.make(
+            progression: [
+                chord(9, .minor), chord(5, .major), chord(0, .major), chord(7, .major),
+            ],
+            structure: [("Head", 4), ("Solo", 4), ("Head", 4)],
+            bpm: 96,
+            chordsPerLine: 2
+        )
+    }
+
+    /// A chart that is nothing but bars, starting where the recording does,
+    /// is placed exactly — there is no interpolation involved at all.
+    func testPureBarChartIsExact() throws {
+        let song = barSong()
+        let text = ChartRenderer().barChart(chords: song.chords, grid: song.grid)
+        let document = UserChordParser.parse(text)
+
+        let result = try XCTUnwrap(
+            UserChordAligner.align(
+                document, lyrics: nil, grid: song.grid, duration: song.duration
+            )
+        )
+
+        XCTAssertGreaterThan(
+            accuracy(result.chords, song.chords, duration: song.duration),
+            0.95
+        )
+    }
+
+    /// The intro nobody wrote down.
+    ///
+    /// A chart counts its own bars from one, so a chart that starts at the
+    /// first verse puts everything a fixed distance early and leaves it there.
+    /// Given the recording's own analysis to compare against, the chart is slid
+    /// along the downbeats until it fits.
+    func testBarChartFindsItsPlaceWhenTheIntroIsNotWritten() throws {
+        let song = barSong()
+        let text = ChartRenderer().barChart(
+            chords: song.chords,
+            grid: song.grid,
+            skippingBars: 6
+        )
+        let document = UserChordParser.parse(text)
+        let from = song.grid.beats.filter(\.isDownbeat).map(\.time)[6]
+
+        func score(_ chart: SongChords) -> Double {
+            var samples = 0
+            var agreed = 0
+            var time = from
+            while time < song.duration {
+                defer { time += 0.1 }
+                guard let theirs = song.chords.segment(at: time)?.chord else { continue }
+                samples += 1
+                if chart.segment(at: time)?.chord == theirs { agreed += 1 }
+            }
+            return samples == 0 ? 0 : Double(agreed) / Double(samples)
+        }
+
+        let blind = try XCTUnwrap(
+            UserChordAligner.align(
+                document, lyrics: nil, grid: song.grid, duration: song.duration
+            )
+        )
+        let guided = try XCTUnwrap(
+            UserChordAligner.align(
+                document, lyrics: nil, grid: song.grid, duration: song.duration,
+                reference: song.chords
+            )
+        )
+
+        // Without anything to compare against, bar one is taken at its word.
+        XCTAssertLessThan(score(blind.chords), 0.5)
+        // A bar chart can only say which beat a chord starts on, and this
+        // song's chords sit between beats because they were written over
+        // syllables. That quantisation is the ceiling here, not the search —
+        // a chart of a bar-aligned recording comes back exact.
+        XCTAssertGreaterThan(score(guided.chords), 0.80)
+    }
+
+    /// Sliding is only allowed to help. A chart that already fits stays put.
+    func testBarChartThatAlreadyFitsIsNotMoved() throws {
+        let song = barSong()
+        let text = ChartRenderer().barChart(chords: song.chords, grid: song.grid)
+        let document = UserChordParser.parse(text)
+
+        let guided = try XCTUnwrap(
+            UserChordAligner.align(
+                document, lyrics: nil, grid: song.grid, duration: song.duration,
+                reference: song.chords
+            )
+        )
+
+        XCTAssertGreaterThan(
+            accuracy(guided.chords, song.chords, duration: song.duration),
+            0.95
+        )
     }
 
     /// Unix line endings must give the same answer as the CRLF a browser

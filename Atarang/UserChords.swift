@@ -339,7 +339,10 @@ enum UserChordParser {
         case annotation
         case grid
         case inline
-        case chords([ChordToken])
+        /// `unreadable` holds tokens on a chord line that are not chords. The
+        /// line is still a chord line; those tokens are reported rather than
+        /// taking the whole line down with them.
+        case chords([ChordToken], unreadable: [String])
         case lyric
     }
 
@@ -417,7 +420,14 @@ enum UserChordParser {
                     )
                 }
 
-            case .chords(let tokens):
+            case .chords(let tokens, let unreadable):
+                for token in unreadable {
+                    document.warnings.append(.init(
+                        kind: .unknownChord,
+                        message: "Could not read “\(token)” on a chord line. The chords around it were kept.",
+                        line: lineIndex + 1
+                    ))
+                }
                 // A chord line describes the line of words under it. Blank
                 // lines between the two are layout, not separation.
                 let target = lines.indices.dropFirst(lineIndex + 1).first {
@@ -484,10 +494,43 @@ enum UserChordParser {
         if isPlainMetadata(trimmed) { return .annotation }
         if trimmed.contains("|"), isGrid(trimmed) { return .grid }
         let tokens = chordTokens(in: rawLine)
-        if !tokens.isEmpty, tokens.count == meaningfulTokens(in: trimmed).count {
-            return .chords(tokens)
+        let meaningful = meaningfulTokens(in: trimmed)
+        if !tokens.isEmpty, tokens.count == meaningful.count {
+            return .chords(tokens, unreadable: [])
+        }
+        // A line that is mostly chords is a chord line with something in it we
+        // could not read — a typo, an annotation, two symbols that ran
+        // together. Reading the whole line as lyrics instead threw away every
+        // chord on it and said nothing, which is the one thing the parser must
+        // never do.
+        //
+        // The wide-spacing test is what keeps ordinary words out: a chord line
+        // is laid out in columns and has gaps in it, while "A B C of the
+        // morning" is single-spaced whatever its first three words spell.
+        if tokens.count >= 2, !meaningful.isEmpty,
+           Double(tokens.count) / Double(meaningful.count) >= 0.6,
+           hasColumnSpacing(rawLine) {
+            let recognised = Set(tokens.map(\.text))
+            return .chords(
+                tokens,
+                unreadable: meaningful.filter { !recognised.contains($0) }
+            )
         }
         return .lyric
+    }
+
+    /// True when the line is laid out in columns rather than written as prose.
+    private static func hasColumnSpacing(_ line: String) -> Bool {
+        var run = 0
+        for character in line.trimmingCharacters(in: .whitespaces) {
+            if character == " " {
+                run += 1
+                if run >= 2 { return true }
+            } else {
+                run = 0
+            }
+        }
+        return false
     }
 
     /// A bar grid, rather than a lyric line that merely contains a pipe.
@@ -901,6 +944,15 @@ enum UserChordAligner {
         // thirty seconds. Absolute bars are only trusted when the chart is
         // nothing but bars, with no words to place it by.
         let usesAbsoluteBars = matches.isEmpty
+        let barOffset = usesAbsoluteBars
+            ? startingBar(
+                events: document.events,
+                grid: grid,
+                reference: reference,
+                evidence: evidence,
+                pitchOffset: pitchOffset
+              )
+            : 0
         var placements = [Placement?](repeating: nil, count: document.events.count)
         for (index, event) in document.events.enumerated() {
             if let lyrics,
@@ -915,7 +967,7 @@ enum UserChordAligner {
                 )
             }
             if placements[index] == nil, usesAbsoluteBars,
-               let time = gridTime(event.location, grid: grid) {
+               let time = gridTime(event.location, grid: grid, barOffset: barOffset) {
                 placements[index] = Placement(time: time, confidence: 0.9, isEstimated: false)
             }
         }
@@ -965,6 +1017,7 @@ enum UserChordAligner {
                 placements: ordered,
                 matches: matches,
                 grid: usesAbsoluteBars ? grid : nil,
+                barOffset: barOffset,
                 evidence: evidence,
                 duration: duration,
                 chords: chords,
@@ -1342,15 +1395,78 @@ enum UserChordAligner {
 
     // MARK: - Bars
 
+    /// Which bar of the recording the chart's first bar is.
+    ///
+    /// A bar chart counts its own bars from one, and a transcriber routinely
+    /// starts counting where the song's *chart* starts rather than where its
+    /// audio does — the four-bar intro nobody wrote down, the count-in, the
+    /// fade. Reading bar one as the recording's bar one then puts the whole
+    /// chart a fixed distance early and leaves it there.
+    ///
+    /// The offset is found rather than assumed, by sliding the chart along the
+    /// downbeats and keeping the position where its chords best match what the
+    /// recording is actually doing. Only the placement moves; the chart's
+    /// labels are never involved in the decision.
+    private static func startingBar(
+        events: [ImportedChordEvent],
+        grid: BeatGrid?,
+        reference: SongChords?,
+        evidence: [BeatChordEvidence],
+        pitchOffset: Int
+    ) -> Int {
+        guard let grid, grid.isReliable else { return 0 }
+        guard reference != nil || !evidence.isEmpty else { return 0 }
+        let downbeats = grid.beats.indices.filter { grid.beats[$0].isDownbeat }
+        let bars: [(bar: Int, chord: Chord)] = events.compactMap { event in
+            guard case .grid(let bar, _) = event.location,
+                  let chord = event.chord?.transposed(by: pitchOffset) else { return nil }
+            return (bar, chord)
+        }
+        guard bars.count >= 4,
+              let highest = bars.map(\.bar).max(),
+              downbeats.count > highest else { return 0 }
+
+        // Sliding further than the chart is long would be matching it against
+        // a different part of the song entirely.
+        let limit = min(downbeats.count - 1 - highest, max(8, highest))
+        guard limit > 0 else { return 0 }
+
+        var best = 0
+        var bestScore = -Double.infinity
+        for offset in 0...limit {
+            var score = 0.0
+            for entry in bars {
+                let index = downbeats[entry.bar + offset]
+                guard grid.beats.indices.contains(index) else { continue }
+                let time = grid.beats[index].time
+                if let reference {
+                    guard let heard = reference.segment(at: time)?.chord else { continue }
+                    score += heard.root == entry.chord.root ? 1 : 0
+                } else if !evidence.isEmpty {
+                    score += evidence[nearestBeat(to: time, in: evidence)]
+                        .agreement(with: entry.chord)
+                }
+            }
+            // A tie goes to no offset: the chart said bar one, and only clear
+            // evidence should overrule it.
+            if score > bestScore + 0.0001 {
+                bestScore = score
+                best = offset
+            }
+        }
+        return best
+    }
+
     private static func gridTime(
         _ location: ImportedChordLocation,
-        grid: BeatGrid?
+        grid: BeatGrid?,
+        barOffset: Int = 0
     ) -> TimeInterval? {
         guard case .grid(let bar, let beat) = location,
               let grid, grid.isReliable else { return nil }
         let downbeats = grid.beats.indices.filter { grid.beats[$0].isDownbeat }
-        guard downbeats.indices.contains(bar) else { return nil }
-        let start = downbeats[bar]
+        guard downbeats.indices.contains(bar + barOffset) else { return nil }
+        let start = downbeats[bar + barOffset]
         let index = start + Int(beat.rounded(.down))
         guard grid.beats.indices.contains(index) else { return nil }
         let base = grid.beats[index].time
@@ -1595,6 +1711,7 @@ enum UserChordAligner {
         placements: [Placement],
         matches: [Int: LyricMatch],
         grid: BeatGrid?,
+        barOffset: Int,
         evidence: [BeatChordEvidence],
         duration: TimeInterval,
         chords: SongChords,
@@ -1612,7 +1729,7 @@ enum UserChordAligner {
             return false
         }
         let beatCoverage = gridEvents == 0 ? 0 : Double(
-            document.events.count { gridTime($0.location, grid: grid) != nil }
+            document.events.count { gridTime($0.location, grid: grid, barOffset: barOffset) != nil }
         ) / Double(gridEvents)
 
         let audioScores: [Double] = evidence.isEmpty ? [] : placements.indices.map { index in

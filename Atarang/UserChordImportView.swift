@@ -86,6 +86,15 @@ struct UserChordImportSheet: View {
             Text("Import a chart you created or are allowed to use. Atarang reads and aligns it on this device; it does not contact the chart’s source.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+            // Said before the import rather than after it goes wrong. Lining a
+            // chart up against a recording is guesswork wherever the words run
+            // out, and a chart written for another take or another tuning is
+            // not a mistake anyone can see from the text alone.
+            Label("Expect to correct a few things", systemImage: "hand.raised")
+                .foregroundStyle(.orange)
+            Text("Atarang lines the chart up against this recording as well as it can, using the words, the bars and the audio. It will not get everything right — instrumental sections and charts written for a different take drift the most. The chords stay exactly as you supplied them, and you can fix any of them by tapping it on the Chords stage.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
         }
     }
 
