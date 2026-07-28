@@ -835,25 +835,25 @@ states recklessly or losing existing playability behaviour.
 
 ### Work
 
-- [ ] Replace the closed `ChordQuality` dependency with a scalable semantic
+- [x] Replace the closed `ChordQuality` dependency with a scalable semantic
       descriptor/formula.
-- [ ] Preserve source-compatible `Codable` behaviour or update all existing
+- [x] Preserve source-compatible `Codable` behaviour or update all existing
       development data deliberately, consistent with the pre-1.0 policy.
-- [ ] Define a small `detectable` descriptor set equivalent to today's detector
+- [x] Define a small `detectable` descriptor set equivalent to today's detector
       vocabulary.
-- [ ] Implement a chord-symbol lexer/parser with aliases and Unicode
+- [x] Implement a chord-symbol lexer/parser with aliases and Unicode
       accidentals.
-- [ ] Implement canonical symbol rendering, spoken names, pitch classes, and
+- [x] Implement canonical symbol rendering, spoken names, pitch classes, and
       transposition.
-- [ ] Support at minimum major, minor, power, sus2, sus4, 6, m6, 7, maj7, m7,
+- [x] Support at minimum major, minor, power, sus2, sus4, 6, m6, 7, maj7, m7,
       dim, dim7, aug, m7b5, add2/add4/add9, 9/maj9/m9, slash bass, altered
       fifths, and no-chord.
-- [ ] Refactor `ChordPlayability` to simplify semantic formulas rather than enum
+- [x] Refactor `ChordPlayability` to simplify semantic formulas rather than enum
       strings.
-- [ ] Keep exact known shapes and honest fallback behaviour for rich chords.
-- [ ] Update correction UI so representable imported chords can be selected or
+- [x] Keep exact known shapes and honest fallback behaviour for rich chords.
+- [x] Update correction UI so representable imported chords can be selected or
       entered without presenting hundreds of flat picker rows.
-- [ ] Add round-trip, alias, transposition, simplification, VoiceOver, and
+- [~] Add round-trip, alias, transposition, simplification, VoiceOver, and
       malformed-input tests.
 
 ### Acceptance criteria
@@ -875,19 +875,19 @@ existing feature pipeline through the selected chart.
 
 ### Work
 
-- [ ] Add `UserChordCollection`, `UserChordChart`, provenance, and selection
+- [x] Add `UserChordCollection`, `UserChordChart`, provenance, and selection
       types.
-- [ ] Add atomic read/write of `user-chords.json`.
-- [ ] Refactor `ChordStore` to own detected, user, selected, and active state.
-- [ ] Make detection and re-analysis mutate only the detected slot.
-- [ ] Make correction mutate only the selected chart.
-- [ ] Preserve imported corrections across future re-alignment.
-- [ ] Make Chords and Sheet observe the active chart and chart selection.
-- [ ] Add a source selector when more than one usable chart exists.
-- [ ] Add chart rename, select, and targeted remove actions.
-- [ ] Update empty, error, notice, and source-badge language.
-- [ ] Add safe fallback when a selected chart becomes unavailable.
-- [ ] Include the user chart file in integrity checks and storage accounting.
+- [x] Add atomic read/write of `user-chords.json`.
+- [x] Refactor `ChordStore` to own detected, user, selected, and active state.
+- [x] Make detection and re-analysis mutate only the detected slot.
+- [x] Make correction mutate only the selected chart.
+- [x] Preserve imported corrections across future re-alignment.
+- [x] Make Chords and Sheet observe the active chart and chart selection.
+- [x] Add a source selector when more than one usable chart exists.
+- [x] Add chart rename, select, and targeted remove actions.
+- [x] Update empty, error, notice, and source-badge language.
+- [x] Add safe fallback when a selected chart becomes unavailable.
+- [x] Include the user chart file in integrity checks and storage accounting.
 
 ### Acceptance criteria
 
@@ -907,21 +907,21 @@ without yet requiring the strongest audio-guided alignment.
 
 ### Work
 
-- [ ] Implement ChordPro directive, lyric-line, chord, and grid parsing.
-- [ ] Implement smart-paste line classification and chords-over-lyrics pairing.
-- [ ] Parse key, capo, tempo, duration, time signature, sections, repeats, and
+- [x] Implement ChordPro directive, lyric-line, chord, and grid parsing.
+- [x] Implement smart-paste line classification and chords-over-lyrics pairing.
+- [~] Parse key, capo, tempo, duration, time signature, sections, repeats, and
       annotations.
-- [ ] Convert printed capo shapes to sounding chords while retaining source
+- [x] Convert printed capo shapes to sounding chords while retaining source
       metadata.
-- [ ] Produce a normalized `ImportedChordDocument` with token/line confidence
+- [x] Produce a normalized `ImportedChordDocument` with token/line confidence
       and warnings.
-- [ ] Add paste and document-picker input.
-- [ ] Register supported uniform types/extensions where appropriate.
-- [ ] Build parse preview and editable metadata correction.
-- [ ] Reject or isolate tablature and non-chart noise.
-- [ ] Add a deterministic chart-name suggestion and duplicate handling.
-- [ ] Add ChordPro export for the supported normalized subset.
-- [ ] Add import accessibility, cancellation, and large-input limits.
+- [x] Add paste and document-picker input.
+- [x] Register supported uniform types/extensions where appropriate.
+- [~] Build parse preview and editable metadata correction.
+- [x] Reject or isolate tablature and non-chart noise.
+- [x] Add a deterministic chart-name suggestion and duplicate handling.
+- [x] Add ChordPro export for the supported normalized subset.
+- [x] Add import accessibility, cancellation, and large-input limits.
 
 ### Acceptance criteria
 
@@ -941,22 +941,22 @@ using all local evidence while keeping the supplied chord labels intact.
 
 ### Work
 
-- [ ] Implement ordered fuzzy alignment between imported lyric anchors and
+- [x] Implement ordered fuzzy alignment between imported lyric anchors and
       active `SongLyrics`.
-- [ ] Implement character-to-word timestamp mapping.
-- [ ] Implement labelled line-time interpolation.
-- [ ] Map explicit grid bars/cells to reliable detected beats and downbeats.
+- [x] Implement character-to-word timestamp mapping.
+- [x] Implement labelled line-time interpolation.
+- [x] Map explicit grid bars/cells to reliable detected beats and downbeats.
 - [ ] Expand supported repeats and section occurrences into a candidate linear
       chart.
-- [ ] Refactor `ChordDetector` to expose reusable beat evidence without
+- [x] Refactor `ChordDetector` to expose reusable beat evidence without
       duplicating audio reads or FFT work.
-- [ ] Implement constrained chart-to-audio sequence alignment.
+- [~] Implement constrained chart-to-audio sequence alignment.
 - [ ] Support holds, advances, bounded skips, repeated sections, and unmatched
       instrumental regions.
-- [ ] Calculate parse, placement, anchor, audio-agreement, and overall metrics.
-- [ ] Detect likely arrangement mismatches.
-- [ ] Build result preview with warnings and disagreement markers.
-- [ ] Implement non-destructive re-alignment and correction preservation.
+- [x] Calculate parse, placement, anchor, audio-agreement, and overall metrics.
+- [~] Detect likely arrangement mismatches.
+- [x] Build result preview with warnings and disagreement markers.
+- [~] Implement non-destructive re-alignment and correction preservation.
 - [ ] Make long alignment work cancellable through the shared analysis queue
       without blocking playback or recording.
 
@@ -981,8 +981,8 @@ using all local evidence while keeping the supplied chord labels intact.
 
 ### Work
 
-- [ ] Add detected-versus-imported comparison to chord correction details.
-- [ ] Add chart-level management and source information.
+- [x] Add detected-versus-imported comparison to chord correction details.
+- [x] Add chart-level management and source information.
 - [ ] Refine fallback and recovery UI for damaged or stale imported data.
 - [ ] Add telemetry only through local diagnostics; never log chart text,
       titles, source URLs, or chord sequences.

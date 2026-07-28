@@ -45,6 +45,39 @@ struct Chromagram: Sendable, Equatable {
     }
 }
 
+/// Reusable local audio evidence for one beat.
+///
+/// The detector decodes a deliberately small vocabulary from this data. An
+/// imported chart instead scores its own ordered, potentially richer formulas
+/// against the same evidence, so audio can place a supplied chord without
+/// acquiring authority to rename it.
+struct BeatChordEvidence: Sendable, Equatable {
+    var start: TimeInterval
+    var end: TimeInterval
+    var harmonicChroma: [Float]
+    var bassChroma: [Float]
+    var energy: Float
+
+    func agreement(with chord: Chord?) -> Double {
+        guard let chord else { return energy <= ChordDetector.silenceEnergy ? 1 : 0.25 }
+        let norm = sqrt(harmonicChroma.reduce(Float(0)) { $0 + $1 * $1 })
+        guard norm > 0, energy > ChordDetector.silenceEnergy else { return 0 }
+        let templateNorm = sqrt(Double(max(1, chord.pitchClasses.count)))
+        let harmonic = chord.pitchClasses.reduce(0.0) {
+            $0 + Double(harmonicChroma[$1]) / (Double(norm) * templateNorm)
+        }
+        let bassPeak = bassChroma.max() ?? 0
+        let bass: Double
+        if bassPeak > 0 {
+            let requested = chord.bass ?? chord.root
+            bass = Double(bassChroma[requested] / bassPeak)
+        } else {
+            bass = 0.5
+        }
+        return min(1, max(0, harmonic * 0.8 + bass * 0.2))
+    }
+}
+
 /// Finds a song's chords with no model and no download.
 ///
 /// The pipeline is the standard one, and standard on purpose — every stage has a
@@ -619,6 +652,7 @@ enum ChordDetector {
         /// grid to take or leave.
         var downbeatPhase: Int?
         var downbeatConfidence: Double = 0
+        var beatEvidence: [BeatChordEvidence] = []
     }
 
     /// Runs the whole analysis, or returns `nil` when the separation holds
@@ -735,7 +769,18 @@ enum ChordDetector {
         return Result(
             chords: chords,
             downbeatPhase: phase?.phase,
-            downbeatConfidence: phase?.confidence ?? 0
+            downbeatConfidence: phase?.confidence ?? 0,
+            beatEvidence: beatHarmonic.chroma.indices.map { index in
+                BeatChordEvidence(
+                    start: beatTimes[index],
+                    end: beatTimes[min(index + 1, beatTimes.count - 1)],
+                    harmonicChroma: beatHarmonic.chroma[index],
+                    bassChroma: index < beatBass.chroma.count
+                        ? beatBass.chroma[index]
+                        : silentBass,
+                    energy: beatHarmonic.energies[index]
+                )
+            }
         )
     }
 

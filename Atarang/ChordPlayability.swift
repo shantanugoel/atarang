@@ -161,12 +161,9 @@ enum ChordPlayability {
             Chord(root: chord.root, quality: chord.quality.triad),
             Chord(
                 root: chord.root,
-                quality: {
-                    switch chord.quality {
-                    case .diminished, .minor, .minorSeventh: .minor
-                    default: .major
-                    }
-                }()
+                quality: chord.quality.base == .minor || chord.quality.base == .diminished
+                    ? .minor
+                    : .major
             ),
             Chord(root: chord.root, quality: .power)
         ]

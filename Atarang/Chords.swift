@@ -29,102 +29,89 @@ enum PitchClass {
     }
 }
 
-/// The chord qualities the bundled tier can model.
+/// A semantic chord formula, independent from the detector's vocabulary.
 ///
-/// Major and minor are the core: between them they account for most of the
-/// chords in most songs, and they are the two the templates are built around.
-/// The other five are extensions, and they carry a small prior penalty in the
-/// decoder — a seventh differs from its triad by one pitch class, so on a noisy
-/// beat the richer template wins on a coincidence and prints a chord nobody
-/// played. Making the extension pay for itself keeps that honest.
-enum ChordQuality: String, Codable, CaseIterable, Sendable {
-    case major
-    case minor
-    case dominantSeventh
-    case minorSeventh
-    case majorSeventh
-    case suspendedFourth
-    case diminished
-    /// Root and fifth, and nothing that says major or minor.
-    ///
-    /// Nothing detects this and nothing may: a template of two notes fits
-    /// almost anything, so offering it to the decoder would print fifths over
-    /// a song full of triads. It exists so the Power complexity level has
-    /// something to *say* — it is a simplification of a chord that was heard,
-    /// never a chord that was heard.
-    case power
-
-    /// Semitones above the root.
-    var intervals: [Int] {
-        switch self {
-        case .major: [0, 4, 7]
-        case .minor: [0, 3, 7]
-        case .dominantSeventh: [0, 4, 7, 10]
-        case .minorSeventh: [0, 3, 7, 10]
-        case .majorSeventh: [0, 4, 7, 11]
-        case .suspendedFourth: [0, 5, 7]
-        case .diminished: [0, 3, 6]
-        case .power: [0, 7]
-        }
+/// Imported charts need a much wider language than audio detection should ever
+/// attempt. Keeping the formula's intervals and canonical notation together
+/// lets import, transposition, simplification, comparison, and VoiceOver stay
+/// honest without adding every formula to the detector state machine.
+struct ChordQuality: Codable, Hashable, Sendable, Identifiable {
+    enum Base: String, Codable, Sendable {
+        case major, minor, suspended, power, diminished, augmented
     }
 
-    /// What is written after the root.
-    var symbol: String {
-        switch self {
-        case .major: ""
-        case .minor: "m"
-        case .dominantSeventh: "7"
-        case .minorSeventh: "m7"
-        case .majorSeventh: "maj7"
-        case .suspendedFourth: "sus4"
-        case .diminished: "dim"
-        case .power: "5"
-        }
+    var base: Base
+    /// Canonical semitone intervals above the root, including the root.
+    var intervals: [Int]
+    /// Canonical chart suffix. It is notation, not a detector label.
+    var symbol: String
+    var spokenName: String
+
+    var id: String { "\(base.rawValue):\(intervals.map(String.init).joined(separator: ",")):\(symbol)" }
+
+    init(base: Base, intervals: [Int], symbol: String, spokenName: String) {
+        self.base = base
+        self.intervals = Array(Set(intervals.map(PitchClass.normalized))).sorted()
+        self.symbol = symbol
+        self.spokenName = spokenName
     }
 
-    var spokenName: String {
-        switch self {
-        case .major: "major"
-        case .minor: "minor"
-        case .dominantSeventh: "seven"
-        case .minorSeventh: "minor seven"
-        case .majorSeventh: "major seven"
-        case .suspendedFourth: "sus four"
-        case .diminished: "diminished"
-        case .power: "five"
-        }
-    }
+    static let major = Self(base: .major, intervals: [0, 4, 7], symbol: "", spokenName: "major")
+    static let minor = Self(base: .minor, intervals: [0, 3, 7], symbol: "m", spokenName: "minor")
+    static let dominantSeventh = Self(base: .major, intervals: [0, 4, 7, 10], symbol: "7", spokenName: "seven")
+    static let minorSeventh = Self(base: .minor, intervals: [0, 3, 7, 10], symbol: "m7", spokenName: "minor seven")
+    static let majorSeventh = Self(base: .major, intervals: [0, 4, 7, 11], symbol: "maj7", spokenName: "major seven")
+    static let suspendedSecond = Self(base: .suspended, intervals: [0, 2, 7], symbol: "sus2", spokenName: "sus two")
+    static let suspendedFourth = Self(base: .suspended, intervals: [0, 5, 7], symbol: "sus4", spokenName: "sus four")
+    static let diminished = Self(base: .diminished, intervals: [0, 3, 6], symbol: "dim", spokenName: "diminished")
+    static let diminishedSeventh = Self(base: .diminished, intervals: [0, 3, 6, 9], symbol: "dim7", spokenName: "diminished seven")
+    static let augmented = Self(base: .augmented, intervals: [0, 4, 8], symbol: "aug", spokenName: "augmented")
+    static let halfDiminished = Self(base: .diminished, intervals: [0, 3, 6, 10], symbol: "m7♭5", spokenName: "minor seven flat five")
+    static let power = Self(base: .power, intervals: [0, 7], symbol: "5", spokenName: "five")
+    static let sixth = Self(base: .major, intervals: [0, 4, 7, 9], symbol: "6", spokenName: "six")
+    static let minorSixth = Self(base: .minor, intervals: [0, 3, 7, 9], symbol: "m6", spokenName: "minor six")
+    static let ninth = Self(base: .major, intervals: [0, 4, 7, 10, 2], symbol: "9", spokenName: "nine")
+    static let majorNinth = Self(base: .major, intervals: [0, 4, 7, 11, 2], symbol: "maj9", spokenName: "major nine")
+    static let minorNinth = Self(base: .minor, intervals: [0, 3, 7, 10, 2], symbol: "m9", spokenName: "minor nine")
+    static let addSecond = Self(base: .major, intervals: [0, 2, 4, 7], symbol: "add2", spokenName: "add two")
+    static let addFourth = Self(base: .major, intervals: [0, 4, 5, 7], symbol: "add4", spokenName: "add four")
+    static let addNinth = Self(base: .major, intervals: [0, 2, 4, 7], symbol: "add9", spokenName: "add nine")
+    static let flatFifth = Self(base: .major, intervals: [0, 4, 6], symbol: "♭5", spokenName: "flat five")
+    static let sharpFifth = Self(base: .major, intervals: [0, 4, 8], symbol: "♯5", spokenName: "sharp five")
 
-    /// How much this quality has to out-score a plain triad to be printed.
-    /// Zero for the two the templates are built around.
+    static let allCases: [Self] = [
+        .major, .minor, .dominantSeventh, .minorSeventh, .majorSeventh,
+        .suspendedSecond, .suspendedFourth, .sixth, .minorSixth, .ninth,
+        .majorNinth, .minorNinth, .addSecond, .addFourth, .addNinth,
+        .diminished, .diminishedSeventh, .halfDiminished, .augmented,
+        .flatFifth, .sharpFifth, .power,
+    ]
+
+    /// Deliberately small: representable does not imply safely detectable.
+    static let detectable: [Self] = [
+        .major, .minor, .dominantSeventh, .minorSeventh,
+        .majorSeventh, .suspendedFourth, .diminished,
+    ]
+    static let triads: [Self] = [.major, .minor]
+
     var prior: Double {
-        switch self {
-        case .major, .minor, .power: 0
-        case .suspendedFourth: -0.02
-        case .dominantSeventh, .minorSeventh, .majorSeventh: -0.03
-        case .diminished: -0.04
-        }
+        if self == .major || self == .minor || self == .power { return 0 }
+        if self == .suspendedFourth { return -0.02 }
+        if self == .diminished { return -0.04 }
+        return -0.03
     }
 
-    /// The triad this quality reduces to when a seventh is more than the player
-    /// wants to read. Diminished and sus4 are already triads and stay as they
-    /// are — reducing them would print a chord that is audibly not the one
-    /// being played, which is a different thing from printing a simpler one.
-    var triad: ChordQuality {
-        switch self {
-        case .dominantSeventh, .majorSeventh: .major
-        case .minorSeventh: .minor
-        default: self
+    /// The closest musically honest stable base used by Simple mode.
+    var triad: Self {
+        switch base {
+        case .major: .major
+        case .minor: .minor
+        case .power: .power
+        case .diminished: .diminished
+        case .augmented: .augmented
+        case .suspended: self
         }
     }
-
-    /// The two the detector starts from, kept named so the vocabulary can be
-    /// narrowed in a test without hard-coding indices.
-    static let triads: [ChordQuality] = [.major, .minor]
-
-    /// The qualities the detector is allowed to consider. Everything except
-    /// `power`, which is display-only.
-    static let detectable: [ChordQuality] = allCases.filter { $0 != .power }
 }
 
 /// One chord: a root, a quality, and — when the bass says so — the note under
@@ -319,7 +306,9 @@ struct ChordBar: Identifiable, Equatable, Sendable {
 
 /// Everything the app knows about a song's harmony.
 struct SongChords: AnalysisArtifact, Equatable {
-    static let currentAnalysisVersion = 1
+    /// Version 2 adopts semantic chord formulas. This pre-release schema
+    /// intentionally invalidates development-era enum-backed chord artifacts.
+    static let currentAnalysisVersion = 2
     static var filename: String { SongStorage.chordsFilename }
 
     /// Below this the chart is shown and said to be a guess, and nothing acts

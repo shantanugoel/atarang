@@ -31,6 +31,18 @@
 				<string>com.shantanugoel.atarang.lrc</string>
 			</array>
 		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>ChordPro Chart</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>org.chordpro.text</string>
+			</array>
+		</dict>
 	</array>
 	<key>UTExportedTypeDeclarations</key>
 	<array>
@@ -48,6 +60,30 @@
 				<key>public.filename-extension</key>
 				<array>
 					<string>lrc</string>
+				</array>
+			</dict>
+		</dict>
+	</array>
+	<key>UTImportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>org.chordpro.text</string>
+			<key>UTTypeDescription</key>
+			<string>ChordPro Chart</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.plain-text</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>cho</string>
+					<string>crd</string>
+					<string>chopro</string>
+					<string>chordpro</string>
+					<string>pro</string>
 				</array>
 			</dict>
 		</dict>

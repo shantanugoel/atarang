@@ -1,4 +1,21 @@
 import SwiftUI
+import UniformTypeIdentifiers
+
+private enum ChordSheetDestination: Identifiable {
+    case correction(ChordSegment)
+    case playability
+    case importChart(origin: UserChordOrigin, text: String)
+    case manage
+
+    var id: String {
+        switch self {
+        case .correction(let segment): "correction-\(segment.id)"
+        case .playability: "playability"
+        case .importChart: "import"
+        case .manage: "manage"
+        }
+    }
+}
 
 /// How the chart is laid out. A preference about how someone reads chords
 /// rather than a property of the song, so it is global and not per song.
@@ -55,6 +72,7 @@ struct ChordsStage: View {
     let player: StemPlayer
     let store: ChordStore
     let beats: BeatGridStore
+    let lyrics: LyricsStore
 
     @AppStorage("chordChartView") private var chartView = ChordChartView.bars
     /// Whether the shapes strip is on screen. A preference about how someone
@@ -73,8 +91,8 @@ struct ChordsStage: View {
     @State private var heard: SongChords?
     @State private var unplayable: [Chord] = []
     @State private var bars: [ChordBar] = []
-    @State private var correcting: ChordSegment?
-    @State private var showsPlayability = false
+    @State private var presentedSheet: ChordSheetDestination?
+    @State private var showsFileImporter = false
 
     private var semitones: Int { Int(player.pitchSemitones.rounded()) }
 
@@ -117,7 +135,9 @@ struct ChordsStage: View {
                         playhead: playhead,
                         sections: player.practiceSettings.savedSections,
                         mergesRepeats: options.mergesRepeatedChords,
-                        correct: { correcting = heardSegment(for: $0.id) ?? $0 }
+                        correct: {
+                            presentedSheet = .correction(heardSegment(for: $0.id) ?? $0)
+                        }
                     )
                 case .ribbon:
                     ChordRibbon(player: player, chords: displayed)
@@ -133,31 +153,69 @@ struct ChordsStage: View {
                     player: player,
                     job: job,
                     stop: stopAnalysis,
-                    analyze: analyze
+                    analyze: analyze,
+                    importChart: { presentedSheet = .importChart(origin: .pasted, text: "") }
                 )
             }
         }
         .background(ChordPlayheadDriver(player: player, chords: displayed, playhead: playhead, bars: bars, grid: beats.grid))
         .onChange(of: store.chords?.updatedAt, initial: true) { _, _ in refresh() }
+        .onChange(of: store.userCollection.selectedSource) { _, _ in refresh() }
         .onChange(of: semitones) { _, _ in refresh() }
         .onChange(of: options) { _, _ in refresh() }
         .onChange(of: beats.grid) { _, _ in refresh() }
-        .sheet(item: $correcting) { segment in
-            ChordCorrectionSheet(
-                segment: segment,
-                prefersFlats: heard?.prefersFlats ?? false
-            ) { chord in
-                store.correct(segment.id, to: chord, displayedSemitones: semitones)
+        .sheet(item: $presentedSheet) { destination in
+            switch destination {
+            case .correction(let segment):
+                ChordCorrectionSheet(
+                    segment: segment,
+                    prefersFlats: heard?.prefersFlats ?? false,
+                    sourceName: store.activeSourceLabel,
+                    comparisonChord: store.activeUserChart == nil
+                        ? nil
+                        : store.detectedChords?
+                            .segment(at: segment.start)?
+                            .chord?
+                            .transposed(by: semitones)
+                ) { chord in
+                    store.correct(segment.id, to: chord, displayedSemitones: semitones)
+                }
+                .presentationDetents([.medium, .large])
+            case .playability:
+                ChordPlayabilitySheet(
+                    player: player,
+                    chords: store.chords ?? SongChords(),
+                    unplayable: unplayable
+                )
+                .presentationDetents([.medium, .large])
+            case .importChart(let origin, let text):
+                UserChordImportSheet(
+                    store: store,
+                    lyrics: lyrics,
+                    beats: beats,
+                    origin: origin,
+                    text: text
+                )
+            case .manage:
+                UserChordManagerSheet(
+                    store: store,
+                    lyrics: lyrics,
+                    beats: beats,
+                    addChart: {
+                        presentedSheet = nil
+                        Task { @MainActor in
+                            await Task.yield()
+                            presentedSheet = .importChart(origin: .pasted, text: "")
+                        }
+                    }
+                )
             }
-            .presentationDetents([.medium, .large])
         }
-        .sheet(isPresented: $showsPlayability) {
-            ChordPlayabilitySheet(
-                player: player,
-                chords: store.chords ?? SongChords(),
-                unplayable: unplayable
-            )
-            .presentationDetents([.medium, .large])
+        .fileImporter(
+            isPresented: $showsFileImporter,
+            allowedContentTypes: [.chordPro, .plainText, .text]
+        ) { result in
+            importFile(result)
         }
         .alert(
             "Chords",
@@ -248,11 +306,7 @@ struct ChordsStage: View {
         if dynamicTypeSize.isAccessibilitySize {
             VStack(alignment: .leading, spacing: 6) {
                 if let displayed {
-                    ChordSourceBadge(
-                        chords: displayed,
-                        isTransposed: semitones != 0,
-                        options: options
-                    )
+                    sourceHeader(for: displayed)
                 }
                 headerControls
             }
@@ -260,11 +314,7 @@ struct ChordsStage: View {
         } else {
             HStack(spacing: 8) {
                 if let displayed {
-                    ChordSourceBadge(
-                        chords: displayed,
-                        isTransposed: semitones != 0,
-                        options: options
-                    )
+                    sourceHeader(for: displayed)
                 }
                 headerControls
             }
@@ -276,7 +326,7 @@ struct ChordsStage: View {
         HStack(spacing: 8) {
             Spacer(minLength: 0)
             Button {
-                showsPlayability = true
+                presentedSheet = .playability
             } label: {
                 Image(systemName: "hand.raised.fingers.spread")
                     .frame(width: 44, height: 44)
@@ -309,13 +359,31 @@ struct ChordsStage: View {
     @ViewBuilder
     private var chordsMenu: some View {
         Button {
+            presentedSheet = .importChart(origin: .pasted, text: "")
+        } label: {
+            Label("Paste Chord Chart…", systemImage: "doc.on.clipboard")
+        }
+        Button {
+            showsFileImporter = true
+        } label: {
+            Label("Import ChordPro File…", systemImage: "square.and.arrow.down")
+        }
+        if !store.userCollection.charts.isEmpty || store.detectedChords != nil {
+            Button {
+                presentedSheet = .manage
+            } label: {
+                Label("Manage Chord Charts…", systemImage: "slider.horizontal.3")
+            }
+        }
+        Divider()
+        Button {
             analyze()
         } label: {
             Label("Analyse Again", systemImage: "arrow.clockwise")
         }
         .disabled(player.isRecording)
         Button {
-            showsPlayability = true
+            presentedSheet = .playability
         } label: {
             Label("Playability…", systemImage: "hand.raised.fingers.spread")
         }
@@ -332,11 +400,42 @@ struct ChordsStage: View {
                 )
             }
         }
-        Divider()
-        Button(role: .destructive) {
-            store.clear()
-        } label: {
-            Label("Remove Chords", systemImage: "trash")
+        if store.detectedChords != nil {
+            Divider()
+            Button(role: .destructive) {
+                store.clearDetected()
+            } label: {
+                Label("Remove Atarang Analysis", systemImage: "trash")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func sourceHeader(for displayed: SongChords) -> some View {
+        if store.hasAlternativeCharts || store.activeUserChart != nil {
+            ChordSourceMenu(
+                store: store,
+                add: { presentedSheet = .importChart(origin: .pasted, text: "") },
+                manage: { presentedSheet = .manage }
+            )
+        } else {
+            ChordSourceBadge(
+                chords: displayed,
+                isTransposed: semitones != 0,
+                options: options
+            )
+        }
+    }
+
+    private func importFile(_ result: Result<URL, Error>) {
+        do {
+            let url = try result.get()
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            let text = try String(contentsOf: url, encoding: .utf8)
+            presentedSheet = .importChart(origin: .chordProFile, text: text)
+        } catch {
+            store.errorMessage = error.localizedDescription
         }
     }
 }
@@ -974,6 +1073,7 @@ struct ChordsEmptyState: View {
     var job: AnalysisProgressCenter.Job?
     var stop: () -> Void = {}
     let analyze: () -> Void
+    let importChart: () -> Void
 
     var body: some View {
         ScrollView {
@@ -1007,6 +1107,12 @@ struct ChordsEmptyState: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(player.isRecording)
                 }
+                Button(action: importChart) {
+                    Label("Import a Chord Chart", systemImage: "doc.badge.plus")
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                }
+                .buttonStyle(.bordered)
+                .disabled(player.isRecording)
                 if let notice = store.notice {
                     Text(notice)
                         .font(.caption)
@@ -1046,6 +1152,8 @@ struct ChordCorrectionSheet: View {
     @Environment(\.dismiss) private var dismiss
     let segment: ChordSegment
     let prefersFlats: Bool
+    var sourceName = "Atarang analysis"
+    var comparisonChord: Chord?
     let apply: (Chord?) -> Void
 
     @State private var root: Int
@@ -1055,10 +1163,14 @@ struct ChordCorrectionSheet: View {
     init(
         segment: ChordSegment,
         prefersFlats: Bool,
+        sourceName: String = "Atarang analysis",
+        comparisonChord: Chord? = nil,
         apply: @escaping (Chord?) -> Void
     ) {
         self.segment = segment
         self.prefersFlats = prefersFlats
+        self.sourceName = sourceName
+        self.comparisonChord = comparisonChord
         self.apply = apply
         _root = State(initialValue: segment.chord?.root ?? 0)
         _quality = State(initialValue: segment.chord?.quality ?? .major)
@@ -1083,7 +1195,15 @@ struct ChordCorrectionSheet: View {
                             .foregroundStyle(.secondary)
                     }
                 } footer: {
-                    Text(detectedDescription)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(detectedDescription)
+                        if let comparisonChord {
+                            Text(
+                                "Atarang analysis: "
+                                    + comparisonChord.symbol(preferringFlats: prefersFlats)
+                            )
+                        }
+                    }
                 }
 
                 Section {
@@ -1116,7 +1236,7 @@ struct ChordCorrectionSheet: View {
                     }
                 }
             }
-            .navigationTitle("Correct Chord")
+            .navigationTitle("Correct · \(sourceName)")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -1138,8 +1258,11 @@ struct ChordCorrectionSheet: View {
     }
 
     private var detectedDescription: String {
-        if segment.isUserEdited { return "You set this one." }
+        if segment.isUserEdited { return "You set this chord in \(sourceName)." }
         let symbol = segment.symbol(preferringFlats: prefersFlats)
+        if sourceName != "Atarang analysis" {
+            return "\(sourceName) places \(symbol) here. Saving changes only this chart and keeps your answer through re-alignment."
+        }
         let certainty = segment.confidence < SongChords.confidentSegment
             ? "and was not confident about it"
             : "and was fairly confident"

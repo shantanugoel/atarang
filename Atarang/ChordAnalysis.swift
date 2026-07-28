@@ -75,7 +75,9 @@ final class ChordStore {
     }
 
     private(set) var song: Song?
-    private(set) var chords: SongChords?
+    private(set) var detectedChords: SongChords?
+    private(set) var userCollection = UserChordCollection()
+    private(set) var beatEvidence: [BeatChordEvidence] = []
     /// Something to say once: an analysis that found nothing, or one whose
     /// corrections were carried across a rerun.
     var notice: String?
@@ -95,8 +97,39 @@ final class ChordStore {
         category: "Chords"
     )
 
+    /// The selected chart is the runtime currency read by Chords and Sheet.
+    var chords: SongChords? {
+        switch userCollection.selectedSource {
+        case .detected:
+            detectedChords
+        case .user(let id):
+            userCollection.charts.first(where: { $0.id == id })?.chords
+        }
+    }
+
     var hasChords: Bool { !(chords?.isEmpty ?? true) }
     var isDetecting: Bool { detectionTask != nil }
+    var hasAlternativeCharts: Bool {
+        (detectedChords == nil ? 0 : 1) + userCollection.charts.filter { $0.chords != nil }.count > 1
+    }
+
+    var activeUserChart: UserChordChart? {
+        guard case .user(let id) = userCollection.selectedSource else { return nil }
+        return userCollection.charts.first(where: { $0.id == id })
+    }
+
+    var activeSourceLabel: String {
+        activeUserChart?.name ?? "Atarang analysis"
+    }
+
+    var activeSourceDescription: String {
+        if let chart = activeUserChart {
+            return "\(chart.origin.label) · \(chart.alignment?.statusLabel ?? "unaligned")"
+        }
+        return detectedChords?.isReliable == true
+            ? "Detected locally"
+            : "Detected locally · uncertain"
+    }
 
     /// The stems the analysis would listen to, so the interface can say what it
     /// is about to hear before it starts.
@@ -119,14 +152,27 @@ final class ChordStore {
         )
         notice = nil
         errorMessage = nil
-        chords = loadStored(from: track.songStorage, duration: duration)
+        detectedChords = loadStored(from: track.songStorage, duration: duration)
+        userCollection = track.songStorage.read(
+            UserChordCollection.self,
+            from: SongStorage.userChordsFilename
+        ) ?? UserChordCollection()
+        beatEvidence = []
+        sanitizeUserCharts(duration: duration)
+        let storedSelection = userCollection.selectedSource
+        repairSelection()
+        if storedSelection != userCollection.selectedSource {
+            saveUserCollection()
+        }
     }
 
     func close() {
         detectionTask?.cancel()
         detectionTask = nil
         song = nil
-        chords = nil
+        detectedChords = nil
+        userCollection = UserChordCollection()
+        beatEvidence = []
         notice = nil
         errorMessage = nil
     }
@@ -165,7 +211,7 @@ final class ChordStore {
             errorMessage = "This separation has no harmonic stem to take chords from."
             return
         }
-        let existing = chords
+        let existing = detectedChords
         notice = nil
         errorMessage = nil
 
@@ -192,7 +238,8 @@ final class ChordStore {
                     fresh = existing.resolvingReanalysis(fresh, duration: song.duration)
                     self.notice = "Kept the chords you corrected and replaced the rest."
                 }
-                self.apply(fresh)
+                self.applyDetected(fresh)
+                self.beatEvidence = result.beatEvidence
                 if let phase = result.downbeatPhase {
                     self.onDownbeatPhase?(phase, result.downbeatConfidence)
                 }
@@ -223,36 +270,209 @@ final class ChordStore {
     /// key — otherwise a correction made at +2 would come back wrong the moment
     /// they returned to the original key.
     func correct(_ id: UUID, to chord: Chord?, displayedSemitones: Int = 0) {
-        guard var value = chords else { return }
-        value.correct(id, to: chord?.transposed(by: -displayedSemitones))
-        apply(value)
+        let storedChord = chord?.transposed(by: -displayedSemitones)
+        switch userCollection.selectedSource {
+        case .detected:
+            guard var value = detectedChords else { return }
+            value.correct(id, to: storedChord)
+            applyDetected(value)
+        case .user(let chartID):
+            guard let index = userCollection.charts.firstIndex(where: { $0.id == chartID }),
+                  var value = userCollection.charts[index].chords else { return }
+            value.correct(id, to: storedChord)
+            value.updatedAt = Date()
+            userCollection.charts[index].chords = value
+            userCollection.charts[index].updatedAt = Date()
+            saveUserCollection()
+        }
     }
 
-    func clear() {
+    func clearDetected() {
         guard let song else { return }
-        chords = nil
+        detectedChords = nil
         notice = nil
         song.storage.remove(SongChords.filename)
+        repairSelection()
+        saveUserCollection()
     }
 
-    private func apply(_ newChords: SongChords) {
+    func select(_ selection: ChordChartSelection) {
+        userCollection.selectedSource = selection
+        repairSelection()
+        saveUserCollection()
+    }
+
+    @discardableResult
+    func addUserChart(
+        document: ImportedChordDocument,
+        origin: UserChordOrigin,
+        name: String,
+        lyrics: SongLyrics?,
+        grid: BeatGrid?
+    ) -> UserChordChart? {
+        guard let song,
+              let result = UserChordAligner.align(
+                document,
+                lyrics: lyrics,
+                grid: grid,
+                duration: song.duration,
+                evidence: beatEvidence
+              ) else {
+            errorMessage = "This text did not contain a chord chart Atarang could add."
+            return nil
+        }
+        let chart = UserChordChart(
+            name: uniqueName(name),
+            origin: origin,
+            sourceMetadata: document.metadata,
+            document: document,
+            alignment: result.alignment,
+            chords: result.chords
+        )
+        userCollection.charts.append(chart)
+        userCollection.selectedSource = .user(chart.id)
+        saveUserCollection()
+        return chart
+    }
+
+    func renameUserChart(id: UUID, to proposedName: String) {
+        guard let index = userCollection.charts.firstIndex(where: { $0.id == id }) else { return }
+        let trimmed = proposedName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        userCollection.charts[index].name = trimmed
+        userCollection.charts[index].updatedAt = Date()
+        saveUserCollection()
+    }
+
+    func updateUserChart(
+        id: UUID,
+        document: ImportedChordDocument,
+        origin: UserChordOrigin,
+        name: String,
+        lyrics: SongLyrics?,
+        grid: BeatGrid?
+    ) -> Bool {
+        guard let song,
+              let index = userCollection.charts.firstIndex(where: { $0.id == id }),
+              let result = UserChordAligner.align(
+                document,
+                lyrics: lyrics,
+                grid: grid,
+                duration: song.duration,
+                evidence: beatEvidence
+              ) else { return false }
+        var fresh = result.chords
+        if let existing = userCollection.charts[index].chords, existing.hasUserEdits {
+            fresh = existing.resolvingReanalysis(fresh, duration: song.duration)
+        }
+        userCollection.charts[index].name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        userCollection.charts[index].origin = origin
+        userCollection.charts[index].sourceMetadata = document.metadata
+        userCollection.charts[index].document = document
+        userCollection.charts[index].alignment = result.alignment
+        userCollection.charts[index].chords = fresh
+        userCollection.charts[index].updatedAt = Date()
+        userCollection.selectedSource = .user(id)
+        saveUserCollection()
+        return true
+    }
+
+    func realignUserChart(id: UUID, lyrics: SongLyrics?, grid: BeatGrid?) {
+        guard let song,
+              let index = userCollection.charts.firstIndex(where: { $0.id == id }),
+              let result = UserChordAligner.align(
+                userCollection.charts[index].document,
+                lyrics: lyrics,
+                grid: grid,
+                duration: song.duration,
+                evidence: beatEvidence
+              ) else { return }
+        var fresh = result.chords
+        if let existing = userCollection.charts[index].chords, existing.hasUserEdits {
+            fresh = existing.resolvingReanalysis(fresh, duration: song.duration)
+        }
+        userCollection.charts[index].alignment = result.alignment
+        userCollection.charts[index].chords = fresh
+        userCollection.charts[index].updatedAt = Date()
+        saveUserCollection()
+    }
+
+    func removeUserChart(id: UUID) {
+        userCollection.charts.removeAll { $0.id == id }
+        repairSelection()
+        saveUserCollection()
+    }
+
+    private func applyDetected(_ newChords: SongChords) {
         guard let song else { return }
         var value = newChords
         value.sanitize(duration: song.duration)
         value.updatedAt = Date()
-        chords = value.isEmpty ? nil : value
-        save()
+        detectedChords = value.isEmpty ? nil : value
+        saveDetected()
     }
 
-    private func save() {
-        guard let song, let chords else { return }
+    private func saveDetected() {
+        guard let song, let detectedChords else { return }
         do {
-            try song.storage.write(chords, to: SongChords.filename)
+            try song.storage.write(detectedChords, to: SongChords.filename)
         } catch {
             logger.error(
                 "Could not save the chord chart: \(error.localizedDescription, privacy: .public)"
             )
             errorMessage = "The chord chart could not be saved to this device."
         }
+    }
+
+    private func saveUserCollection() {
+        guard let song else { return }
+        do {
+            try song.storage.write(userCollection, to: SongStorage.userChordsFilename)
+        } catch {
+            logger.error(
+                "Could not save imported chord charts: \(error.localizedDescription, privacy: .public)"
+            )
+            errorMessage = "Your imported chord charts could not be saved to this device."
+        }
+    }
+
+    private func sanitizeUserCharts(duration: TimeInterval) {
+        for index in userCollection.charts.indices {
+            userCollection.charts[index].chords?.sanitize(duration: duration)
+            if userCollection.charts[index].chords?.isEmpty == true {
+                userCollection.charts[index].chords = nil
+            }
+        }
+    }
+
+    private func repairSelection() {
+        let isUsable: Bool
+        switch userCollection.selectedSource {
+        case .detected:
+            isUsable = detectedChords != nil
+        case .user(let id):
+            isUsable = userCollection.charts.contains { $0.id == id && $0.chords != nil }
+        }
+        guard !isUsable else { return }
+        if detectedChords != nil {
+            userCollection.selectedSource = .detected
+        } else if let chart = userCollection.charts
+            .filter({ $0.chords != nil })
+            .max(by: { $0.updatedAt < $1.updatedAt }) {
+            userCollection.selectedSource = .user(chart.id)
+        } else {
+            userCollection.selectedSource = .detected
+        }
+    }
+
+    private func uniqueName(_ proposed: String) -> String {
+        let base = proposed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "My chart"
+            : proposed.trimmingCharacters(in: .whitespacesAndNewlines)
+        let names = Set(userCollection.charts.map { $0.name.lowercased() })
+        guard names.contains(base.lowercased()) else { return base }
+        var suffix = 2
+        while names.contains("\(base) \(suffix)".lowercased()) { suffix += 1 }
+        return "\(base) \(suffix)"
     }
 }

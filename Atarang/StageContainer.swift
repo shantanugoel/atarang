@@ -61,7 +61,7 @@ struct StageContainer: View {
                 openSingAlong: openSingAlong
             )
         case .chords:
-            ChordsStage(player: player, store: chords, beats: beats)
+            ChordsStage(player: player, store: chords, beats: beats, lyrics: lyrics)
         case .sheet:
             SheetStage(player: player, lyrics: lyrics, chords: chords, beats: beats)
         }

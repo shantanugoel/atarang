@@ -42,6 +42,7 @@ struct SheetStage: View {
         .background(SheetPlayheadDriver(player: player, store: lyrics))
         .onChange(of: lyrics.lyrics?.updatedAt, initial: true) { _, _ in rebuild() }
         .onChange(of: chords.chords?.updatedAt) { _, _ in rebuild() }
+        .onChange(of: chords.userCollection.selectedSource) { _, _ in rebuild() }
         .onChange(of: semitones) { _, _ in rebuild() }
         .onChange(of: options) { _, _ in rebuild() }
         .onChange(of: beats.grid) { _, _ in rebuild() }

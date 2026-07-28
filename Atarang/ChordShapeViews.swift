@@ -331,7 +331,7 @@ struct ChordShapeSheet: View {
 extension Chord: Identifiable {
     /// Stable for the lifetime of the value, which is all a sheet needs: a
     /// chord *is* its root, quality, and bass.
-    var id: String { "\(root)-\(quality.rawValue)-\(bass.map(String.init) ?? "")" }
+    var id: String { "\(root)-\(quality.id)-\(bass.map(String.init) ?? "")" }
 }
 
 // MARK: - Playability sheet

@@ -17,13 +17,16 @@ struct SongStorage: Sendable, Equatable {
     static let practiceFilename = "practice.json"
     static let lyricsFilename = "lyrics.json"
     static let chordsFilename = "chords.json"
+    static let userChordsFilename = "user-chords.json"
     static let beatsFilename = "beats.json"
 
     /// What the analysis phases compute. Practice state is deliberately not one
     /// of them: it is the user's own work, and no algorithm improvement can
     /// make it stale.
     static let analysisFilenames = [lyricsFilename, chordsFilename, beatsFilename]
-    static let songFilenames = analysisFilenames + [practiceFilename]
+    /// Imported charts are user data, not analysis output. They are included in
+    /// accounting and backup, but never in an algorithm-version invalidation.
+    static let songFilenames = analysisFilenames + [practiceFilename, userChordsFilename]
 
     let folderURL: URL
     /// True when the original has been deleted and this song's state has to
