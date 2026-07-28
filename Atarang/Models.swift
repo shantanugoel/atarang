@@ -101,9 +101,15 @@ enum SeparationModelKind: String, CaseIterable, Identifiable, Codable, Sendable 
     ///
     /// The two vocal models used to claim "Fastest", which is their reputation
     /// elsewhere and not what this app delivers: their STFT and inverse STFT
-    /// are hand-written Swift around each inference rather than part of the
-    /// model graph, so a run measured longer than the balanced 4-stem on the
-    /// same song. The label describes this implementation until that is fixed.
+    /// are hand-written around each inference rather than part of the model
+    /// graph, so a run measured longer than the balanced 4-stem on the same
+    /// song.
+    ///
+    /// That transform is a great deal faster now — real-to-complex rather than
+    /// complex-to-complex, vectorised, with its scratch reused — but nobody has
+    /// timed the result on a device yet, and the label is a promise to the
+    /// person about to spend minutes on a separation. It stays at "Moderate"
+    /// until there is a measurement that says otherwise.
     var speedClass: String {
         switch self {
         case .htdemucs, .mdx23cInstVocHQ, .kimVocals: "Moderate"
@@ -175,10 +181,15 @@ enum SeparationModelKind: String, CaseIterable, Identifiable, Codable, Sendable 
     /// Consulted twice: once when the user picks a model, so an unusable choice
     /// is explained rather than offered, and again by `AnalysisQueue` when the
     /// job actually starts, which may be minutes and one memory warning later.
+    /// The 6-stem model was the only one gated, which left the two models with
+    /// the largest per-chunk tensors ungated: MDX23C's input alone is 4.2
+    /// million floats, with attention across 4,096 frequency bins.
     var minimumAvailableMemoryBytes: UInt64? {
         switch self {
+        case .htdemucs: nil
         case .htdemucs6s: ModelMemoryBudget.sixStemMinimumAvailableBytes
-        default: nil
+        case .mdx23cInstVocHQ: ModelMemoryBudget.vocalHighQualityMinimumAvailableBytes
+        case .kimVocals: ModelMemoryBudget.vocalFocusedMinimumAvailableBytes
         }
     }
 
@@ -189,7 +200,14 @@ enum SeparationModelKind: String, CaseIterable, Identifiable, Codable, Sendable 
 
     var unavailabilityMessage: String? {
         guard !isAvailableOnCurrentDevice else { return nil }
-        return "6-stem needs a newer high-memory device or more free memory."
+        switch self {
+        case .htdemucs:
+            return nil
+        case .htdemucs6s:
+            return "6-stem needs a newer high-memory device or more free memory."
+        case .mdx23cInstVocHQ, .kimVocals:
+            return "The vocal split needs more free memory than this device has right now. Balanced 4-stem works everywhere."
+        }
     }
 
     /// A warning about a model this device *can* run but may not run well.
@@ -204,7 +222,9 @@ enum SeparationModelKind: String, CaseIterable, Identifiable, Codable, Sendable 
         switch self {
         case .htdemucs6s:
             "Memory-hungry. On older devices it can fail part way through, or stop the app."
-        default:
+        case .mdx23cInstVocHQ, .kimVocals:
+            "Memory-hungry, and no faster than the 4-stem split on this device."
+        case .htdemucs:
             nil
         }
     }

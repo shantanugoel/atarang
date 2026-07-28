@@ -189,8 +189,14 @@ detail.
 | --- | --- | --- | --- | --- |
 | **Balanced 4-stem** | HTDemucs | Vocals, drums, bass, other | Bundled | A balanced default with four-part control |
 | **Detailed 6-stem** | HTDemucs 6-stem | Vocals, drums, bass, other, guitar, piano | 136 MB first-use download | Detailed instrument control on newer, high-memory devices |
-| **Vocals + Backing** | MDX23C InstVoc HQ | Vocals, instrumental | 40 MB first-use download | A high-quality general vocal split |
-| **Vocals + Backing, vocal-focused** | Kim Vocals | Vocals, instrumental | 67 MB first-use download | An alternative, vocal-focused separation |
+| **Vocals + Backing** | MDX23C InstVoc HQ | Vocals, instrumental | 40 MB first-use download | A high-quality general vocal split, on high-memory devices |
+| **Vocals + Backing, vocal-focused** | Kim Vocals | Vocals, instrumental | 67 MB first-use download | An alternative, vocal-focused separation, on high-memory devices |
+
+Separation reads the song a block at a time rather than decoding all of it into
+memory first, so a long track costs no more to hold than a short one. The
+6-stem and the two vocal models still need substantial free memory for their
+own tensors, and each is offered only when the device has the headroom for it;
+the balanced 4-stem split runs everywhere.
 
 Optional models are downloaded only when selected, verified against pinned
 SHA-256 checksums, stored in Application Support, and excluded from iCloud

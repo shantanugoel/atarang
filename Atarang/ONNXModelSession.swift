@@ -38,16 +38,22 @@ final class ONNXModelSession: @unchecked Sendable {
         outputNames = try session.outputNames()
     }
 
-    func run(
+    /// Runs the model and hands the output to `consume` in place.
+    ///
+    /// Separation outputs are tens of megabytes, so the caller decides what to
+    /// keep rather than always receiving a fresh `Array`: the MDX models fold
+    /// two runs into one accumulator, and the 6-stem model de-interleaves
+    /// straight out of the tensor.
+    @discardableResult
+    func run<R>(
         inputName: String,
         outputName: String,
-        values: [Float],
-        shape: [NSNumber]
-    ) throws -> [Float] {
+        values: UnsafeBufferPointer<Float>,
+        shape: [NSNumber],
+        consume: (UnsafeBufferPointer<Float>) throws -> R
+    ) throws -> R {
         let byteCount = values.count * MemoryLayout<Float>.size
-        let inputData = values.withUnsafeBytes { bytes in
-            NSMutableData(bytes: bytes.baseAddress!, length: byteCount)
-        }
+        let inputData = NSMutableData(bytes: values.baseAddress!, length: byteCount)
         let input = try ORTValue(
             tensorData: inputData,
             elementType: .float,
@@ -63,11 +69,34 @@ final class ONNXModelSession: @unchecked Sendable {
         }
         let data = try output.tensorData()
         let count = data.length / MemoryLayout<Float>.size
-        let values = data.bytes.bindMemory(to: Float.self, capacity: count)
-        return Array(UnsafeBufferPointer(start: values, count: count))
+        let floats = data.bytes.bindMemory(to: Float.self, capacity: count)
+        return try withExtendedLifetime(output) {
+            try consume(UnsafeBufferPointer(start: floats, count: count))
+        }
     }
 
-    func runFirst(values: [Float], shape: [NSNumber]) throws -> [Float] {
+    func run(
+        inputName: String,
+        outputName: String,
+        values: [Float],
+        shape: [NSNumber]
+    ) throws -> [Float] {
+        try values.withUnsafeBufferPointer { input in
+            try run(
+                inputName: inputName,
+                outputName: outputName,
+                values: input,
+                shape: shape
+            ) { Array($0) }
+        }
+    }
+
+    @discardableResult
+    func runFirst<R>(
+        values: UnsafeBufferPointer<Float>,
+        shape: [NSNumber],
+        consume: (UnsafeBufferPointer<Float>) throws -> R
+    ) throws -> R {
         guard let inputName = inputNames.first, let outputName = outputNames.first else {
             throw StemSeparatorError.inferenceFailed("The ONNX model has no audio input or output.")
         }
@@ -75,7 +104,8 @@ final class ONNXModelSession: @unchecked Sendable {
             inputName: inputName,
             outputName: outputName,
             values: values,
-            shape: shape
+            shape: shape,
+            consume: consume
         )
     }
 }

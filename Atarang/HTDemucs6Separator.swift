@@ -1,15 +1,17 @@
+import Accelerate
 import AVFoundation
 
 /// Runs the public HTDemucs 6-stem ONNX export in overlapping 7.8-second chunks.
 ///
-/// Synchronization invariant: every stored property is a `let` assigned during
-/// `init` and never mutated afterwards, so the instance is only ever read from
-/// the detached task that runs the separation.
+/// Synchronization invariant: the scratch buffer below is written only by the
+/// one detached task that runs a separation, and everything else is a `let`
+/// assigned during `init`.
 final class HTDemucs6Separator: @unchecked Sendable {
     private let segmentSamples = 343_980
     private let overlapSamples = 85_995
     private let sampleRate = 44_100.0
     private let session: ONNXModelSession
+    private var writeBuffer: AVAudioPCMBuffer?
 
     init(modelURL: URL) throws {
         // This model requires about 1.1 GB at inference even with FP16-stored
@@ -27,23 +29,33 @@ final class HTDemucs6Separator: @unchecked Sendable {
         outputFolder: URL,
         progress: @Sendable @escaping (Double) -> Void
     ) async throws -> [StemKind: URL] {
-        let mix = try loadAndResample(fileURL: fileURL)
+        let reader = try PlanarAudioWindowReader(
+            fileURL: fileURL,
+            sampleRate: sampleRate,
+            windowFrames: segmentSamples,
+            hopFrames: segmentSamples - overlapSamples
+        )
         return try await runCancellable {
-            try self.runChunked(mix: mix, outputFolder: outputFolder, progress: progress)
+            try self.runChunked(
+                reader: reader,
+                outputFolder: outputFolder,
+                progress: progress
+            )
         }
     }
 
     private func runChunked(
-        mix: AVAudioPCMBuffer,
+        reader: PlanarAudioWindowReader,
         outputFolder: URL,
         progress: @Sendable @escaping (Double) -> Void
     ) throws -> [StemKind: URL] {
-        let total = Int(mix.frameLength)
-        guard total > 0 else { throw StemSeparatorError.unsupportedFormat }
         let stride = segmentSamples - overlapSamples
-        let chunkCount = max(1, Int(ceil(Double(max(total - overlapSamples, 1)) / Double(stride))))
-        let format = mix.format
+        let format = reader.format
         let stems = SeparationModelKind.htdemucs6s.stems
+        let estimatedChunks = max(
+            1,
+            Int(ceil(Double(reader.estimatedFrameCount) / Double(stride)))
+        )
 
         var urls: [StemKind: URL] = [:]
         var writers: [StemKind: AVAudioFile] = [:]
@@ -54,16 +66,21 @@ final class HTDemucs6Separator: @unchecked Sendable {
         }
 
         var previousTails: [StemKind: [Float]] = [:]
-        for chunkIndex in 0..<chunkCount {
+        var chunkIndex = 0
+        var wroteAnything = false
+        while try reader.advance() {
             try Task.checkCancellation()
-            try autoreleasepool {
-                let start = chunkIndex * stride
-                guard start < total else { return }
-                let validFrames = min(segmentSamples, total - start)
-                let predictions = try predict(chunk: sliceChunk(mix: mix, start: start))
-                let isFirst = chunkIndex == 0
-                let isLast = chunkIndex == chunkCount - 1
+            let start = chunkIndex * stride
+            // Measured, not estimated: once the stream is exhausted
+            // `deliveredFrames` is the song's exact length.
+            let validFrames = min(segmentSamples, reader.deliveredFrames - start)
+            guard validFrames > 0 else { break }
+            let isFirst = chunkIndex == 0
+            let isLast = reader.isAtEnd
+                && reader.deliveredFrames - start <= segmentSamples
 
+            try autoreleasepool {
+                let predictions = try predict(planar: reader.planar)
                 for stem in stems {
                     guard let samples = predictions[stem], let writer = writers[stem] else { continue }
                     var resolved: [Float]
@@ -90,54 +107,47 @@ final class HTDemucs6Separator: @unchecked Sendable {
                     try write(interleaved: resolved, to: writer, format: format)
                 }
             }
-            progress(Double(chunkIndex + 1) / Double(chunkCount))
+            wroteAnything = true
+            chunkIndex += 1
+            progress(
+                isLast ? 1 : min(0.99, Double(chunkIndex) / Double(estimatedChunks))
+            )
+            if isLast { break }
         }
+        guard wroteAnything else { throw StemSeparatorError.unsupportedFormat }
         return urls
     }
 
-    private func predict(chunk: [Float]) throws -> [StemKind: [Float]] {
-        var planar = [Float](repeating: 0, count: segmentSamples * 2)
-        for frame in 0..<segmentSamples {
-            planar[frame] = chunk[frame * 2]
-            planar[segmentSamples + frame] = chunk[frame * 2 + 1]
-        }
-        let output = try session.run(
-            inputName: "mix",
-            outputName: "stems",
-            values: planar,
-            shape: [1, 2, NSNumber(value: segmentSamples)]
-        )
+    private func predict(planar: UnsafePointer<Float>) throws -> [StemKind: [Float]] {
         let sourceOrder: [StemKind] = [.drums, .bass, .other, .vocals, .guitar, .piano]
         let required = sourceOrder.count * 2 * segmentSamples
-        guard output.count >= required else {
-            throw StemSeparatorError.inferenceFailed("HTDemucs 6-stem returned a truncated output.")
-        }
-        var result: [StemKind: [Float]] = [:]
-        for (stemIndex, stem) in sourceOrder.enumerated() {
-            let base = stemIndex * 2 * segmentSamples
-            var interleaved = [Float](repeating: 0, count: segmentSamples * 2)
-            for frame in 0..<segmentSamples {
-                interleaved[frame * 2] = output[base + frame]
-                interleaved[frame * 2 + 1] = output[base + segmentSamples + frame]
+        // The reader already hands over `[left…, right…]`, which is the shape
+        // the model wants, so the chunk goes straight in.
+        return try session.run(
+            inputName: "mix",
+            outputName: "stems",
+            values: UnsafeBufferPointer(start: planar, count: segmentSamples * 2),
+            shape: [1, 2, NSNumber(value: segmentSamples)]
+        ) { output in
+            guard output.count >= required else {
+                throw StemSeparatorError.inferenceFailed("HTDemucs 6-stem returned a truncated output.")
             }
-            result[stem] = interleaved
+            var result: [StemKind: [Float]] = [:]
+            for (stemIndex, stem) in sourceOrder.enumerated() {
+                let base = stemIndex * 2 * segmentSamples
+                var interleaved = [Float](repeating: 0, count: segmentSamples * 2)
+                interleaved.withUnsafeMutableBufferPointer { destination in
+                    interleave(
+                        left: output.baseAddress! + base,
+                        right: output.baseAddress! + base + segmentSamples,
+                        into: destination.baseAddress!,
+                        frames: segmentSamples
+                    )
+                }
+                result[stem] = interleaved
+            }
+            return result
         }
-        return result
-    }
-
-    private func loadAndResample(fileURL: URL) throws -> AVAudioPCMBuffer {
-        try AudioResampler.stereoFloat32(fileURL: fileURL, sampleRate: sampleRate)
-    }
-
-    private func sliceChunk(mix: AVAudioPCMBuffer, start: Int) -> [Float] {
-        var samples = [Float](repeating: 0, count: segmentSamples * 2)
-        guard let channels = mix.floatChannelData else { return samples }
-        let frames = min(segmentSamples, Int(mix.frameLength) - start)
-        for frame in 0..<frames {
-            samples[frame * 2] = channels[0][start + frame]
-            samples[frame * 2 + 1] = channels[1][start + frame]
-        }
-        return samples
     }
 
     private func blend(previous: [Float], current: [Float], frameCount: Int) -> [Float] {
@@ -159,12 +169,24 @@ final class HTDemucs6Separator: @unchecked Sendable {
 
     private func write(interleaved samples: [Float], to file: AVAudioFile, format: AVAudioFormat) throws {
         let frames = samples.count / 2
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)),
-              let channels = buffer.floatChannelData else { throw StemSeparatorError.unsupportedFormat }
+        guard frames > 0 else { return }
+        if writeBuffer == nil || Int(writeBuffer!.frameCapacity) < frames {
+            writeBuffer = AVAudioPCMBuffer(
+                pcmFormat: format,
+                frameCapacity: AVAudioFrameCount(frames)
+            )
+        }
+        guard let buffer = writeBuffer, let channels = buffer.floatChannelData else {
+            throw StemSeparatorError.unsupportedFormat
+        }
         buffer.frameLength = AVAudioFrameCount(frames)
-        for frame in 0..<frames {
-            channels[0][frame] = samples[frame * 2]
-            channels[1][frame] = samples[frame * 2 + 1]
+        samples.withUnsafeBufferPointer { source in
+            deinterleave(
+                source.baseAddress!,
+                left: channels[0],
+                right: channels[1],
+                frames: frames
+            )
         }
         try file.write(from: buffer)
     }

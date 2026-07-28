@@ -2162,14 +2162,22 @@ does not do at all — HTDemucs carries its STFT inside the model graph:
 Its chunks also generate 5.74 s of output against the 4-stem's ~7 s, so a
 four-minute song needs about 20% more of them.
 
-- [ ] Replace `vDSP_DFT_zop` with a real-to-complex transform.
-- [ ] Vectorise the window, mirror, and overlap-add loops; hoist `reflected()`
-      out of the per-sample path.
-- [ ] Reuse the scratch buffers across chunks instead of reallocating per call.
+- [x] Replace `vDSP_DFT_zop` with a real-to-complex transform.
+- [x] Vectorise the window, mirror, and overlap-add loops; hoist `reflected()`
+      out of the per-sample path. The mirror is gone rather than vectorised —
+      `vDSP_DFT_zrop` gets the conjugate symmetry for free.
+- [x] Reuse the scratch buffers across chunks instead of reallocating per call.
 - [ ] Measure before and after on the same song and device, and record both.
-- [ ] Revisit `speedClass` afterwards. It reads "Moderate" for both vocal models
+      **Outstanding, and the reason this phase is not signed off.** The before
+      figure no longer exists to measure, so what is available is the after
+      figure against the same song on the same device. `SeparationRunMetrics`
+      logs elapsed time and the memory headroom a run consumed so the numbers
+      can be read straight out of the device log.
+- [~] Revisit `speedClass` afterwards. It reads "Moderate" for both vocal models
       now, which is honest about this implementation; "Fastest" was honest only
-      about the model.
+      about the model. **Left at "Moderate"** until the measurement above
+      exists: a speed label is a promise to someone about to spend minutes on a
+      separation, and "this should be much faster now" is not a measurement.
 
 ### 2. Memory is ungated for the models that need it most
 
@@ -2178,31 +2186,152 @@ four-minute song needs about 20% more of them.
 and the whole song sits resampled in memory for the duration (~85 MB for four
 minutes) alongside the per-chunk spectra and stem arrays.
 
-- [ ] Give MDX23C and Kim Vocals a real memory requirement, checked by
-      `AnalysisQueue` like the 6-stem gate.
-- [ ] Add the `cautionMessage` treatment the 6-stem card has, once there are
-      measurements to justify the wording.
-- [ ] Free the resampled mix before the last chunk's output is written, or
-      stream it, so peak and steady-state are not the same number.
+- [x] Give MDX23C and Kim Vocals a real memory requirement, checked by
+      `AnalysisQueue` like the 6-stem gate. **The numbers are provisional** —
+      2 GB and 1.5 GB, derived below — and are the second reason this phase is
+      not signed off.
+- [x] Add the `cautionMessage` treatment the 6-stem card has, once there are
+      measurements to justify the wording. The wording claims only what is
+      known: memory-hungry, and no faster than the 4-stem split.
+- [x] Free the resampled mix before the last chunk's output is written, or
+      stream it, so peak and steady-state are not the same number. Streamed —
+      and for all three separators, not only the MDX pair.
 - [ ] Confirm what happens when iOS jetsams a run: Phase 2's staging says no
       partial entry survives, and that has never been tested against a real
       out-of-memory kill.
 
 ### 3. Kim Vocals runs everything twice, on the CPU
 
-- [ ] `ONNXModelSession` runs CPU-only, and `MDXVocalSeparator` calls it **twice
+- [~] `ONNXModelSession` runs CPU-only, and `MDXVocalSeparator` calls it **twice
       per chunk** — once with the spectrum and once negated — to average the
       two. Measure whether Core ML conversion, or an ONNX execution provider
-      with GPU support, is worth the conversion work.
+      with GPU support, is worth the conversion work. **The premise was half
+      wrong:** only the 6-stem model forces `.cpu`. Kim Vocals is constructed
+      with `.automatic`, which already appends the Core ML execution provider
+      whenever ORT reports it available, so it is not CPU-only and the
+      conversion work this item contemplates may already be unnecessary.
+      What is still true is the two inferences per chunk, which are inherent to
+      the model's denoising trick and cannot be removed without changing the
+      output. Their *cost* is halved on the app's side: one accumulator now
+      holds the running result instead of two full spectra and a zipped third.
 
 ### Acceptance criteria
 
 - [ ] Vocals + Backing is measurably faster than Balanced 4-stem on the same
-      song and device, or its label says otherwise.
+      song and device, or its label says otherwise. **Met by the second
+      branch**, deliberately: the label still reads "Moderate" because nobody
+      has timed the result.
 - [ ] Peak memory during a vocal separation is measured, published in this plan,
-      and gated on.
-- [ ] Separated output is unchanged: the same song separated before and after
-      is sample-identical, or the difference is explained.
+      and gated on. **Gated on; not yet measured.** `SeparationRunMetrics` is
+      the instrument.
+- [~] Separated output is unchanged: the same song separated before and after
+      is sample-identical, or the difference is explained. **Not sample-
+      identical, and the difference is arithmetic rather than behavioural** —
+      see the outcome. The bundled 4-stem path is covered end to end by
+      `SeparationPipelineTests`, which separates a real file with the real model
+      and checks the stems come out at the song's exact length.
+
+### Outcome
+
+**New files.** `PlanarAudioWindow.swift` holds `PlanarAudioWindowReader`, the
+one thing all three separators now consume audio through.
+`ResampledAudioStream` moved into `AudioResampler.swift` beside the whole-file
+loader it replaced. `MDXSpectralTransformTests`, `PlanarAudioWindowTests`, and
+`SeparationPipelineTests` are the coverage.
+
+**The transform is real-to-complex now, and the tests pin the convention rather
+than the code.** `vDSP_DFT_zrop` returns *twice* the mathematical transform with
+the Nyquist bin packed into the imaginary DC slot, and its inverse returns
+`nFFT` times the signal — conventions where a wrong factor of two still produces
+plausible-sounding audio, which is exactly the kind of bug that ships. So
+`MDXSpectralTransformTests` compares the forward transform against a direct DFT
+computed in the test, rather than against the implementation's own output.
+
+Everything around it went the same way:
+
+- The explicit conjugate mirror — a loop per bin per frame, per channel — is
+  simply gone. A real-to-complex inverse implies the symmetry, and band-limiting
+  above `frequencyBins` is now "those slots were zeroed at allocation and are
+  never written" instead of a bounds calculation.
+- The overlap-add normalisation, a 2-million-iteration loop rebuilt on every
+  inverse, depends only on the window and the hop. It is computed once, stored
+  as a reciprocal, and applied with one `vDSP_vmul`.
+- `reflected()` is called only for the eight frames of 256 that actually reach
+  past the chunk's edge. The other 248 are one `vDSP_vmul` against the window.
+- Every scratch buffer is allocated once per separator and reused for every
+  chunk of every song.
+
+**The mix is no longer held.** All three separators used to begin by decoding
+the whole song into one planar float buffer — about 85 MB for four minutes,
+170 MB at the moment of conversion because the undecoded source sat beside it —
+and hold it for the entire run. `PlanarAudioWindowReader` pulls overlapping
+windows out of a stream instead, so a ten-minute song costs the same as a
+two-minute one. Each separator's window geometry stayed exactly what it was; the
+reader takes a window, a hop, and a leading pad, and the MDX pair is the only
+one that uses the pad, because its transform is centred.
+
+**The chunk loop is driven by the file ending rather than by a frame count.**
+That is the one behavioural change worth stating plainly: the old code computed
+`total` from the fully converted buffer and derived a chunk count from it. A
+stream has no length until it ends, and the estimate from `AVAudioFile.length`
+is off by a frame or two after resampling — near enough for a progress bar,
+not near enough to size the last chunk of audio. So the loop runs until the
+stream is exhausted and sizes the final chunk from `deliveredFrames`, which is
+measured. `SeparationPipelineTests` exists because a streaming loop that stops
+one chunk early loses seconds off the end of every stem and still sounds like a
+separation.
+
+**A latent bug came out of it.** `AVAudioFile.read(into:)` does not report a
+clean end of file: asked for frames past the last one it fails without setting
+an error, which reaches Swift as an opaque `nilError`. The old code never met
+this, because it made exactly one `convert` call into an exactly-sized buffer.
+Reading in blocks meets it on the second call for any file shorter than the
+block. The position, not the return value, is the reliable signal.
+
+**Copies removed from the inference boundary.** MDX23C's Core ML output was
+materialised in full (33.5 MB) and then each half copied out of it again — three
+allocations to reach two inverse transforms. Both inverses now read the model's
+own tensor in place. The input goes the same way: an `MLMultiArray` pointed at
+the spectrum buffer, rather than a fresh 16.8 MB array per chunk. Kim Vocals
+held four full spectra at once (positive, negated input, negative, and the
+zipped average) and now holds one accumulator. `MLMultiArrayFloatReader` grew
+the contiguity fast path that makes this possible — its `value(at:)` did four
+divisions and modulos per element, which for the 4-stem model's 2.75 million
+output values per chunk cost more than the copy it was avoiding. That one is a
+speedup for the *default* model, which nothing in this phase set out to touch.
+
+**Output is not sample-identical, and should not be expected to be.** A
+real-to-complex transform sums in a different order than a complex-to-complex
+one, `vDSP_vma` fuses a multiply and an add that used to round separately, and
+the normalisation reciprocal is computed once and multiplied rather than divided
+per sample. These are float reassociations at the 1e-6 level against signals in
+the ±1 range. The round-trip test holds reconstruction to 1e-3 of the original
+samples, which is a far tighter bound than any audible difference.
+
+**The memory gates are provisional, and saying so is the point.** The plan asked
+for "a real memory requirement", and the only measurement in existence is the
+user's observation of over 2.5 GB in use during an MDX23C run. The app's own
+share of that is now about 60 MB — one spectrum, the model's output, and the
+windows around them — so effectively all of it is Core ML holding activations
+for attention across 4,096 frequency bins. MDX23C is gated at 2 GB and Kim
+Vocals at 1.5 GB: below the observed figure deliberately, so the gate blocks
+devices that would be terminated part way through a long run without blocking
+the ones where these models have been seen to work. They are placeholders for a
+measurement, and `SeparationRunMetrics` — which logs elapsed time and the
+headroom a run consumed — is there so that measurement takes one separation and
+a glance at the log.
+
+**Note the consequence for the simulator.** `os_proc_available_memory()` returns
+zero there, so both vocal models now report as unavailable in every simulator,
+exactly as `htdemucs6s` already did. That is pre-existing behaviour extended to
+two more models, not a new problem, but it does mean the vocal paths cannot be
+exercised without a device.
+
+**Not verified on device.** Nothing in this phase has run on hardware. The
+bundled 4-stem path is covered end to end in the simulator against the real
+model, and the transform and window reader are covered by unit tests, but the
+two models this phase is *about* cannot be reached in a simulator at all now.
+Treat the measurement items above as the device pass.
 
 ---
 
@@ -2243,10 +2372,11 @@ better chords and automatic lyric timing.
   several thousand lines of concurrent code costs materially more than now.
 - **Phase 10 is a gate, not a phase to skip.** Nothing in Milestone E should
   download until capacity checks and model management exist.
-- **Phase 13 is deliberately unscheduled.** It makes an existing feature faster
-  and safer rather than adding one, and it can be picked up whenever separation
-  performance becomes the thing worth a week. It belongs before a public
-  release only if the memory half of it stays unmeasured.
+- **Phase 13 was deliberately unscheduled, and has now been built.** It makes an
+  existing feature faster and safer rather than adding one. Its implementation
+  work is done; what remains is measurement on hardware — the before/after
+  timing, the real memory peak behind the provisional gates, and the jetsam
+  test — and that measurement is what stands between it and a public release.
 
 ---
 

@@ -278,11 +278,15 @@ final class SeparationModel: ObservableObject {
         // readable, and described by a metadata file written before the commit.
         let output = try makeTrackStaging()
         let stagedFiles: [StemKind: URL]
+        // Sampled at every chunk boundary, which is the only place this code
+        // regularly reaches during a run.
+        let metrics = SeparationRunMetrics()
         do {
             stagedFiles = try await separator.separate(
                 fileURL: original.audioURL,
                 outputFolder: output.staging
             ) { value in
+                metrics.sample()
                 Task { @MainActor in
                     context.report(
                         "Separating \(separationModel.stems.count) stems on this device…",
@@ -296,8 +300,14 @@ final class SeparationModel: ObservableObject {
             }
         } catch {
             LibraryStaging.discard(output.staging)
+            logger.info(
+                "\(separationModel.title, privacy: .public) stopped after \(metrics.summary, privacy: .public)"
+            )
             throw error
         }
+        logger.info(
+            "\(separationModel.title, privacy: .public) finished: \(metrics.summary, privacy: .public)"
+        )
 
         let createdAt = Date()
         let metadata = TrackMetadata(
@@ -592,6 +602,50 @@ final class SeparationModel: ObservableObject {
             return "The download failed: \(urlError.localizedDescription). Check your connection and try again."
         }
         return error.localizedDescription
+    }
+}
+
+/// What one separation cost, so the figures this app needs — how long a model
+/// really takes and how close it comes to the memory limit — can be read off a
+/// device instead of estimated.
+///
+/// `os_proc_available_memory()` reports the headroom left before iOS terminates
+/// the process, so the drop from the starting reading is a lower bound on what
+/// the run added. It reads zero in the simulator, where the summary says so
+/// rather than reporting a nonsense number.
+///
+/// Synchronization invariant: every access to the mutable state is under `lock`,
+/// because the sampler is called from whichever thread the separator's chunk
+/// loop is on.
+final class SeparationRunMetrics: @unchecked Sendable {
+    private let lock = NSLock()
+    private let startedAt = Date()
+    private let startingAvailableBytes = ModelMemoryBudget.availableBytes
+    private var lowestAvailableBytes: UInt64
+
+    init() {
+        lowestAvailableBytes = startingAvailableBytes
+    }
+
+    func sample() {
+        let available = ModelMemoryBudget.availableBytes
+        lock.lock()
+        defer { lock.unlock() }
+        lowestAvailableBytes = min(lowestAvailableBytes, available)
+    }
+
+    var summary: String {
+        lock.lock()
+        let lowest = lowestAvailableBytes
+        lock.unlock()
+        let elapsed = String(format: "%.1f", Date().timeIntervalSince(startedAt))
+        guard startingAvailableBytes > 0 else {
+            return "\(elapsed)s, memory headroom unavailable on this platform"
+        }
+        let megabytes = { (bytes: UInt64) in bytes / (1_024 * 1_024) }
+        return "\(elapsed)s, headroom \(megabytes(startingAvailableBytes)) MB → "
+            + "\(megabytes(lowest)) MB, so at least "
+            + "\(megabytes(startingAvailableBytes - lowest)) MB used"
     }
 }
 

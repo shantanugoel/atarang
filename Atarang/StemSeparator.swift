@@ -1,3 +1,4 @@
+import Accelerate
 import AVFoundation
 import CoreML
 
@@ -64,11 +65,12 @@ enum StemSeparatorError: LocalizedError {
 }
 
 /// Runs a waveform-to-waveform Core ML separation model in overlapping chunks.
-/// Output is streamed to WAV files so a full song's stems are never held in memory.
+/// Input is streamed from the file and output is streamed to WAV files, so
+/// neither the song nor its stems are ever held whole in memory.
 ///
-/// Synchronization invariant: every stored property is a `let` assigned during
-/// `init` and never mutated afterwards, and `inferenceLock` serializes the
-/// `MLModel` prediction calls that must not overlap.
+/// Synchronization invariant: `inferenceLock` serializes the `MLModel`
+/// prediction calls that must not overlap, and the scratch buffers are written
+/// only by the one detached task that runs a separation.
 final class CoreMLWaveformSeparator: @unchecked Sendable {
     private let segmentSamples: Int
     private let overlapSamples: Int
@@ -76,6 +78,9 @@ final class CoreMLWaveformSeparator: @unchecked Sendable {
     private let modelKind: SeparationModelKind
     private let model: MLModel
     private let inferenceLock = NSLock()
+    private var input: MLMultiArray?
+    private var sourceScratch: [Float] = []
+    private var writeBuffer: AVAudioPCMBuffer?
 
     init(modelKind: SeparationModelKind, modelURL: URL) throws {
         let configuration = MLModelConfiguration()
@@ -101,28 +106,32 @@ final class CoreMLWaveformSeparator: @unchecked Sendable {
         outputFolder: URL,
         progress: @Sendable @escaping (Double) -> Void
     ) async throws -> [StemKind: URL] {
-        let mix = try loadAndResample(fileURL: fileURL)
+        let reader = try PlanarAudioWindowReader(
+            fileURL: fileURL,
+            sampleRate: sampleRate,
+            windowFrames: segmentSamples,
+            hopFrames: segmentSamples - overlapSamples
+        )
         return try await runCancellable {
-            try self.runChunked(mix: mix, outputFolder: outputFolder, progress: progress)
+            try self.runChunked(
+                reader: reader,
+                outputFolder: outputFolder,
+                progress: progress
+            )
         }
     }
 
-    private func loadAndResample(fileURL: URL) throws -> AVAudioPCMBuffer {
-        try AudioResampler.stereoFloat32(fileURL: fileURL, sampleRate: sampleRate)
-    }
-
     private func runChunked(
-        mix: AVAudioPCMBuffer,
+        reader: PlanarAudioWindowReader,
         outputFolder: URL,
         progress: @Sendable @escaping (Double) -> Void
     ) throws -> [StemKind: URL] {
-        let total = Int(mix.frameLength)
-        guard total > 0 else { throw StemSeparatorError.unsupportedFormat }
         let stride = segmentSamples - overlapSamples
-        let chunkCount = total <= segmentSamples
-            ? 1
-            : Int(ceil(Double(total - segmentSamples) / Double(stride))) + 1
-        let format = mix.format
+        let format = reader.format
+        let estimatedChunks = max(
+            1,
+            Int(ceil(Double(reader.estimatedFrameCount) / Double(stride)))
+        )
 
         var urls: [StemKind: URL] = [:]
         var writers: [StemKind: AVAudioFile] = [:]
@@ -133,54 +142,76 @@ final class CoreMLWaveformSeparator: @unchecked Sendable {
         }
 
         var previousTails: [StemKind: [Float]] = [:]
-        for chunkIndex in 0..<chunkCount {
+        var chunkIndex = 0
+        var wroteAnything = false
+        while try reader.advance() {
             try Task.checkCancellation()
             let start = chunkIndex * stride
-            let validFrames = min(segmentSamples, total - start)
-            let predictions = try predict(chunk: sliceChunk(mix: mix, start: start))
+            // Measured, not estimated: the stream reports the song's exact
+            // length once it is exhausted, so the last chunk is sized by what
+            // the file actually held.
+            let validFrames = min(segmentSamples, reader.deliveredFrames - start)
+            guard validFrames > 0 else { break }
             let isFirst = chunkIndex == 0
-            let isLast = chunkIndex == chunkCount - 1
+            let isLast = reader.isAtEnd
+                && reader.deliveredFrames - start <= segmentSamples
 
-            for stem in modelKind.stems {
-                guard let samples = predictions[stem], let writer = writers[stem] else { continue }
-                var resolved: [Float]
-                if isFirst && isLast {
-                    resolved = Array(samples.prefix(validFrames * 2))
-                } else if isFirst {
-                    resolved = Array(samples.prefix(stride * 2))
-                    previousTails[stem] = interleavedSlice(samples, frames: stride..<segmentSamples)
-                } else {
-                    let overlapCount = min(overlapSamples, validFrames)
-                    let prior = previousTails[stem] ?? []
-                    resolved = blend(previous: prior, current: samples, frameCount: overlapCount)
-                    let resolvedEnd = isLast ? validFrames : min(stride, validFrames)
-                    if resolvedEnd > overlapCount {
-                        resolved.append(contentsOf: interleavedSlice(samples, frames: overlapCount..<resolvedEnd))
-                    }
-                    if !isLast {
+            try autoreleasepool {
+                let predictions = try predict(planar: reader.planar)
+                for stem in modelKind.stems {
+                    guard let samples = predictions[stem], let writer = writers[stem] else { continue }
+                    var resolved: [Float]
+                    if isFirst && isLast {
+                        resolved = Array(samples.prefix(validFrames * 2))
+                    } else if isFirst {
+                        resolved = Array(samples.prefix(stride * 2))
                         previousTails[stem] = interleavedSlice(samples, frames: stride..<segmentSamples)
+                    } else {
+                        let overlapCount = min(overlapSamples, validFrames)
+                        let prior = previousTails[stem] ?? []
+                        resolved = blend(previous: prior, current: samples, frameCount: overlapCount)
+                        let resolvedEnd = isLast ? validFrames : min(stride, validFrames)
+                        if resolvedEnd > overlapCount {
+                            resolved.append(contentsOf: interleavedSlice(samples, frames: overlapCount..<resolvedEnd))
+                        }
+                        if !isLast {
+                            previousTails[stem] = interleavedSlice(samples, frames: stride..<segmentSamples)
+                        }
                     }
+                    try write(interleaved: resolved, to: writer, format: format)
                 }
-                try write(interleaved: resolved, to: writer, format: format)
             }
-            progress(Double(chunkIndex + 1) / Double(chunkCount))
+            wroteAnything = true
+            chunkIndex += 1
+            progress(
+                isLast ? 1 : min(0.99, Double(chunkIndex) / Double(estimatedChunks))
+            )
+            if isLast { break }
         }
+        guard wroteAnything else { throw StemSeparatorError.unsupportedFormat }
         return urls
     }
 
-    private func predict(chunk: [Float]) throws -> [StemKind: [Float]] {
-        let audio = try MLMultiArray(
-            shape: [1, 2, NSNumber(value: segmentSamples)],
-            dataType: .float32
-        )
-        let input = audio.dataPointer.bindMemory(to: Float.self, capacity: audio.count)
-        for frame in 0..<segmentSamples {
-            input[frame] = chunk[frame * 2]
-            input[segmentSamples + frame] = chunk[frame * 2 + 1]
+    private func predict(planar: UnsafePointer<Float>) throws -> [StemKind: [Float]] {
+        // `[1, 2, samples]` is exactly the reader's own layout, so the chunk
+        // goes in as two memcpys rather than an interleave and a de-interleave.
+        let audio: MLMultiArray
+        if let existing = input {
+            audio = existing
+        } else {
+            audio = try MLMultiArray(
+                shape: [1, 2, NSNumber(value: segmentSamples)],
+                dataType: .float32
+            )
+            input = audio
         }
-
         inferenceLock.lock()
         defer { inferenceLock.unlock() }
+        // Inside the lock, because the array is reused across chunks now:
+        // filling it is part of the prediction, not a step before it.
+        audio.dataPointer
+            .bindMemory(to: Float.self, capacity: audio.count)
+            .update(from: planar, count: 2 * segmentSamples)
         let provider = try MLDictionaryFeatureProvider(dictionary: ["audio": audio])
         let prediction = try model.prediction(from: provider)
         guard let sources = prediction.featureValue(for: "sources")?.multiArrayValue else {
@@ -195,29 +226,22 @@ final class CoreMLWaveformSeparator: @unchecked Sendable {
             )
         }
         let sourceReader = MLMultiArrayFloatReader(sources)
-        for (stemIndex, stem) in modelKind.stems.enumerated() {
-            var samples = [Float](repeating: 0, count: segmentSamples * 2)
-            let base = stemIndex * 2 * segmentSamples
-            for frame in 0..<segmentSamples {
-                samples[frame * 2] = sourceReader.value(at: base + frame)
-                samples[frame * 2 + 1] = sourceReader.value(
-                    at: base + segmentSamples + frame
-                )
+        sourceReader.withValues(in: 0..<expectedValues, scratch: &sourceScratch) { values in
+            for (stemIndex, stem) in modelKind.stems.enumerated() {
+                let base = stemIndex * 2 * segmentSamples
+                var samples = [Float](repeating: 0, count: segmentSamples * 2)
+                samples.withUnsafeMutableBufferPointer { destination in
+                    interleave(
+                        left: values + base,
+                        right: values + base + segmentSamples,
+                        into: destination.baseAddress!,
+                        frames: segmentSamples
+                    )
+                }
+                stems[stem] = samples
             }
-            stems[stem] = samples
         }
         return stems
-    }
-
-    private func sliceChunk(mix: AVAudioPCMBuffer, start: Int) -> [Float] {
-        var samples = [Float](repeating: 0, count: segmentSamples * 2)
-        guard let channels = mix.floatChannelData else { return samples }
-        let total = Int(mix.frameLength)
-        for frame in 0..<min(segmentSamples, total - start) {
-            samples[frame * 2] = channels[0][start + frame]
-            samples[frame * 2 + 1] = channels[1][start + frame]
-        }
-        return samples
     }
 
     private func blend(previous: [Float], current: [Float], frameCount: Int) -> [Float] {
@@ -240,13 +264,61 @@ final class CoreMLWaveformSeparator: @unchecked Sendable {
 
     private func write(interleaved samples: [Float], to file: AVAudioFile, format: AVAudioFormat) throws {
         let frames = samples.count / 2
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)),
-              let channels = buffer.floatChannelData else { throw StemSeparatorError.unsupportedFormat }
+        guard frames > 0 else { return }
+        if writeBuffer == nil || Int(writeBuffer!.frameCapacity) < frames {
+            writeBuffer = AVAudioPCMBuffer(
+                pcmFormat: format,
+                frameCapacity: AVAudioFrameCount(frames)
+            )
+        }
+        guard let buffer = writeBuffer, let channels = buffer.floatChannelData else {
+            throw StemSeparatorError.unsupportedFormat
+        }
         buffer.frameLength = AVAudioFrameCount(frames)
-        for frame in 0..<frames {
-            channels[0][frame] = samples[frame * 2]
-            channels[1][frame] = samples[frame * 2 + 1]
+        samples.withUnsafeBufferPointer { source in
+            deinterleave(
+                source.baseAddress!,
+                left: channels[0],
+                right: channels[1],
+                frames: frames
+            )
         }
         try file.write(from: buffer)
     }
+}
+
+/// Interleaves two planar channels into `left, right, left, right…`.
+///
+/// `vDSP_ztoc` reads a split complex pair as exactly that layout — the real
+/// half becomes the even elements and the imaginary half the odd ones — so the
+/// separators' per-sample shuffling loops, millions of iterations per chunk,
+/// become one vectorised call.
+func interleave(
+    left: UnsafePointer<Float>,
+    right: UnsafePointer<Float>,
+    into destination: UnsafeMutablePointer<Float>,
+    frames: Int
+) {
+    guard frames > 0 else { return }
+    var split = DSPSplitComplex(
+        realp: UnsafeMutablePointer(mutating: left),
+        imagp: UnsafeMutablePointer(mutating: right)
+    )
+    let pairs = UnsafeMutableRawPointer(destination)
+        .assumingMemoryBound(to: DSPComplex.self)
+    vDSP_ztoc(&split, 1, pairs, 2, vDSP_Length(frames))
+}
+
+/// The reverse of `interleave(left:right:into:frames:)`.
+func deinterleave(
+    _ source: UnsafePointer<Float>,
+    left: UnsafeMutablePointer<Float>,
+    right: UnsafeMutablePointer<Float>,
+    frames: Int
+) {
+    guard frames > 0 else { return }
+    var split = DSPSplitComplex(realp: left, imagp: right)
+    let pairs = UnsafeRawPointer(source)
+        .assumingMemoryBound(to: DSPComplex.self)
+    vDSP_ctoz(pairs, 2, &split, 1, vDSP_Length(frames))
 }
