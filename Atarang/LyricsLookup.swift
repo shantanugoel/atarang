@@ -59,6 +59,11 @@ enum LyricsLookup {
                 "--skip-download",
                 "--write-subs",
                 "--write-auto-subs",
+                // Auto captions expose every language YouTube can translate
+                // them into. yt-dlp eagerly builds that whole catalogue before
+                // applying `--sub-langs`, which is wasted CPU and memory when
+                // Atarang only asks for the original English track.
+                "--extractor-args", "youtube:skip=translated_subs",
                 // Exactly one track. `en.*` looked like the thorough choice and
                 // is the opposite: it matches every auto-translated variant a
                 // video carries — seven of them on the first song this was tried
